@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.api.deps import require_admin
+from app.core.database import get_db
+from app.core.exceptions import NotFoundError, RubicError
+from app.models.user import ROLE_ADMIN, ROLE_ANALYST, ROLE_USER, User
+from app.schemas.common import UserOut
+from app.services import feishu_service
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+_ROLES = {ROLE_USER, ROLE_ANALYST, ROLE_ADMIN}
+
+
+class RoleIn(BaseModel):
+    role: str
+
+
+@router.get("/users", response_model=list[UserOut])
+def list_users(
+    q: str | None = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    stmt = select(User).order_by(User.id)
+    if q:
+        stmt = stmt.where(User.name.like(f"%{q}%"))
+    return list(db.scalars(stmt))
+
+
+@router.post("/users/{user_id}/role", response_model=UserOut)
+def set_role(
+    user_id: int,
+    data: RoleIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    if data.role not in _ROLES:
+        raise RubicError(f"非法角色:{data.role}")
+    user = db.get(User, user_id)
+    if user is None:
+        raise NotFoundError("用户不存在")
+    user.role = data.role
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/sync-contacts")
+def sync_contacts(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """从飞书拉取部门+用户同步进平台库(需应用已开通通讯录读取权限)。"""
+    return feishu_service.sync_contacts(db)

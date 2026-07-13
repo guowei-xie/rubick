@@ -1,0 +1,20 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+pymysql==1.1.1
+cryptography==44.0.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+eval_type_backport==0.2.0  # 让 Python 3.9 也能解析 `X | None` 联合类型语法
+python-jose[cryptography]==3.3.0
+httpx==0.28.1
+minio==7.2.13
+celery[redis]==5.4.0
+sqlglot==26.0.1
+python-multipart==0.0.20
+# Hive connector(LDAP/PLAIN 走 pure-sasl,免编译 C 版 sasl)
+PyHive==0.7.0
+thrift==0.24.0
+thrift_sasl==0.4.3
+pure-sasl==0.6.2

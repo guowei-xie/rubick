@@ -1,0 +1,41 @@
+# 本地依赖:平台元数据库(MySQL)+ Redis(Phase 2 异步用)+ MinIO(结果对象存储)
+# 后端与前端在宿主机上跑(见 README),这里只起中间件。
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: rubic_meta
+      MYSQL_USER: rubic
+      MYSQL_PASSWORD: rubic
+    command: --default-authentication-plugin=mysql_native_password
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-prubic"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rubic_mysql:/var/lib/mysql
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 控制台
+    volumes:
+      - rubic_minio:/data
+
+volumes:
+  rubic_mysql:
+  rubic_minio:
