@@ -3,19 +3,23 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_analyst
+from app.api.deps import get_current_user, require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.template import (
     AcceptIn,
+    EnumSqlIn,
+    EnumValuesIn,
+    EnumValuesOut,
     TemplateCreateIn,
     TemplateDetailOut,
     TemplateOut,
     TemplateUpdateIn,
     TemplateVersionOut,
     TestRunIn,
+    ValueListOut,
 )
 from app.services import permission_service, template_service
 
@@ -57,7 +61,7 @@ def list_templates(
 
 @router.post("", response_model=TemplateOut)
 def create_template(
-    data: TemplateCreateIn, db: Session = Depends(get_db), user: User = Depends(require_analyst)
+    data: TemplateCreateIn, db: Session = Depends(get_db), user: User = Depends(require_admin)
 ):
     return template_service.create_template(db, user, data)
 
@@ -88,7 +92,7 @@ def update_template(
     template_id: int,
     data: TemplateUpdateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_analyst),
+    user: User = Depends(require_admin),
 ):
     tmpl = _load(db, template_id)
     _require_author_or_admin(tmpl, user)
@@ -96,7 +100,7 @@ def update_template(
 
 
 @router.post("/{template_id}/submit")
-def submit(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_analyst)):
+def submit(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     tmpl = _load(db, template_id)
     _require_author_or_admin(tmpl, user)
     template_service.submit_for_accept(db, tmpl)
@@ -108,7 +112,7 @@ def publish(
     template_id: int,
     data: AcceptIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_analyst),
+    user: User = Depends(require_admin),
 ):
     """验收通过并发布最新版本。"""
     tmpl = _load(db, template_id)
@@ -118,7 +122,7 @@ def publish(
 
 
 @router.post("/{template_id}/archive")
-def archive(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_analyst)):
+def archive(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     tmpl = _load(db, template_id)
     _require_author_or_admin(tmpl, user)
     template_service.archive(db, tmpl)
@@ -126,6 +130,18 @@ def archive(template_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 @router.post("/test-run")
-def test_run(data: TestRunIn, db: Session = Depends(get_db), _: User = Depends(require_analyst)):
+def test_run(data: TestRunIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """商分自检试跑,不落库,返回样例行。"""
     return template_service.test_run(db, data)
+
+
+@router.post("/enum-values", response_model=EnumValuesOut)
+def enum_values(data: EnumValuesIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """自动发现变量对应字段的候选枚举值(后台跑 SELECT DISTINCT)。"""
+    return template_service.discover_enum_values(db, data)
+
+
+@router.post("/enum-sql", response_model=ValueListOut)
+def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """分析师测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
+    return template_service.run_value_query(db, data.datasource_id, data.sql)

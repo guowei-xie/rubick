@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Button, Checkbox, Modal, Radio, Select, Space, Table, Tag, message } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Button, Checkbox, Modal, Radio, Select, Space, Table, Tag, Tooltip, message } from "antd";
+import { SyncOutlined } from "@ant-design/icons";
 import {
   errMsg,
   grantPermission,
@@ -7,6 +8,7 @@ import {
   lookupDepartments,
   lookupUsers,
   revokePermission,
+  syncContacts,
 } from "../api";
 
 const ALL_ACTIONS = ["view", "run", "download"];
@@ -28,12 +30,14 @@ export default function GrantModal({
   const [subjectId, setSubjectId] = useState<string>();
   const [options, setOptions] = useState<any[]>([]);
   const [actions, setActions] = useState<string[]>(ALL_ACTIONS);
+  const [query, setQuery] = useState("");
+  const [syncing, setSyncing] = useState(false);
 
   const loadGrants = () => {
     if (templateId != null) listPermissions(String(templateId)).then(setGrants);
   };
 
-  const search = (q: string) => {
+  const runFetch = (q: string) => {
     const fn = subjectType === "user" ? lookupUsers : lookupDepartments;
     fn(q).then((rows: any[]) =>
       setOptions(
@@ -43,6 +47,34 @@ export default function GrantModal({
         }))
       )
     );
+  };
+  const search = (q: string) => {
+    setQuery(q);
+    runFetch(q);
+  };
+  // 输入框搜索防抖:避免每敲一个字就打一次飞书/DB(live 搜索尤其贵)
+  const searchTimer = useRef<any>(null);
+  const debouncedSearch = (q: string) => {
+    setQuery(q);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => runFetch(q), 350);
+  };
+
+  // 同步飞书通讯录目录(供授权搜索用;不影响「用户管理」——那边只显示登录过的)
+  const doSync = async () => {
+    setSyncing(true);
+    const hide = message.loading("正在同步飞书通讯录…", 0);
+    try {
+      const r = await syncContacts();
+      hide();
+      message.success(`同步完成:部门 ${r.departments} 个,用户 ${r.users} 人`);
+      search(query); // 用当前关键词重搜
+    } catch (e: any) {
+      hide();
+      message.error(errMsg(e, "同步失败(检查飞书应用是否已开通通讯录读取、可见范围是否为全员)"));
+    } finally {
+      setSyncing(false);
+    }
   };
 
   // 打开或切换模板时拉取现有授权
@@ -75,16 +107,51 @@ export default function GrantModal({
     }
   };
 
+  // 把扁平的授权记录按"主体"归并成名单:一人/一部门一行,展示其全部权限
+  const groups = Object.values(
+    grants.reduce((acc: any, p: any) => {
+      const key = `${p.subject_type}:${p.subject_id}`;
+      acc[key] ||= {
+        key,
+        subject_type: p.subject_type,
+        subject_id: p.subject_id,
+        subject_name: p.subject_name,
+        actions: [],
+        ids: [],
+      };
+      acc[key].actions.push(p.action);
+      acc[key].ids.push(p.id);
+      return acc;
+    }, {})
+  );
+
+  const revokeAll = async (ids: number[]) => {
+    await Promise.all(ids.map((id) => revokePermission(id)));
+    loadGrants();
+  };
+
   const columns = [
-    { title: "对象", dataIndex: "subject_type", render: (t: string, r: any) => (
-      <span><Tag>{t === "user" ? "用户" : "部门"}</Tag>#{r.subject_id}</span>
-    )},
-    { title: "动作", dataIndex: "action", render: (a: string) => <Tag color="blue">{a}</Tag> },
+    {
+      title: "对象",
+      render: (_: any, r: any) => (
+        <Space>
+          <Tag color={r.subject_type === "user" ? "blue" : "purple"}>
+            {r.subject_type === "user" ? "用户" : "部门"}
+          </Tag>
+          <span>{r.subject_name || `#${r.subject_id}`}</span>
+        </Space>
+      ),
+    },
+    {
+      title: "拥有权限",
+      render: (_: any, r: any) => r.actions.map((a: string) => <Tag key={a} color="green">{a}</Tag>),
+    },
     {
       title: "操作",
+      width: 90,
       render: (_: any, r: any) => (
-        <Button type="link" danger size="small" onClick={() => revokePermission(r.id).then(loadGrants)}>
-          撤销
+        <Button type="link" danger size="small" onClick={() => revokeAll(r.ids)}>
+          取消授权
         </Button>
       ),
     },
@@ -107,13 +174,23 @@ export default function GrantModal({
           <Select
             showSearch
             filterOption={false}
-            placeholder={subjectType === "user" ? "搜索用户" : "搜索部门"}
+            placeholder={subjectType === "user" ? "输入姓名/邮箱搜全公司" : "搜索部门"}
             style={{ width: 240 }}
             value={subjectId}
-            onSearch={search}
+            onSearch={debouncedSearch}
             onChange={setSubjectId}
             options={options}
+            notFoundContent={
+              subjectType === "user" ? "没搜到?可能通讯录未同步或不在可见范围" : "无匹配部门"
+            }
           />
+          {subjectType === "user" && (
+            <Tooltip title="从飞书同步通讯录目录(需应用已开通通讯录读取、可见范围设为全员)。同步的人不会进「用户管理」,只用于这里搜索。">
+              <Button icon={<SyncOutlined />} loading={syncing} onClick={doSync}>
+                同步通讯录
+              </Button>
+            </Tooltip>
+          )}
           <Checkbox.Group
             options={ALL_ACTIONS.map((a) => ({ label: a, value: a }))}
             value={actions}
@@ -123,7 +200,8 @@ export default function GrantModal({
             授权
           </Button>
         </Space>
-        <Table rowKey="id" size="small" dataSource={grants} columns={columns} pagination={false} />
+        <Table rowKey="key" size="small" dataSource={groups} columns={columns} pagination={false}
+          locale={{ emptyText: "尚未授权任何人" }} />
       </Space>
     </Modal>
   );

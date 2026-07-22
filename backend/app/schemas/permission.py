@@ -14,6 +14,7 @@ class PermissionOut(BaseModel):
     id: int
     subject_type: str
     subject_id: str
+    subject_name: str | None = None
     resource_type: str
     resource_id: str
     action: str

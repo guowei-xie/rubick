@@ -44,3 +44,20 @@ def download(job_id: int, request: Request, db: Session = Depends(get_db), user:
         raise NotFoundError("任务不存在")
     url = query_service.get_download_url(db, user, job, ip=client_ip(request))
     return {"url": url, "filename": job.result_filename}
+
+
+@router.get("/jobs/{job_id}/preview")
+def preview(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """运行结果预览(表头 + 前 50 行)。发起人/管理员/项目作者可看。"""
+    from app.core.exceptions import RubicError
+    from app.services import result_service
+
+    job = db.get(QueryJob, job_id)
+    if job is None or not query_service.can_view_job_result(db, user, job):
+        raise NotFoundError("运行记录不存在")
+    if job.status != "success" or not job.result_object_key:
+        raise RubicError("该次运行无可预览结果")
+    if job.result_expired:
+        raise RubicError("结果已过期(保留 7 天),无法预览")
+    columns, rows = result_service.read_csv_preview(job.result_object_key, 50)
+    return {"columns": columns, "rows": rows, "row_count": job.row_count}

@@ -19,7 +19,7 @@ from app.core.database import Base, SessionLocal, engine
 import app.models  # noqa: F401
 from app.models.datasource import DataSource
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, ROLE_ANALYST, ROLE_USER, Department, User
+from app.models.user import ROLE_ADMIN, ROLE_USER, Department, User
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn
 from app.services import permission_service, template_service
@@ -96,7 +96,7 @@ def main() -> None:
         analytics = upsert_dept(db, "d_analytics", "商分部")
         marketing = upsert_dept(db, "d_marketing", "市场部")
         admin = upsert_user(db, "ou_admin", "管理员小A", ROLE_ADMIN, analytics.id)
-        analyst = upsert_user(db, "ou_analyst", "商分小B", ROLE_ANALYST, analytics.id)
+        analyst = upsert_user(db, "ou_analyst", "管理员小B", ROLE_ADMIN, analytics.id)  # 原商分并入管理员
         viewer = upsert_user(db, "ou_viewer", "业务小C", ROLE_USER, marketing.id)
 
         print("4) demo datasource")
@@ -160,7 +160,7 @@ def main() -> None:
             )
 
         print("\nSeed done. 登录 open_id:")
-        print("  管理员 = ou_admin   商分 = ou_analyst   业务用户 = ou_viewer")
+        print("  管理员 = ou_admin / ou_analyst(均为管理员)   业务用户 = ou_viewer")
     finally:
         db.close()
 

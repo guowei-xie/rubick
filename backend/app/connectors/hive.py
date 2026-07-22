@@ -14,6 +14,20 @@ from typing import Any
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
 
 
+def _hive_error_message(exc: Exception) -> str:
+    """从 pyhive 的异常里提炼出一句人能看懂的错误(去掉几千字符的 Java 堆栈)。
+
+    pyhive OperationalError 的 args[0] 是 TExecuteStatementResp,带 status.errorMessage;
+    通常形如 "Error while compiling statement: FAILED: ParseException line ..."。
+    """
+    resp = exc.args[0] if getattr(exc, "args", None) else None
+    msg = getattr(getattr(resp, "status", None), "errorMessage", None)
+    text = msg or str(exc)
+    # 只保留第一段(冒号+Java 堆栈之前),并压到一行
+    text = text.split("org.apache.")[0].strip().splitlines()[0] if text else "未知错误"
+    return text[:500] or "未知错误"
+
+
 class HiveConnector(DataSourceConnector):
     engine = "hive"
 
@@ -56,14 +70,17 @@ class HiveConnector(DataSourceConnector):
         conn = self._connect()
         try:
             cursor = conn.cursor()
-            if params:
-                pyformat_sql = sql.replace("%", "%%")
-                # 只替换已定义的参数名,避免误伤字符串里的 :xx(如时间格式 '%H:%i:%s')
-                for name in params:
-                    pyformat_sql = re.sub(rf":{re.escape(name)}\b", f"%({name})s", pyformat_sql)
-                cursor.execute(pyformat_sql, params)
-            else:
-                cursor.execute(sql)
+            try:
+                if params:
+                    pyformat_sql = sql.replace("%", "%%")
+                    # 只替换已定义的参数名,避免误伤字符串里的 :xx(如时间格式 '%H:%i:%s')
+                    for name in params:
+                        pyformat_sql = re.sub(rf":{re.escape(name)}\b", f"%({name})s", pyformat_sql)
+                    cursor.execute(pyformat_sql, params)
+                else:
+                    cursor.execute(sql)
+            except Exception as e:  # noqa: BLE001 -- 把 Hive 的原始错误提炼成一句可读信息
+                raise RuntimeError(f"Hive 执行失败:{_hive_error_message(e)}") from e
             columns = [d[0] for d in cursor.description]
             rows = cursor.fetchmany(max_rows + 1)
         finally:

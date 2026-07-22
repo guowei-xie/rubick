@@ -44,6 +44,22 @@ class SqlTemplate(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
+    # 便于列表展示创建人 / 数据源(引擎)
+    author = relationship("User", foreign_keys=[author_id], lazy="joined")
+    datasource = relationship("DataSource", lazy="joined")
+
+    @property
+    def author_name(self) -> str | None:
+        return self.author.name if self.author else None
+
+    @property
+    def datasource_name(self) -> str | None:
+        return self.datasource.name if self.datasource else None
+
+    @property
+    def engine(self) -> str | None:
+        return self.datasource.engine if self.datasource else None
+
 
 class TemplateVersion(Base, TimestampMixin):
     """模板的一个不可变版本:SQL 原文快照 + 参数定义 + 验收记录。"""

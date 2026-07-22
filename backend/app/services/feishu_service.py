@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
@@ -26,13 +27,28 @@ _client = httpx.Client(trust_env=False, timeout=20)
 
 _token_cache: dict = {"token": None, "exp": 0.0}
 
+# 登录申请的权限:含「按本人可见范围搜通讯录」,才能在授权里搜全公司
+OAUTH_SCOPES = " ".join(
+    [
+        "contact:user.base:readonly",
+        "contact:department.base:readonly",
+        "contact:contact.base:readonly",
+        "contact:user:search",
+    ]
+)
+
 
 def build_authorize_url(state: str = "rubic") -> str:
-    # 规范编码 redirect_uri;endpoint 用经典网页登录入口 authen/v1/index,与 access_token 交换配套
+    # authorize 端点支持 scope;与 oidc/access_token 交换配套
     q = urlencode(
-        {"app_id": settings.FEISHU_APP_ID, "redirect_uri": settings.FEISHU_REDIRECT_URI, "state": state}
+        {
+            "app_id": settings.FEISHU_APP_ID,
+            "redirect_uri": settings.FEISHU_REDIRECT_URI,
+            "scope": OAUTH_SCOPES,
+            "state": state,
+        }
     )
-    return f"{_BASE}/authen/v1/index?{q}"
+    return f"{_BASE}/authen/v1/authorize?{q}"
 
 
 def _tenant_access_token() -> str:
@@ -51,26 +67,119 @@ def _tenant_access_token() -> str:
     return _token_cache["token"]
 
 
-def exchange_code(code: str) -> dict:
-    """用登录 code 换取用户信息。返回 {open_id, name, email, avatar, union_id}。"""
-    app_token = _tenant_access_token()
+def _post_data(path: str, body: dict) -> dict:
+    """带 tenant token 的 POST,校验 code==0,返回 data。"""
     resp = _client.post(
-        f"{_BASE}/authen/v1/access_token",
-        headers={"Authorization": f"Bearer {app_token}"},
-        json={"grant_type": "authorization_code", "code": code},
+        f"{_BASE}{path}",
+        headers={"Authorization": f"Bearer {_tenant_access_token()}"},
+        json=body,
     )
     resp.raise_for_status()
-    body = resp.json()
-    if body.get("code") != 0:
-        raise RubicError(f"飞书登录失败:{body.get('msg')}")
-    data = body["data"]
+    j = resp.json()
+    if j.get("code") not in (0, None):
+        raise RubicError(f"飞书接口失败({path}):{j.get('msg')}")
+    return j.get("data", j)
+
+
+def exchange_code(code: str) -> dict:
+    """OIDC 换取用户身份。返回 {open_id, union_id, name, email, avatar,
+    access_token, refresh_token, expires_in}(后三者是 user_access_token 相关,用于搜通讯录)。"""
+    tok = _post_data("/authen/v1/oidc/access_token", {"grant_type": "authorization_code", "code": code})
+    user_token = tok["access_token"]
+
+    # 用 user_access_token 取用户资料
+    resp = _client.get(
+        f"{_BASE}/authen/v1/user_info", headers={"Authorization": f"Bearer {user_token}"}
+    )
+    resp.raise_for_status()
+    info = resp.json().get("data", {})
     return {
-        "open_id": data["open_id"],
-        "union_id": data.get("union_id"),
-        "name": data.get("name", "飞书用户"),
-        "email": data.get("email") or data.get("enterprise_email"),
-        "avatar": data.get("avatar_url"),
+        "open_id": info.get("open_id") or tok.get("open_id"),
+        "union_id": info.get("union_id"),
+        "name": info.get("name", "飞书用户"),
+        "email": info.get("email") or info.get("enterprise_email"),
+        "avatar": info.get("avatar_url"),
+        "access_token": user_token,
+        "refresh_token": tok.get("refresh_token"),
+        "expires_in": tok.get("expires_in", 7000),
     }
+
+
+def refresh_user_token(refresh_token: str) -> dict:
+    """用 refresh_token 换新的 user_access_token。返回 {access_token, refresh_token, expires_in}。"""
+    data = _post_data(
+        "/authen/v1/oidc/refresh_access_token",
+        {"grant_type": "refresh_token", "refresh_token": refresh_token},
+    )
+    return {
+        "access_token": data["access_token"],
+        "refresh_token": data.get("refresh_token", refresh_token),
+        "expires_in": data.get("expires_in", 7000),
+    }
+
+
+def valid_user_token(db: Session, user) -> str | None:
+    """拿到该用户当前可用的 user_access_token;过期则用 refresh_token 刷新并落库。
+    没有 token 或刷新失败返回 None(调用方回退本地目录)。"""
+    if not user.feishu_token:
+        return None
+    now = datetime.utcnow()
+    if user.feishu_token_exp and user.feishu_token_exp > now + timedelta(seconds=60):
+        return user.feishu_token
+    if not user.feishu_refresh_token:
+        return None
+    try:
+        fresh = refresh_user_token(user.feishu_refresh_token)
+    except Exception:  # noqa: BLE001 刷新失败 → 回退
+        return None
+    user.feishu_token = fresh["access_token"]
+    user.feishu_refresh_token = fresh["refresh_token"]
+    user.feishu_token_exp = now + timedelta(seconds=int(fresh["expires_in"]))
+    db.commit()
+    return user.feishu_token
+
+
+def search_users(query: str, user_access_token: str) -> list[dict]:
+    """按登录用户可见范围搜通讯录。返回 [{open_id, name, avatar}]。
+    /search/v1/user 常只回 open_id + avatar,姓名/邮箱用 tenant token 批量补齐。"""
+    resp = _client.get(
+        f"{_BASE}/search/v1/user",
+        headers={"Authorization": f"Bearer {user_access_token}"},
+        params={"query": query, "page_size": 20},
+    )
+    resp.raise_for_status()
+    found = resp.json().get("data", {}).get("users", []) or []
+    open_ids = [u.get("open_id") for u in found if u.get("open_id")]
+    meta = _batch_get_users(open_ids)
+    out = []
+    for u in found:
+        oid = u.get("open_id")
+        if not oid:
+            continue
+        m = meta.get(oid, {})
+        out.append(
+            {
+                "open_id": oid,
+                "name": m.get("name") or u.get("name") or oid,
+                "email": m.get("email") or m.get("enterprise_email"),
+                "avatar": (m.get("avatar") or {}).get("avatar_72") if isinstance(m.get("avatar"), dict) else u.get("avatar"),
+            }
+        )
+    return out
+
+
+def _batch_get_users(open_ids: list[str]) -> dict[str, dict]:
+    """按 open_id 批量取用户资料(tenant token,需 contact 权限)。返回 {open_id: item}。"""
+    if not open_ids:
+        return {}
+    resp = _client.get(
+        f"{_BASE}/contact/v3/users/batch",
+        headers={"Authorization": f"Bearer {_tenant_access_token()}"},
+        params=[("user_ids", i) for i in open_ids] + [("user_id_type", "open_id")],
+    )
+    resp.raise_for_status()
+    items = (resp.json().get("data", {}) or {}).get("items", []) or []
+    return {it.get("open_id"): it for it in items if it.get("open_id")}
 
 
 def send_message(open_id: str, title: str, content: str, link: str | None = None) -> bool:

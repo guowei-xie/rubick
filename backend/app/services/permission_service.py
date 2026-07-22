@@ -14,7 +14,7 @@ from app.models.permission import (
     SUBJECT_DEPARTMENT,
     SUBJECT_USER,
     Permission,
-)
+)  # noqa: F401
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_ADMIN, User
 
@@ -72,27 +72,29 @@ def can(db: Session, user: User, action: str, resource_type: str, resource_id: i
     return False
 
 
-def visible_template_ids(db: Session, user: User) -> set[int] | None:
-    """返回该用户可见(view)的模板 id 集合;管理员返回 None 表示全部。"""
+def action_template_ids(db: Session, user: User, action: str) -> set[int] | None:
+    """用户对模板可执行 action(view/run/download)的 id 集合;管理员返回 None 表示全部。
+    作者对自己的模板拥有全部动作。"""
     if user.role == ROLE_ADMIN:
         return None
-    ids: set[int] = set()
-    # 作者可见自己的模板
-    for tid in db.scalars(select(SqlTemplate.id).where(SqlTemplate.author_id == user.id)):
-        ids.add(tid)
-    # 被授权 view 的模板
+    ids: set[int] = set(owned_template_ids(db, user))
     for stype, sid in _subject_filters(user):
         rows = db.scalars(
             select(Permission.resource_id).where(
                 Permission.subject_type == stype,
                 Permission.subject_id == sid,
                 Permission.resource_type == RESOURCE_TEMPLATE,
-                Permission.action == ACTION_VIEW,
+                Permission.action == action,
             )
         )
         for rid in rows:
             ids.add(int(rid))
     return ids
+
+
+def visible_template_ids(db: Session, user: User) -> set[int] | None:
+    """该用户可见(view)的模板 id 集合;管理员返回 None 表示全部。"""
+    return action_template_ids(db, user, ACTION_VIEW)
 
 
 def grant(

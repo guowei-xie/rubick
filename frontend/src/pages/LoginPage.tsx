@@ -6,7 +6,7 @@ import { useAuth } from "../auth";
 
 const MOCK_USERS = [
   { open_id: "ou_admin", label: "管理员小A(admin)" },
-  { open_id: "ou_analyst", label: "商分小B(analyst)" },
+  { open_id: "ou_analyst", label: "管理员小B(admin)" },
   { open_id: "ou_viewer", label: "业务小C(user)" },
 ];
 

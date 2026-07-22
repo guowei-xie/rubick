@@ -65,6 +65,27 @@ def upload_csv(object_key: str, data: bytes) -> None:
     )
 
 
+def read_csv_preview(object_key: str, limit: int = 50) -> tuple[list[str], list[list]]:
+    """读取已存 CSV 的表头 + 前 limit 行,用于运行记录预览。
+
+    流式读取,取够 limit+1 行(表头 + limit)即停,避免把整份大结果读进内存。
+    """
+    import codecs as _codecs
+    import csv as _csv
+    from itertools import islice as _islice
+
+    resp = _minio().get_object(settings.MINIO_BUCKET, object_key)
+    try:
+        reader = _csv.reader(_codecs.getreader("utf-8-sig")(resp))  # 边读边解码去 BOM
+        head = list(_islice(reader, limit + 1))
+    finally:
+        resp.close()
+        resp.release_conn()
+    if not head:
+        return [], []
+    return head[0], head[1:]
+
+
 def presigned_url(object_key: str, filename: str | None = None) -> str:
     from datetime import timedelta
 

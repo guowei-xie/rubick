@@ -23,19 +23,36 @@ http.interceptors.response.use(
   }
 );
 
+// 取值方式:text/number/date=单值;enum=枚举;date_range/number_range=范围。
+// 兼容后端旧值 string/daterange/multi_enum(前端用 norm() 归一)。
+export type ParamType =
+  | "text"
+  | "number"
+  | "date"
+  | "enum"
+  | "date_range"
+  | "number_range"
+  | "string"
+  | "daterange"
+  | "multi_enum";
+
 export interface ParamDef {
   name: string;
-  type: "string" | "number" | "date" | "daterange" | "enum" | "multi_enum";
+  type: ParamType;
   label?: string;
+  description?: string; // 变量说明,业务填参时提示
   required?: boolean;
   default?: any;
   options?: string[];
+  enum_sql?: string; // 取候选值的独立 SELECT(业务点「获取枚举值」时跑)
+  column?: string; // 表中字段名(展示/备注)
+  all_when_empty?: boolean; // 兼容旧数据
 }
 
 export interface User {
   id: number;
   name: string;
-  role: "user" | "analyst" | "admin";
+  role: "user" | "admin";
   email?: string;
   department_id?: number;
 }
@@ -60,6 +77,21 @@ export const publishTemplate = (id: number, note?: string) =>
 export const archiveTemplate = (id: number) =>
   http.post(`/templates/${id}/archive`).then((r) => r.data);
 export const testRun = (data: any) => http.post("/templates/test-run", data).then((r) => r.data);
+// 自动发现变量对应字段的候选枚举值(后台 SELECT DISTINCT)
+export const fetchEnumValues = (data: { datasource_id: number; sql_text: string; variable: string }) =>
+  http.post("/templates/enum-values", data).then((r) => r.data);
+// 分析师测试「枚举值获取 SQL」
+export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
+  http.post("/templates/enum-sql", data).then((r) => r.data);
+// 业务填参:跑某变量已配置的 enum_sql 取候选值
+export const taskEnumValues = (templateId: number, variable: string) =>
+  http.get(`/tasks/${templateId}/enum-values`, { params: { variable } }).then((r) => r.data);
+
+// ---- tasks(统一任务列表)----
+export const listTasks = () => http.get("/tasks").then((r) => r.data);
+export const taskRunRecords = (id: number) =>
+  http.get(`/tasks/${id}/jobs`).then((r) => r.data);
+export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((r) => r.data);
 
 // ---- query ----
 export const runQuery = (template_id: number, values: any) =>
@@ -82,6 +114,10 @@ export const readNotification = (id: number) =>
 // ---- datasources ----
 export const listDatasources = () => http.get("/datasources").then((r) => r.data);
 export const createDatasource = (data: any) => http.post("/datasources", data).then((r) => r.data);
+export const updateDatasource = (id: number, data: any) =>
+  http.put(`/datasources/${id}`, data).then((r) => r.data);
+export const deleteDatasource = (id: number) =>
+  http.delete(`/datasources/${id}`).then((r) => r.data);
 export const testDatasource = (id: number) =>
   http.post(`/datasources/${id}/test`).then((r) => r.data);
 

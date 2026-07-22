@@ -8,13 +8,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
-from app.models.user import ROLE_ADMIN, ROLE_ANALYST, ROLE_USER, User
+from app.models.user import ROLE_ADMIN, ROLE_USER, User
 from app.schemas.common import UserOut
 from app.services import feishu_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-_ROLES = {ROLE_USER, ROLE_ANALYST, ROLE_ADMIN}
+_ROLES = {ROLE_USER, ROLE_ADMIN}
 
 
 class RoleIn(BaseModel):
@@ -27,7 +27,8 @@ def list_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    stmt = select(User).order_by(User.id)
+    # 只展示登录过的用户(扫码进来才会出现);未登录的通讯录成员不显示
+    stmt = select(User).where(User.last_login_at.is_not(None)).order_by(User.last_login_at.desc())
     if q:
         stmt = stmt.where(User.name.like(f"%{q}%"))
     return list(db.scalars(stmt))

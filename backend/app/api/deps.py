@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
 from app.core.security import decode_access_token
-from app.models.user import ROLE_ADMIN, ROLE_ANALYST, User
+from app.models.user import ROLE_ADMIN, User
 
 
 def get_current_user(
@@ -22,12 +22,6 @@ def get_current_user(
     user = db.get(User, int(payload["sub"]))
     if user is None or not user.is_active:
         raise UnauthorizedError("用户不存在或已停用")
-    return user
-
-
-def require_analyst(user: User = Depends(get_current_user)) -> User:
-    if user.role not in (ROLE_ANALYST, ROLE_ADMIN):
-        raise PermissionDeniedError("需要商分或管理员权限")
     return user
 
 

@@ -1,6 +1,8 @@
 """登录:mock 或飞书 OAuth,统一产出平台 JWT。"""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,12 @@ def _upsert_user(db: Session, profile: dict) -> User:
         if ident & allow:
             user.role = ROLE_ADMIN
 
+    user.last_login_at = datetime.now(timezone.utc)  # 标记已登录 → 才会出现在用户管理
+    # 存 user_access_token(用于按本人可见范围搜通讯录);exp 用 naive UTC 便于比较
+    if profile.get("access_token"):
+        user.feishu_token = profile["access_token"]
+        user.feishu_refresh_token = profile.get("refresh_token")
+        user.feishu_token_exp = datetime.utcnow() + timedelta(seconds=int(profile.get("expires_in", 7000)))
     db.commit()
     db.refresh(user)
     return user
@@ -42,4 +50,7 @@ def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
     user = db.scalar(select(User).where(User.feishu_open_id == feishu_open_id))
     if user is None:
         raise UnauthorizedError(f"未找到用户:{feishu_open_id}(请先运行 seed)")
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
     return create_access_token(str(user.id)), user

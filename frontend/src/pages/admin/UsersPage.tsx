@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Input, message, Select, Space, Table, Tooltip } from "antd";
-import { SyncOutlined } from "@ant-design/icons";
-import { errMsg, listUsers, setUserRole, syncContacts } from "../../api";
+import { Card, Input, message, Select, Table } from "antd";
+import { errMsg, listUsers, setUserRole } from "../../api";
 import StatusTag, { ROLE } from "../../components/StatusTag";
 
 const ROLE_OPTS = Object.entries(ROLE).map(([value, { label }]) => ({ value, label }));
@@ -9,7 +8,6 @@ const ROLE_OPTS = Object.entries(ROLE).map(([value, { label }]) => ({ value, lab
 export default function UsersPage() {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [q, setQ] = useState("");
 
   const load = () => {
@@ -30,27 +28,16 @@ export default function UsersPage() {
     }
   };
 
-  const doSync = async () => {
-    setSyncing(true);
-    const hide = message.loading("正在从飞书同步通讯录…", 0);
-    try {
-      const r = await syncContacts();
-      hide();
-      message.success(`同步完成:部门 ${r.departments} 个,用户 ${r.users} 人`);
-      load();
-    } catch (e: any) {
-      hide();
-      message.error(errMsg(e, "同步失败(检查飞书通讯录权限是否开通)"));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const columns = [
     { title: "ID", dataIndex: "id", width: 70 },
-    { title: "姓名", dataIndex: "name" },
-    { title: "邮箱", dataIndex: "email", render: (e: string) => e || "-" },
-    { title: "部门ID", dataIndex: "department_id", width: 90, render: (d: number) => d || "-" },
+    { title: "姓名", dataIndex: "name", width: 180, ellipsis: true },
+    { title: "邮箱", dataIndex: "email", width: 220, ellipsis: true, render: (e: string) => e || "-" },
+    {
+      title: "最近登录",
+      dataIndex: "last_login_at",
+      width: 160,
+      render: (t: string) => (t ? t.replace("T", " ").slice(0, 19) : "-"),
+    },
     {
       title: "当前角色",
       dataIndex: "role",
@@ -76,23 +63,24 @@ export default function UsersPage() {
     <Card
       title="用户管理 / 角色分配"
       extra={
-        <Space>
-          <Input.Search
-            placeholder="搜姓名"
-            allowClear
-            style={{ width: 180 }}
-            onSearch={load}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <Tooltip title="从飞书拉取部门和用户(需应用已开通通讯录读取权限)">
-            <Button icon={<SyncOutlined />} loading={syncing} onClick={doSync}>
-              同步飞书通讯录
-            </Button>
-          </Tooltip>
-        </Space>
+        <Input.Search
+          placeholder="搜姓名"
+          allowClear
+          style={{ width: 200 }}
+          onSearch={load}
+          onChange={(e) => setQ(e.target.value)}
+        />
       }
     >
-      <Table rowKey="id" loading={loading} dataSource={rows} columns={columns} />
+      <Table
+        rowKey="id"
+        loading={loading}
+        dataSource={rows}
+        columns={columns}
+        size="middle"
+        locale={{ emptyText: "还没有用户登录过。用户通过飞书扫码登录后会自动出现在这里(默认业务使用者)。" }}
+        pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 人(仅登录过的)` }}
+      />
     </Card>
   );
 }

@@ -6,21 +6,18 @@ import NotificationBell from "./NotificationBell";
 
 const { Header, Content } = Layout;
 
-const ROLE_LABEL: Record<string, string> = { user: "业务用户", analyst: "商分", admin: "管理员" };
+const ROLE_LABEL: Record<string, string> = { user: "业务使用者", admin: "管理员" };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
 
-  const items = [{ key: "/templates", label: "取数模板" }, { key: "/jobs", label: "我的任务" }];
-  if (user?.role === "analyst" || user?.role === "admin")
-    items.push({ key: "/studio", label: "商分工作台" });
+  const items = [{ key: "/tasks", label: "任务列表" }];
   if (user?.role === "admin")
     items.push(
       { key: "/admin/users", label: "用户管理" },
       { key: "/admin/datasources", label: "数据源" },
-      { key: "/admin/permissions", label: "权限" },
       { key: "/admin/audit", label: "审计" }
     );
 

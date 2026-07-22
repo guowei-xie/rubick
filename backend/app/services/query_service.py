@@ -87,9 +87,12 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
         try:
             bound = params_service.validate_and_bind(version.params, job.params)
             validate_readonly(version.sql_text, tmpl.dialect)
+            sql_text, bound = params_service.expand_list_params(version.sql_text, bound)  # 展开正选 IN
+            job.executed_sql = params_service.render_sql(sql_text, bound)  # 存下最终 SQL 供查阅
+            db.commit()
             connector = get_connector(ds)
             res = connector.execute(
-                version.sql_text, bound,
+                sql_text, bound,
                 timeout_seconds=settings.QUERY_TIMEOUT_SECONDS,
                 max_rows=settings.MAX_RESULT_ROWS,
             )
@@ -108,7 +111,8 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
                 db, user=user, action="run_query", resource_type=RESOURCE_TEMPLATE,
                 resource_id=tmpl.id,
                 detail={"template_version_id": version.id, "datasource": ds.name,
-                        "params": job.params, "row_count": res.row_count, "truncated": res.truncated},
+                        "params": job.params, "row_count": res.row_count,
+                        "truncated": res.truncated, "executed_sql": (job.executed_sql or "")[:20000]},
                 ip=ip,
             )
         except Exception as e:
@@ -117,7 +121,10 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             db.commit()
             audit_service.log(
                 db, user=user, action="run_query_failed", resource_type=RESOURCE_TEMPLATE,
-                resource_id=tmpl.id, detail={"error": str(e)[:500], "params": job.params}, ip=ip,
+                resource_id=tmpl.id,
+                detail={"error": str(e)[:500], "params": job.params,
+                        "executed_sql": (job.executed_sql or "")[:20000]},
+                ip=ip,
             )
 
         notify_service.notify_job_done(db, job)
@@ -125,8 +132,15 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
         db.close()
 
 
+def can_view_job_result(db: Session, user: User, job: QueryJob) -> bool:
+    """能查看/下载某次运行结果:发起人本人、管理员,或该项目的作者(可看本项目全部运行)。"""
+    if permission_service.can_access_job(user, job):
+        return True
+    return permission_service.is_template_owner(user, db.get(SqlTemplate, job.template_id))
+
+
 def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:
-    if not permission_service.can_access_job(user, job):
+    if not can_view_job_result(db, user, job):
         raise PermissionDeniedError("无权下载该任务结果")
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("任务无可下载结果")
