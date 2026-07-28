@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Checkbox, Modal, Radio, Select, Space, Table, Tag, Tooltip, message } from "antd";
-import { SyncOutlined } from "@ant-design/icons";
+import { Avatar, Button, Checkbox, Modal, Radio, Select, Space, Table, Tag, message } from "antd";
 import {
   errMsg,
   grantPermission,
@@ -8,7 +7,6 @@ import {
   lookupDepartments,
   lookupUsers,
   revokePermission,
-  syncContacts,
 } from "../api";
 
 const ALL_ACTIONS = ["view", "run", "download"];
@@ -31,7 +29,6 @@ export default function GrantModal({
   const [options, setOptions] = useState<any[]>([]);
   const [actions, setActions] = useState<string[]>(ALL_ACTIONS);
   const [query, setQuery] = useState("");
-  const [syncing, setSyncing] = useState(false);
 
   const loadGrants = () => {
     if (templateId != null) listPermissions(String(templateId)).then(setGrants);
@@ -43,7 +40,20 @@ export default function GrantModal({
       setOptions(
         rows.map((r) => ({
           value: String(r.id),
-          label: subjectType === "user" ? `${r.name}${r.email ? ` (${r.email})` : ""}` : r.name,
+          // 供 showSearch 兜底过滤 & 选中后回填文本用
+          title: subjectType === "user"
+            ? [r.name, r.email].filter(Boolean).join(" ")
+            : r.name,
+          label:
+            subjectType === "user" ? (
+              <Space size={6}>
+                <Avatar size={20} src={r.avatar}>{(r.name || "?").slice(0, 1)}</Avatar>
+                <span>{r.name}</span>
+                {r.email && <span style={{ color: "#999" }}>{r.email}</span>}
+              </Space>
+            ) : (
+              r.name
+            ),
         }))
       )
     );
@@ -58,23 +68,6 @@ export default function GrantModal({
     setQuery(q);
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => runFetch(q), 350);
-  };
-
-  // 同步飞书通讯录目录(供授权搜索用;不影响「用户管理」——那边只显示登录过的)
-  const doSync = async () => {
-    setSyncing(true);
-    const hide = message.loading("正在同步飞书通讯录…", 0);
-    try {
-      const r = await syncContacts();
-      hide();
-      message.success(`同步完成:部门 ${r.departments} 个,用户 ${r.users} 人`);
-      search(query); // 用当前关键词重搜
-    } catch (e: any) {
-      hide();
-      message.error(errMsg(e, "同步失败(检查飞书应用是否已开通通讯录读取、可见范围是否为全员)"));
-    } finally {
-      setSyncing(false);
-    }
   };
 
   // 打开或切换模板时拉取现有授权
@@ -184,13 +177,6 @@ export default function GrantModal({
               subjectType === "user" ? "没搜到?可能通讯录未同步或不在可见范围" : "无匹配部门"
             }
           />
-          {subjectType === "user" && (
-            <Tooltip title="从飞书同步通讯录目录(需应用已开通通讯录读取、可见范围设为全员)。同步的人不会进「用户管理」,只用于这里搜索。">
-              <Button icon={<SyncOutlined />} loading={syncing} onClick={doSync}>
-                同步通讯录
-              </Button>
-            </Tooltip>
-          )}
           <Checkbox.Group
             options={ALL_ACTIONS.map((a) => ({ label: a, value: a }))}
             value={actions}

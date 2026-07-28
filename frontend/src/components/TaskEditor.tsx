@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Divider, Form, Input, message, Modal, Select, Space, Tag, Typography } from "antd";
+import { Button, Card, Divider, Form, Input, message, Modal, Select, Space, Typography } from "antd";
 import {
   createTemplate,
   errMsg,
@@ -266,17 +266,6 @@ export default function TaskEditor({
                       <Form.Item {...f} name={[f.name, "label"]} label="展示名称" style={{ marginBottom: 0 }}>
                         <Input placeholder="给业务看的名字" style={{ width: 160 }} />
                       </Form.Item>
-                      <Form.Item noStyle shouldUpdate>
-                        {() => {
-                          const lk = listKind(form.getFieldValue("sql_text"), form.getFieldValue(["params", f.name, "name"]));
-                          const label = lk === "not_in" ? "列表(NOT IN,多选)" : lk === "in" ? "列表(IN,多选)" : "单值";
-                          return (
-                            <Tag color={lk === "not_in" ? "orange" : lk === "in" ? "blue" : "default"} style={{ marginBottom: 4 }}>
-                              {label}
-                            </Tag>
-                          );
-                        }}
-                      </Form.Item>
                     </Space>
                   }
                 >
@@ -286,8 +275,10 @@ export default function TaskEditor({
                       const k = String(f.key);
                       const sqlKey = `${k}:sql`;
                       const descKey = `${k}:desc`;
+                      const pasteKey = `${k}:paste`;
                       const sqlOpen = isExpanded(sqlKey, !!form.getFieldValue(["params", f.name, "enum_sql"]));
                       const descOpen = isExpanded(descKey, !!form.getFieldValue(["params", f.name, "description"]));
+                      const pasteOpen = isExpanded(pasteKey, false);
                       return (
                         <Space direction="vertical" size={8} style={{ width: "100%" }}>
                           {type === "multi_enum" ? (
@@ -323,15 +314,24 @@ export default function TaskEditor({
                               <div>
                                 <div style={{ marginBottom: 4 }}>
                                   <span style={{ fontSize: 13 }}>测试枚举值(仅测试运行用,不保存)</span>{" "}
-                                  <PasteListButton
-                                    onAdd={(vals) => {
-                                      const cur = form.getFieldValue(["params", f.name, "test_values"]) || [];
-                                      form.setFieldValue(
-                                        ["params", f.name, "test_values"],
-                                        Array.from(new Set([...cur, ...vals]))
-                                      );
-                                    }}
-                                  />
+                                  {pasteOpen ? (
+                                    <>
+                                      <PasteListButton
+                                        onAdd={(vals) => {
+                                          const cur = form.getFieldValue(["params", f.name, "test_values"]) || [];
+                                          form.setFieldValue(
+                                            ["params", f.name, "test_values"],
+                                            Array.from(new Set([...cur, ...vals]))
+                                          );
+                                        }}
+                                      />
+                                      <Button type="link" size="small" onClick={() => setExpanded(pasteKey, false)}>收起</Button>
+                                    </>
+                                  ) : (
+                                    <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpanded(pasteKey, true)}>
+                                      + 上传/粘贴列表
+                                    </Button>
+                                  )}
                                 </div>
                                 <Form.Item {...f} name={[f.name, "test_values"]} noStyle>
                                   <Select

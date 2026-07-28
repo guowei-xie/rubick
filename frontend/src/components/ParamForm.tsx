@@ -1,13 +1,10 @@
 import { useState } from "react";
-import { Button, DatePicker, Form, Input, InputNumber, message, Modal, Select, Space, Tag, Tooltip, Upload } from "antd";
+import { Button, DatePicker, Form, Input, InputNumber, message, Modal, Select, Space, Upload } from "antd";
 import { CloudUploadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { errMsg, ParamDef, taskEnumValues } from "../api";
 
 const { RangePicker } = DatePicker;
-
-// 「全选」哨兵:该字段不筛选(后端把谓词中和为 1=1),不跑 SQL、不生成 IN
-export const ALL_VALUES = "__RUBIC_ALL__";
 
 // 兼容旧类型名(把历史类型别名归一到当前取值方式);多处复用
 export const norm = (t?: string): string =>
@@ -72,7 +69,7 @@ export function PasteListButton({ onAdd }: { onAdd: (vals: string[]) => void }) 
   );
 }
 
-/** 枚举/列表多选控件:自由输入 / 获取枚举值 / 上传粘贴 / 全选(=不筛该字段)。 */
+/** 枚举/列表多选控件:自由输入 / 获取枚举值 / 上传粘贴,统一按正选 IN 筛选。 */
 function MultiEnumField({
   pd,
   templateId,
@@ -81,13 +78,12 @@ function MultiEnumField({
 }: {
   pd: ParamDef;
   templateId?: number;
-  value?: string[] | string; // 数组=具体值;ALL_VALUES=全选(不筛)
-  onChange?: (v: string[] | string) => void;
+  value?: string[];
+  onChange?: (v: string[]) => void;
 }) {
   const [options, setOptions] = useState<string[]>(pd.options || []);
   const [loading, setLoading] = useState(false);
 
-  const isAll = value === ALL_VALUES;
   const list: string[] = Array.isArray(value) ? value : [];
 
   const merge = (vals: string[]) => {
@@ -112,16 +108,6 @@ function MultiEnumField({
     }
   };
 
-  // 全选态:不展示输入框,只提示「全部(不筛选)」
-  if (isAll) {
-    return (
-      <Space>
-        <Tag color="blue">全部(不筛选此字段)</Tag>
-        <Button size="small" onClick={() => onChange?.([])}>改为选择具体值</Button>
-      </Space>
-    );
-  }
-
   return (
     <div>
       <Select
@@ -140,9 +126,6 @@ function MultiEnumField({
           </Button>
         )}
         <PasteListButton onAdd={merge} />
-        <Tooltip title="不对该字段做筛选(相当于全部);不跑 SQL、不生成大 IN">
-          <Button size="small" onClick={() => onChange?.(ALL_VALUES)}>全选</Button>
-        </Tooltip>
         {list.length ? <span style={{ color: "#888", fontSize: 12 }}>已选 {list.length} 个</span> : null}
       </Space>
     </div>
@@ -170,7 +153,7 @@ export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: numb
   const rules = optional ? [] : [{ required: true, message: `请填写${baseLabel}` }];
   const label = `${baseLabel}${optional ? "(选填)" : ""}`;
 
-  // 枚举/列表筛选:输入/获取枚举/全选/上传,统一按正选 IN 筛选
+  // 枚举/列表筛选:输入/获取枚举/上传,统一按正选 IN 筛选
   if (kind === "multi_enum") {
     return (
       <Form.Item
@@ -178,7 +161,7 @@ export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: numb
         label={label}
         required={!optional}
         extra={pd.description || undefined}
-        rules={optional ? [] : [{ required: true, message: `请为「${baseLabel}」选值/填写,或点全选` }]}
+        rules={optional ? [] : [{ required: true, message: `请为「${baseLabel}」选值或填写` }]}
       >
         <MultiEnumField pd={pd} templateId={templateId} />
       </Form.Item>

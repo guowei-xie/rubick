@@ -145,12 +145,16 @@ def search_users(query: str, user_access_token: str) -> list[dict]:
     resp = _client.get(
         f"{_BASE}/search/v1/user",
         headers={"Authorization": f"Bearer {user_access_token}"},
-        params={"query": query, "page_size": 20},
+        params={"query": query, "page_size": 100},
     )
     resp.raise_for_status()
     found = resp.json().get("data", {}).get("users", []) or []
     open_ids = [u.get("open_id") for u in found if u.get("open_id")]
-    meta = _batch_get_users(open_ids)
+    # 补姓名是尽力而为:失败不能连累搜索结果(否则会被外层回退成「本地库中文 LIKE」,拼音就搜不到了)
+    try:
+        meta = _batch_get_users(open_ids)
+    except Exception:  # noqa: BLE001
+        meta = {}
     out = []
     for u in found:
         oid = u.get("open_id")
@@ -162,10 +166,21 @@ def search_users(query: str, user_access_token: str) -> list[dict]:
                 "open_id": oid,
                 "name": m.get("name") or u.get("name") or oid,
                 "email": m.get("email") or m.get("enterprise_email"),
-                "avatar": (m.get("avatar") or {}).get("avatar_72") if isinstance(m.get("avatar"), dict) else u.get("avatar"),
+                # 补齐资料和 search 原始返回里 avatar 都是对象({avatar_72/240/…}),
+                # 统一取 avatar_72 字符串;取不到落 None,绝不把 dict 写进库(否则 upsert 会炸)
+                "avatar": _avatar_url(m.get("avatar") or u.get("avatar")),
+                # user_id 即企业工号(如 HT13212);search 直接返回,批量接口作兜底
+                "employee_id": u.get("user_id") or m.get("user_id"),
             }
         )
     return out
+
+
+def _avatar_url(avatar) -> str | None:
+    """飞书头像可能是 {avatar_72/240/640/origin} 对象或已是字符串;统一取一个字符串 URL。"""
+    if isinstance(avatar, dict):
+        return avatar.get("avatar_72") or avatar.get("avatar_240") or avatar.get("avatar_origin")
+    return avatar or None
 
 
 def _batch_get_users(open_ids: list[str]) -> dict[str, dict]:

@@ -38,7 +38,7 @@ def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User
         )
         ids = [int(x) for x in granted if x and x.isdigit()]
         rows = list(db.scalars(select(User).where(User.id.in_(ids or [-1])).order_by(User.name).limit(50)))
-        return [{"id": u.id, "name": u.name, "email": u.email, "department_id": u.department_id} for u in rows]
+        return [_user_row(u) for u in rows]
 
     # 有关键词:优先用当前管理员的 user_access_token 实时搜全公司;拿不到/失败则回退本地目录
     token = feishu_service.valid_user_token(db, user)
@@ -52,13 +52,25 @@ def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User
                     "avatar": u.get("avatar"),
                 })
                 db.flush()
-                out.append({"id": row.id, "name": row.name, "email": row.email, "department_id": row.department_id})
+                # 工号不落库,直接透传飞书搜索结果供前端展示;授权仍用 DB id
+                out.append(_user_row(row, employee_id=u.get("employee_id")))
             db.commit()
             return out
         except Exception:  # noqa: BLE001 飞书失败 → 回退本地
             db.rollback()
     rows = _local_search(db, q)
-    return [{"id": u.id, "name": u.name, "email": u.email, "department_id": u.department_id} for u in rows]
+    return [_user_row(u) for u in rows]
+
+
+def _user_row(u: User, employee_id: str | None = None) -> dict:
+    return {
+        "id": u.id,
+        "name": u.name,
+        "email": u.email,
+        "avatar": u.avatar,
+        "employee_id": employee_id,
+        "department_id": u.department_id,
+    }
 
 
 @router.get("/departments")

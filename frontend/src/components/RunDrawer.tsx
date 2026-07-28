@@ -55,11 +55,16 @@ export default function RunDrawer({
     setRunning(true);
     setJob(null);
     setPreview(null);
-    const hide = message.loading("已提交,排队执行中…", 0);
+    const hide = message.loading("已提交,执行中…(复杂查询可能要几分钟,请稍候)", 0);
     try {
       let j = await runQuery(task.id, serializeValues(params, values));
-      for (let i = 0; i < 150 && (j.status === "queued" || j.status === "running"); i++) {
-        await new Promise((r) => setTimeout(r, 800));
+      // 有些 Hive 查询要跑十几分钟,轮询窗口放宽到 20 分钟;用退避间隔(1s→4s)减少请求
+      const started = Date.now();
+      const MAX_WAIT_MS = 20 * 60 * 1000;
+      let delay = 1000;
+      while ((j.status === "queued" || j.status === "running") && Date.now() - started < MAX_WAIT_MS) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay + 500, 4000);
         j = await getJob(j.id);
       }
       hide();
@@ -71,7 +76,7 @@ export default function RunDrawer({
       } else if (j.status === "failed") {
         message.error(j.error || "取数失败");
       } else {
-        message.warning("任务仍在执行,可稍后到运行记录查看");
+        message.warning("查询仍在执行,完成后会在「运行记录」和通知里,可稍后查看并下载");
       }
     } catch (e: any) {
       hide();

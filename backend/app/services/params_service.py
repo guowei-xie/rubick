@@ -26,9 +26,6 @@ class _Unfiltered:
 
 UNFILTERED = _Unfiltered()
 
-# 前端「全选」哨兵:该字段不筛选(谓词中和为 1=1),与前端 ParamForm.ALL_VALUES 一致
-ALL_VALUES = "__RUBIC_ALL__"
-
 
 def _kind(t: str | None) -> str:
     return _ALIASES.get(t or "text", t or "text")
@@ -55,11 +52,6 @@ def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any])
         kind = _kind(pd.type)
         label = pd.label or pd.name
         val = values.get(pd.name, pd.default)
-
-        # 全选:该字段不筛选(不跑 SQL、不生成 IN,执行前谓词中和为 1=1)
-        if kind == "multi_enum" and val == ALL_VALUES:
-            bound[pd.name] = UNFILTERED
-            continue
 
         empty = val is None or val == "" or (isinstance(val, (list, tuple)) and len(val) == 0)
 
@@ -119,7 +111,9 @@ def expand_list_params(sql: str, bound: dict[str, Any]) -> tuple[str, dict[str, 
         esc = re.escape(name)
         if isinstance(val, _Unfiltered):
             new_sql = re.sub(rf"[\w.`]+\s*=\s*:{esc}\b", "1=1", new_sql, flags=re.I)
-            new_sql = re.sub(rf"[\w.`]+\s+IN\s*\(\s*:{esc}\s*\)", "1=1", new_sql, flags=re.I)
+            # (?:NOT\s+)? 让 `字段 NOT IN (:var)` 也整体中和为 1=1;否则 [\w.`]+ 会把 NOT
+            # 误当字段,只替换 "NOT IN (:var)" 而残留真正的列名,生成非法 SQL(如 `user_id 1=1`)
+            new_sql = re.sub(rf"[\w.`]+\s+(?:NOT\s+)?IN\s*\(\s*:{esc}\s*\)", "1=1", new_sql, flags=re.I)
             new_sql = re.sub(rf":{esc}\b", "NULL", new_sql)  # 兜底
             continue
         if not isinstance(val, (list, tuple)):
