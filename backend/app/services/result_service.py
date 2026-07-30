@@ -1,47 +1,28 @@
-"""结果落地:CSV 序列化 + MinIO 上传 + 签名下载链接。"""
+"""结果落地:CSV 序列化 + 本地文件系统存储 + 预览 + 过期清理。
+
+结果文件存放在 settings.RESULT_DIR 下,object_key 即相对该目录的路径(如 jobs/12/xxx.csv)。
+下载通过带签名 token 的后端端点(见 query 路由),不再依赖对象存储签名 URL。
+"""
 from __future__ import annotations
 
+import codecs
 import csv
 import io
-
-from minio import Minio
-from minio.commonconfig import ENABLED, Filter
-from minio.lifecycleconfig import Expiration, LifecycleConfig, Rule
+import time
+from itertools import islice
+from pathlib import Path
 
 from app.connectors.base import QueryResult
 from app.core.config import settings
 
-_client: Minio | None = None
 
-
-def _ensure_lifecycle(client: Minio) -> None:
-    """给结果桶设置生命周期规则:N 天后自动过期删除,存储量因此有上界。"""
-    try:
-        rule = Rule(
-            ENABLED,
-            rule_id="rubic-result-expiry",
-            rule_filter=Filter(prefix=""),
-            expiration=Expiration(days=settings.RESULT_RETENTION_DAYS),
-        )
-        client.set_bucket_lifecycle(settings.MINIO_BUCKET, LifecycleConfig([rule]))
-    except Exception:
-        # 个别 MinIO/S3 兼容实现可能不支持,失败不阻断主流程(可另配定时清理)
-        pass
-
-
-def _minio() -> Minio:
-    global _client
-    if _client is None:
-        _client = Minio(
-            settings.MINIO_ENDPOINT,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_SECURE,
-        )
-        if not _client.bucket_exists(settings.MINIO_BUCKET):
-            _client.make_bucket(settings.MINIO_BUCKET)
-        _ensure_lifecycle(_client)
-    return _client
+def _abs_path(object_key: str) -> Path:
+    """object_key -> 结果目录下的绝对路径(防目录穿越)。"""
+    base = settings.result_dir_path.resolve()
+    p = (base / object_key).resolve()
+    if base not in p.parents and p != base:
+        raise ValueError("非法的结果路径")
+    return p
 
 
 def to_csv_bytes(result: QueryResult) -> bytes:
@@ -55,14 +36,18 @@ def to_csv_bytes(result: QueryResult) -> bytes:
 
 
 def upload_csv(object_key: str, data: bytes) -> None:
-    client = _minio()
-    client.put_object(
-        settings.MINIO_BUCKET,
-        object_key,
-        io.BytesIO(data),
-        length=len(data),
-        content_type="text/csv; charset=utf-8",
-    )
+    path = _abs_path(object_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def exists(object_key: str) -> bool:
+    return _abs_path(object_key).exists()
+
+
+def local_path(object_key: str) -> Path:
+    """供下载端点做流式响应用。"""
+    return _abs_path(object_key)
 
 
 def read_csv_preview(object_key: str, limit: int = 50) -> tuple[list[str], list[list]]:
@@ -70,31 +55,29 @@ def read_csv_preview(object_key: str, limit: int = 50) -> tuple[list[str], list[
 
     流式读取,取够 limit+1 行(表头 + limit)即停,避免把整份大结果读进内存。
     """
-    import codecs as _codecs
-    import csv as _csv
-    from itertools import islice as _islice
-
-    resp = _minio().get_object(settings.MINIO_BUCKET, object_key)
-    try:
-        reader = _csv.reader(_codecs.getreader("utf-8-sig")(resp))  # 边读边解码去 BOM
-        head = list(_islice(reader, limit + 1))
-    finally:
-        resp.close()
-        resp.release_conn()
+    path = _abs_path(object_key)
+    if not path.exists():
+        return [], []
+    with path.open("rb") as fp:
+        reader = csv.reader(codecs.getreader("utf-8-sig")(fp))  # 边读边解码去 BOM
+        head = list(islice(reader, limit + 1))
     if not head:
         return [], []
     return head[0], head[1:]
 
 
-def presigned_url(object_key: str, filename: str | None = None) -> str:
-    from datetime import timedelta
-
-    extra = None
-    if filename:
-        extra = {"response-content-disposition": f'attachment; filename="{filename}"'}
-    return _minio().presigned_get_object(
-        settings.MINIO_BUCKET,
-        object_key,
-        expires=timedelta(seconds=settings.DOWNLOAD_URL_EXPIRE_SECONDS),
-        response_headers=extra,
-    )
+def cleanup_expired() -> int:
+    """删除超过保留期的结果文件,返回删除个数。worker 定期调用。"""
+    base = settings.result_dir_path
+    if not base.exists():
+        return 0
+    cutoff = time.time() - settings.RESULT_RETENTION_DAYS * 86400
+    removed = 0
+    for f in base.rglob("*.csv"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed

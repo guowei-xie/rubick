@@ -39,6 +39,8 @@ class TestRunIn(BaseModel):
     params: list[ParamDef] = []
     values: dict[str, Any] = {}
     limit: int = 100
+    # 关联到某个已存在任务时,试跑会落一条 source=test 的运行记录;新建未保存任务时为空,不留痕
+    template_id: int | None = None
 
 
 class EnumValuesIn(BaseModel):

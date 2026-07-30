@@ -4,14 +4,14 @@ from typing import Optional
 from sqlalchemy import BigInteger, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 
 class AuditLog(Base, TimestampMixin):
     """一次可审计动作:谁、何时、干了什么、命中哪个资源。仅追加,不更新不删除。"""
 
-    __tablename__ = "audit_logs"
+    __tablename__ = tbl("audit_logs")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[Optional[int]] = mapped_column(BigInteger, index=True, nullable=True)
@@ -27,7 +27,7 @@ class AuditLog(Base, TimestampMixin):
 class DownloadEvent(Base, TimestampMixin):
     """结果下载事件,单列以便高频检索与配额统计。"""
 
-    __tablename__ = "download_events"
+    __tablename__ = tbl("download_events")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)

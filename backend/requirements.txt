@@ -9,8 +9,6 @@ pydantic-settings==2.7.1
 eval_type_backport==0.2.0  # 让 Python 3.9 也能解析 `X | None` 联合类型语法
 python-jose[cryptography]==3.3.0
 httpx==0.28.1
-minio==7.2.13
-celery[redis]==5.4.0
 sqlglot==26.0.1
 python-multipart==0.0.20
 # Hive connector(LDAP/PLAIN 走 pure-sasl,免编译 C 版 sasl)

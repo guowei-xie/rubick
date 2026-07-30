@@ -24,6 +24,7 @@ class JobOut(BaseModel):
     user_name: str | None = None
     params: dict[str, Any] = {}
     status: str
+    source: str = "run"  # run=正式取数,test=试跑
     row_count: int | None = None
     duration_ms: int | None = None
     error: str | None = None

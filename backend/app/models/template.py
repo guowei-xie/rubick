@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 # 模板生命周期
@@ -18,7 +18,7 @@ STATUS_ARCHIVED = "archived"
 class SqlTemplate(Base, TimestampMixin):
     """模板主体:一条取数需求对应的可复用 SQL,含元信息与当前状态。"""
 
-    __tablename__ = "sql_templates"
+    __tablename__ = tbl("sql_templates")
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -26,15 +26,15 @@ class SqlTemplate(Base, TimestampMixin):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
 
-    datasource_id: Mapped[int] = mapped_column(ForeignKey("data_sources.id"))
+    datasource_id: Mapped[int] = mapped_column(ForeignKey(tbl("data_sources.id")))
     dialect: Mapped[str] = mapped_column(String(32))  # hive / mysql,与数据源一致
 
     status: Mapped[str] = mapped_column(String(32), default=STATUS_DRAFT)
-    author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 
     # 指向当前"已发布"的版本;未发布时为 None
     published_version_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("template_versions.id", use_alter=True, name="fk_published_version"),
+        ForeignKey(tbl("template_versions.id"), use_alter=True, name=tbl("fk_published_version")),
         nullable=True,
     )
 
@@ -64,17 +64,17 @@ class SqlTemplate(Base, TimestampMixin):
 class TemplateVersion(Base, TimestampMixin):
     """模板的一个不可变版本:SQL 原文快照 + 参数定义 + 验收记录。"""
 
-    __tablename__ = "template_versions"
+    __tablename__ = tbl("template_versions")
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     template_id: Mapped[int] = mapped_column(
-        ForeignKey("sql_templates.id"), index=True
+        ForeignKey(tbl("sql_templates.id")), index=True
     )
     version_no: Mapped[int] = mapped_column(Integer)  # 模板内自增
     sql_text: Mapped[str] = mapped_column(Text)
     # 参数定义:[{name,type,required,default,label,options}]
     params: Mapped[list] = mapped_column(JSON, default=list)
-    author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 
     # 验收留痕
     accepted_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import BigInteger, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 # 主体类型
@@ -27,7 +27,7 @@ ACTION_DOWNLOAD = "download"
 
 
 class Permission(Base, TimestampMixin):
-    __tablename__ = "permissions"
+    __tablename__ = tbl("permissions")
     __table_args__ = (
         UniqueConstraint(
             "subject_type", "subject_id", "resource_type", "resource_id", "action",

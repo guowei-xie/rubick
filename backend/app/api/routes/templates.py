@@ -130,9 +130,9 @@ def archive(template_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 @router.post("/test-run")
-def test_run(data: TestRunIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """商分自检试跑,不落库,返回样例行。"""
-    return template_service.test_run(db, data)
+def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    """作者自检试跑:返回样例行;关联到已存在任务时同时落一条 source=test 的运行记录。"""
+    return template_service.test_run(db, data, user)
 
 
 @router.post("/enum-values", response_model=EnumValuesOut)

@@ -1,4 +1,8 @@
 .env
+config.ini
+data/
+*.pid
+*.log
 __pycache__/
 *.pyc
 .venv/

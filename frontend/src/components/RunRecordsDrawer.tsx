@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Drawer, message, Modal, Space, Table } from "antd";
+import { Button, Drawer, message, Modal, Space, Table, Tag } from "antd";
 import { downloadJob, errMsg, previewJob, taskRunRecords } from "../api";
 import StatusTag, { JOB_STATUS } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
@@ -48,6 +48,13 @@ export default function RunRecordsDrawer({
   };
 
   const columns = [
+    {
+      title: "类型",
+      dataIndex: "source",
+      width: 70,
+      render: (s: string) =>
+        s === "test" ? <Tag color="orange">试跑</Tag> : <Tag color="blue">正式</Tag>,
+    },
     { title: "运行人", dataIndex: "user_name", width: 100 },
     { title: "时间", dataIndex: "created_at", width: 170 },
     { title: "状态", dataIndex: "status", render: (s: string) => <StatusTag map={JOB_STATUS} value={s} /> },

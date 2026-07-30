@@ -175,6 +175,7 @@ export default function TaskEditor({
         params,
         values,
         limit: 50,
+        template_id: editingId ?? undefined, // 关联已存在任务时,试跑会在运行记录里留一条(标记为试跑)
       });
       hide();
       setPreview(res);

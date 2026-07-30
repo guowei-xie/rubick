@@ -10,12 +10,12 @@ from typing import Optional
 from sqlalchemy import BigInteger, Boolean, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 
 class Notification(Base, TimestampMixin):
-    __tablename__ = "notifications"
+    __tablename__ = tbl("notifications")
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)

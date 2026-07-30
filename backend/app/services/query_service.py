@@ -1,10 +1,11 @@
 """业务用户取数。
 
-Phase 2 起改为**异步**:
-  enqueue()  —— 请求内:鉴权/校验参数/安全网关 → 建 queued 任务 → 派发 Celery 任务 → 立即返回
-  execute_job() —— worker 内:执行连接器 → 落地 → 审计 → 通知(自管独立 DB 会话)
+**异步**执行(不依赖 Redis/Celery):
+  enqueue()  —— 请求内:鉴权/校验参数/安全网关 → 建 queued 任务 → 立即返回
+  execute_job() —— 由独立的 DB 轮询 worker(app.worker)拾取 queued 任务后执行:
+                   连接器 → 落地本地文件 → 审计 → 通知(自管独立 DB 会话)
 
-ASYNC_QUERY=false 时 Celery 走 eager 模式,execute_job 在请求内同步执行(无需 worker)。
+RUN_INLINE=true 时 execute_job 在请求内同步执行(无需 worker,便于本地开发)。
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from app.services import (
 
 
 def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | None = None) -> QueryJob:
-    """前置校验后入队。返回 queued 任务(eager 模式下返回时可能已完成)。"""
+    """前置校验后入队。返回 queued 任务(RUN_INLINE 模式下返回时可能已完成)。"""
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
         raise NotFoundError("模板不存在")
@@ -61,11 +62,10 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
         resource_id=tmpl.id, detail={"job_id": job.id, "params": values}, ip=ip,
     )
 
-    # 派发到 Celery(eager 模式即同步执行);延迟 import 避免循环依赖
-    from app.tasks import execute_query_job
-
-    execute_query_job.delay(job.id, ip)
-    db.refresh(job)  # eager 模式下此时已是 success/failed
+    # 交给 worker 后台执行;RUN_INLINE 模式则在请求内同步执行(便于本地开发,无需 worker)
+    if settings.RUN_INLINE:
+        execute_job(job.id, ip)
+        db.refresh(job)  # 此时已是 success/failed
     return job
 
 
@@ -144,11 +144,16 @@ def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = No
         raise PermissionDeniedError("无权下载该任务结果")
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("任务无可下载结果")
-    if job.result_expired:
+    if job.result_expired or not result_service.exists(job.result_object_key):
         raise RubicError(
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
         )
-    url = result_service.presigned_url(job.result_object_key, job.result_filename)
+    # 返回带签名 token 的根相对 URL,浏览器新标签页可直接下载(不需 Authorization 头);
+    # 前端 /api 由 dev 代理或生产 nginx 反代到后端。
+    from app.core.security import create_download_token
+
+    token = create_download_token(job.id)
+    url = f"/api/jobs/{job.id}/file?t={token}"
     audit_service.log_download(
         db, user=user, job_id=job.id, filename=job.result_filename, row_count=job.row_count, ip=ip
     )

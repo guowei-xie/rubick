@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy import JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 ENGINE_MYSQL = "mysql"
@@ -12,7 +12,7 @@ ENGINE_HIVE = "hive"
 
 
 class DataSource(Base, TimestampMixin):
-    __tablename__ = "data_sources"
+    __tablename__ = tbl("data_sources")
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(128), unique=True)

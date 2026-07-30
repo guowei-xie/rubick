@@ -4,7 +4,7 @@ from typing import Optional
 from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
 JOB_QUEUED = "queued"
@@ -12,19 +12,28 @@ JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_FAILED = "failed"
 
+# 运行来源:业务正式取数 vs 作者在编辑器里的试跑
+SOURCE_RUN = "run"
+SOURCE_TEST = "test"
+
 
 class QueryJob(Base, TimestampMixin):
-    __tablename__ = "query_jobs"
+    __tablename__ = tbl("query_jobs")
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
-    template_id: Mapped[int] = mapped_column(ForeignKey("sql_templates.id"), index=True)
-    template_version_id: Mapped[int] = mapped_column(ForeignKey("template_versions.id"))
-    datasource_id: Mapped[int] = mapped_column(ForeignKey("data_sources.id"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")), index=True)
+    template_id: Mapped[int] = mapped_column(ForeignKey(tbl("sql_templates.id")), index=True)
+    # 试跑可能发生在模板尚无已发布版本时,故可空
+    template_version_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey(tbl("template_versions.id")), nullable=True
+    )
+    datasource_id: Mapped[int] = mapped_column(ForeignKey(tbl("data_sources.id")))
 
     params: Mapped[dict] = mapped_column(JSON, default=dict)  # 用户填入的参数值
     modes: Mapped[dict] = mapped_column(JSON, default=dict)  # 各变量运行时选的正/反选(业务可切)
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, index=True)
+    # 运行来源:run=业务正式取数,test=作者在编辑器里的试跑(运行记录里据此区分)
+    source: Mapped[str] = mapped_column(String(16), default=SOURCE_RUN, nullable=False, index=True)
 
     row_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
