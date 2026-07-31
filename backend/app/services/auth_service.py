@@ -49,7 +49,18 @@ def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
         raise UnauthorizedError("mock 登录未启用")
     user = db.scalar(select(User).where(User.feishu_open_id == feishu_open_id))
     if user is None:
-        raise UnauthorizedError(f"未找到用户:{feishu_open_id}(请先运行 seed)")
+        # mock 环境下按需创建(JIT),便于空库首次登录(无需 seed)
+        user = User(feishu_open_id=feishu_open_id, name=feishu_open_id)
+        db.add(user)
+        db.flush()
+
+    # 引导管理员:命中 BOOTSTRAP_ADMINS(邮箱/open_id)则自动提升(只升不降)
+    allow = _bootstrap_admins()
+    if allow and user.role != ROLE_ADMIN:
+        ident = {(user.email or "").lower(), user.feishu_open_id.lower()}
+        if ident & allow:
+            user.role = ROLE_ADMIN
+
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)

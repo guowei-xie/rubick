@@ -1,8 +1,11 @@
 """拉比克后端入口。"""
 from __future__ import annotations
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     admin,
@@ -51,3 +54,18 @@ app.include_router(audit.router, prefix=api)
 app.include_router(notifications.router, prefix=api)
 app.include_router(admin.router, prefix=api)
 app.include_router(lookup.router, prefix=api)
+
+
+# 托管前端静态产物(frontend/dist),后端单端口即可提供完整应用,无需 nginx。
+# 注意:此段必须放在所有 /api 路由与 /health 之后,catch-all 才不会截胡它们。
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str):
+        """前端单页应用兜底:命中真实文件就返回它,否则一律回 index.html(交给前端路由)。"""
+        candidate = _FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")
