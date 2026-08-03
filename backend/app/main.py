@@ -1,5 +1,6 @@
 """拉比克后端入口。"""
 from __future__ import annotations
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -22,7 +23,24 @@ from app.api.routes import (
 from app.core.config import settings
 from app.core.exceptions import RubicError
 
-app = FastAPI(title="Rubick / 拉比克", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动时按 BOOTSTRAP_ADMINS 对已同步用户提权(配置文件加超管,无需对方先登录)
+    from app.core.database import SessionLocal
+    from app.services import auth_service
+
+    db = SessionLocal()
+    try:
+        n = auth_service.apply_bootstrap_admins(db)
+        if n:
+            print(f"[bootstrap] 启动时按 BOOTSTRAP_ADMINS 提权 {n} 名管理员")
+    finally:
+        db.close()
+    yield
+
+
+app = FastAPI(title="Rubick / 拉比克", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

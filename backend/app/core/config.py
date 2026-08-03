@@ -10,6 +10,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/ 目录(本文件为 backend/app/core/config.py)
@@ -36,8 +37,8 @@ class Settings(BaseSettings):
     BOOTSTRAP_ADMINS: str = ""
     FEISHU_APP_ID: str = ""
     FEISHU_APP_SECRET: str = ""
-    # 飞书 OAuth 回调地址(可配置)
-    FEISHU_REDIRECT_URI: str = "http://localhost:5173/auth/callback"
+    # 飞书 OAuth 回调地址;留空则自动派生为 {APP_BASE_URL}/auth/callback
+    FEISHU_REDIRECT_URI: str = ""
 
     # ---- 结果落地(本地文件系统)----
     # 结果 CSV 存放根目录(相对路径以 backend/ 为基准)
@@ -61,10 +62,27 @@ class Settings(BaseSettings):
     # 后端监听地址与端口(部署脚本据此启动 uvicorn)
     BACKEND_HOST: str = "0.0.0.0"
     BACKEND_PORT: int = 8000
-    # 前端地址,用于通知里的下载/任务跳转链接
-    APP_BASE_URL: str = "http://localhost:5173"
-    # CORS 允许来源
-    FRONTEND_ORIGIN: str = "http://localhost:5173"
+    # 应用对外访问的 origin(单一来源)。留空则派生为 http://localhost:{BACKEND_PORT};
+    # 单端口部署下 SPA 与 /api 同源,通常只需设这一项。
+    APP_BASE_URL: str = ""
+    # CORS 允许来源;留空则跟随 APP_BASE_URL(单端口同源时不触发)。
+    # 仅 split dev-mode(npm run dev 跑 5173)才需手动指 http://localhost:5173。
+    FRONTEND_ORIGIN: str = ""
+
+    @model_validator(mode="after")
+    def _derive_urls(self) -> "Settings":
+        """把易漂移的 URL 收敛到单一来源 APP_BASE_URL:未显式设置的项按单端口模型派生。
+
+        BACKEND_HOST 是 uvicorn 绑定地址(可能是 0.0.0.0,不能作浏览器 URL),
+        故派生用 localhost 而非 BACKEND_HOST。
+        """
+        if not self.APP_BASE_URL:
+            self.APP_BASE_URL = f"http://localhost:{self.BACKEND_PORT}"
+        if not self.FEISHU_REDIRECT_URI:
+            self.FEISHU_REDIRECT_URI = f"{self.APP_BASE_URL}/auth/callback"
+        if not self.FRONTEND_ORIGIN:
+            self.FRONTEND_ORIGIN = self.APP_BASE_URL
+        return self
 
     @property
     def result_dir_path(self) -> Path:

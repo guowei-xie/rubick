@@ -41,9 +41,9 @@ cp backend/config.example.ini backend/config.ini
 
 - `DATABASE_URL`:线上 MySQL 连接串,如 `mysql+pymysql://用户:密码@主机:3306/库名`
 - `JWT_SECRET`:改成随机长字符串(如 `openssl rand -hex 32`)
-- `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口
-- `APP_BASE_URL` / `FRONTEND_ORIGIN`:前端对外地址(用于通知链接与 CORS)
-- 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET/FEISHU_REDIRECT_URI`
+- `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)
+- `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;服务器部署填对外地址(如 `https://rubick.example.com`)。`FEISHU_REDIRECT_URI` 与 `FRONTEND_ORIGIN` 留空即自动跟随它
+- 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET`;飞书开发者后台的「重定向 URL」需与 `{APP_BASE_URL}/auth/callback` 逐字一致
 - 冷启动管理员:`BOOTSTRAP_ADMINS=你的飞书邮箱`(该账号首次登录自动成为管理员)
 
 > `MOCK_AUTH` 默认开启,未接飞书时可用 mock 登录先跑起来。

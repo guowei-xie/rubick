@@ -17,15 +17,40 @@ def _bootstrap_admins() -> set[str]:
     return {x.strip().lower() for x in settings.BOOTSTRAP_ADMINS.split(",") if x.strip()}
 
 
+def _maybe_promote(user: User, allow: set[str]) -> bool:
+    """命中 BOOTSTRAP_ADMINS(邮箱/open_id)则提升为管理员(只升不降,手动调整仍生效)。
+    返回是否发生提权。登录与启动提权共用同一条规则。"""
+    if not allow or user.role == ROLE_ADMIN:
+        return False
+    ident = {(user.email or "").lower(), user.feishu_open_id.lower()}
+    if ident & allow:
+        user.role = ROLE_ADMIN
+        return True
+    return False
+
+
+def apply_bootstrap_admins(db: Session) -> int:
+    """启动时把已存在用户过一遍提权规则(与登录同一条 _maybe_promote)。
+
+    让「配置文件加超管」在生产中可靠且即时:目标用户已在库中(如通讯录已同步)时,
+    改配置重启即提权,无需其先登录。返回本次新提权人数。幂等。
+    """
+    allow = _bootstrap_admins()
+    if not allow:
+        return 0
+    promoted = 0
+    for user in db.scalars(select(User).where(User.role != ROLE_ADMIN)).all():
+        if _maybe_promote(user, allow):
+            promoted += 1
+    if promoted:
+        db.commit()
+    return promoted
+
+
 def _upsert_user(db: Session, profile: dict) -> User:
     user = user_service.upsert_user(db, profile)
 
-    # 引导管理员:命中邮箱/open_id 名单则自动提升(只升不降,手动调整仍生效)
-    allow = _bootstrap_admins()
-    if allow and user.role != ROLE_ADMIN:
-        ident = {(user.email or "").lower(), user.feishu_open_id.lower()}
-        if ident & allow:
-            user.role = ROLE_ADMIN
+    _maybe_promote(user, _bootstrap_admins())  # 引导管理员:命中名单自动提升
 
     user.last_login_at = datetime.now(timezone.utc)  # 标记已登录 → 才会出现在用户管理
     # 存 user_access_token(用于按本人可见范围搜通讯录);exp 用 naive UTC 便于比较
@@ -54,12 +79,7 @@ def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
         db.add(user)
         db.flush()
 
-    # 引导管理员:命中 BOOTSTRAP_ADMINS(邮箱/open_id)则自动提升(只升不降)
-    allow = _bootstrap_admins()
-    if allow and user.role != ROLE_ADMIN:
-        ident = {(user.email or "").lower(), user.feishu_open_id.lower()}
-        if ident & allow:
-            user.role = ROLE_ADMIN
+    _maybe_promote(user, _bootstrap_admins())  # 引导管理员:命中名单自动提升
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()

@@ -20,7 +20,7 @@ export default function LoginPage() {
   const codeHandled = useRef(false); // 防止 StrictMode 下用同一 code 重复换取(第二次必失败)
 
   useEffect(() => {
-    if (user && !sp.get("code")) nav("/templates");
+    if (user && !sp.get("code")) nav("/tasks");
   }, [user]);
 
   useEffect(() => {
@@ -36,7 +36,7 @@ export default function LoginPage() {
       .then((res) => {
         setToken(res.access_token, res.user);
         message.success(`欢迎,${res.user.name}`);
-        nav("/templates");
+        nav("/tasks");
       })
       .catch((e: any) => message.error(e.response?.data?.detail || "飞书登录失败"));
   }, [sp]);
@@ -47,7 +47,7 @@ export default function LoginPage() {
       const res = await mockLogin(openId);
       setToken(res.access_token, res.user);
       message.success(`欢迎,${res.user.name}`);
-      nav("/templates");
+      nav("/tasks");
     } catch (e: any) {
       message.error(e.response?.data?.detail || "登录失败");
     } finally {
