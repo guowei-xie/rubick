@@ -51,6 +51,27 @@ body {
   background: transparent;
 }
 
+/* 实心按钮(主/默认)hover 轻上浮,呼应卡片的浮起手感;过渡沿用 antd 自带的
+   transition:all,无需重复声明。link / text / 圆形图标按钮不参与,避免表格内联操作抖动 */
+.ant-btn-primary:not(:disabled):not(.ant-btn-loading):hover,
+.ant-btn-default:not(:disabled):not(.ant-btn-loading):hover {
+  transform: translateY(-1px);
+}
+.ant-btn-primary:not(:disabled):not(.ant-btn-loading):active,
+.ant-btn-default:not(:disabled):not(.ant-btn-loading):active {
+  transform: translateY(0);
+}
+.ant-btn-primary:not(:disabled):not(.ant-btn-loading):hover {
+  box-shadow: 0 12px 24px -10px color-mix(in srgb, var(--brand) 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ant-btn-primary:not(:disabled):not(.ant-btn-loading):hover,
+  .ant-btn-default:not(:disabled):not(.ant-btn-loading):hover {
+    transform: none;
+  }
+}
+
 /* 卡片 hover 轻上浮(供任务卡片使用) */
 .rk-lift {
   transition: transform 0.2s ease, box-shadow 0.2s ease;

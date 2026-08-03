@@ -93,6 +93,26 @@
   text-indent: 0.5em;
 }
 
+/* ---------- 登录按钮:轻盈通透,飞书与 mock 同款 ---------- */
+.rk-login-btn.ant-btn {
+  height: 46px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+
+  color: var(--brand);
+  /* 半透明白底,叠在浅色背景上更通透 */
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+  backdrop-filter: blur(6px);
+}
+.rk-login-btn.ant-btn:hover,
+.rk-login-btn.ant-btn:focus {
+  color: var(--brand) !important;
+  border-color: color-mix(in srgb, var(--brand) 55%, transparent) !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+}
+
 /* ---------- 呼吸按钮(主 CTA) ---------- */
 @keyframes rk-breathe {
   0%,

@@ -37,8 +37,19 @@ const theme = {
     Button: {
       borderRadius: 10,
       controlHeight: 38,
-      primaryShadow: "none",
       fontWeight: 500,
+      // 主按钮:柔和的品牌色投影,替代生硬的实心块
+      primaryShadow: "0 8px 20px -10px rgba(79, 63, 240, 0.55)",
+      // 默认按钮:浅紫描边 + 极轻投影,与浅色卡片同一质感
+      defaultShadow: "0 2px 6px 0 rgba(136, 148, 171, 0.16)",
+      defaultBg: "rgba(255, 255, 255, 0.9)",
+      defaultColor: "#302d40",
+      defaultBorderColor: "rgba(79, 63, 240, 0.18)",
+      defaultHoverBg: "#ffffff",
+      defaultHoverColor: "#4f3ff0",
+      defaultHoverBorderColor: "rgba(79, 63, 240, 0.5)",
+      defaultActiveColor: "#3d2fc7",
+      defaultActiveBorderColor: "rgba(79, 63, 240, 0.7)",
     },
     Table: {
       headerBg: "#f7f8fc",

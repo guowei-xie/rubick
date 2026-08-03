@@ -85,10 +85,9 @@ export default function LoginPage() {
       >
         {cfg?.feishu_authorize_url && (
           <Button
-            type="primary"
             block
             href={cfg.feishu_authorize_url}
-            className="rk-breathe"
+            className="rk-login-btn rk-breathe"
           >
             飞书登录
           </Button>
@@ -98,7 +97,7 @@ export default function LoginPage() {
             block
             loading={loading}
             onClick={doMockLogin}
-            className="rk-breathe"
+            className="rk-login-btn rk-breathe"
           >
             mock 登录
           </Button>
