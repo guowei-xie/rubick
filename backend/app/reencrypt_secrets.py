@@ -19,15 +19,16 @@ from app.core.database import engine, tbl
 
 
 def _migrate_column(conn, table: str, col: str) -> int:
+    # 列名不加引号:MySQL 把双引号当字符串字面量(非标识符)会报 1064;这些列名均为安全标识符
     rows = conn.execute(
-        text(f'SELECT id, "{col}" FROM {table} WHERE "{col}" IS NOT NULL')
+        text(f"SELECT id, {col} FROM {table} WHERE {col} IS NOT NULL")
     ).fetchall()
     n = 0
     for rid, val in rows:
         if val is None or crypto.is_encrypted(val):
             continue
         conn.execute(
-            text(f'UPDATE {table} SET "{col}" = :v WHERE id = :id'),
+            text(f"UPDATE {table} SET {col} = :v WHERE id = :id"),
             {"v": crypto.encrypt(val), "id": rid},
         )
         n += 1
