@@ -9,9 +9,11 @@ from app.core.database import Base, tbl
 from app.core.db_types import EncryptedText
 from app.models.mixins import TimestampMixin
 
-# 平台角色:只有两种。管理员可建/改/发布任意项目并互相可见;业务用户只填参取数。
-ROLE_USER = "user"          # 业务使用者
+# 平台角色:三种。管理员可建/改/发布任意项目并互相可见,且独揽治理(用户角色赋权/数据源/审计);
+# 开发者近似管理员但不含这三块治理;普通用户只填参取数。
+ROLE_USER = "user"          # 普通用户(业务使用者)
 ROLE_ADMIN = "admin"        # 管理员(含原商分职责)
+ROLE_DEVELOPER = "developer"  # 开发者:近似管理员,不含 用户角色赋权/数据源管理/审计
 
 
 class User(Base, TimestampMixin):

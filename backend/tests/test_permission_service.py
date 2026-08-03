@@ -1,8 +1,10 @@
 """授权判定:管理员全通、作者对自有模板全通、按用户授权命中、无授权拒绝。"""
+from types import SimpleNamespace
+
 from app.models.datasource import DataSource
 from app.models.permission import ACTION_RUN, ACTION_VIEW, RESOURCE_TEMPLATE, SUBJECT_USER
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, ROLE_USER, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.services import permission_service as ps
 
 
@@ -59,3 +61,29 @@ def test_stranger_denied(db):
 def test_action_template_ids_admin_is_none(db):
     admin = _mk_user(db, 1007, ROLE_ADMIN)
     assert ps.action_template_ids(db, admin, ACTION_VIEW) is None
+
+
+def test_developer_is_manager_like_admin(db):
+    """开发者近似管理员:对他人模板可全通、可授权、可见全部。"""
+    dev = _mk_user(db, 1008, ROLE_DEVELOPER)
+    t = _mk_template(db, author_id=9999)  # 他人创建的模板
+    assert ps.is_manager(dev) is True
+    assert ps.is_template_owner(dev, t) is True
+    assert ps.owns_template(db, dev, t.id) is True
+    assert ps.can(db, dev, ACTION_RUN, RESOURCE_TEMPLATE, t.id) is True
+    assert ps.action_template_ids(db, dev, ACTION_VIEW) is None
+
+
+def test_developer_can_access_others_job(db):
+    """开发者可见他人运行记录/结果(is_manager 短路)。"""
+    dev = _mk_user(db, 1009, ROLE_DEVELOPER)
+    job = SimpleNamespace(user_id=7777)
+    assert ps.can_access_job(dev, job) is True
+
+
+def test_plain_user_is_not_manager(db):
+    user = _mk_user(db, 1010, ROLE_USER)
+    t = _mk_template(db, author_id=9999)
+    assert ps.is_manager(user) is False
+    assert ps.can(db, user, ACTION_RUN, RESOURCE_TEMPLATE, t.id) is False
+    assert ps.action_template_ids(db, user, ACTION_VIEW) is not None

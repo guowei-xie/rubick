@@ -1,4 +1,4 @@
-"""授权时用的用户查找(挑授权对象)。管理员可用。
+"""授权时用的用户查找(挑授权对象)。管理者(管理员/开发者)可用。
 
 有关键词时实时搜飞书通讯录(按本人可见范围),命中者 upsert 成「壳」用户以承载授权;
 空查询只回历史(之前授权过的人)。不再有本地全员目录兜底 —— 飞书不可用时返回空。
@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_manager
 from app.core.database import get_db
 from app.models.permission import Permission
 from app.models.user import User
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/lookup", tags=["lookup"])
 
 
 @router.get("/users")
-def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_manager)):
     q = (q or "").strip()
     if not q:
         # 空查询:只显示历史 —— 之前被授权过的人

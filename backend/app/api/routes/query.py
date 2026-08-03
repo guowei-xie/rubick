@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
 from app.core.security import verify_download_token
 from app.models.query_job import JOB_SUCCESS, QueryJob
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import User
 from app.schemas.query import JobOut, RunIn
 from app.services import permission_service, query_service, result_service
 
@@ -26,7 +26,7 @@ def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user
 @router.get("/jobs", response_model=list[JobOut])
 def my_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     stmt = select(QueryJob).order_by(QueryJob.id.desc()).limit(100)
-    if user.role != ROLE_ADMIN:
+    if not permission_service.is_manager(user):
         stmt = stmt.where(QueryJob.user_id == user.id)
     return list(db.scalars(stmt))
 

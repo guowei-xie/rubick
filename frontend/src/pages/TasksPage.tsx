@@ -11,7 +11,7 @@ import GrantModal from "../components/GrantModal";
 
 export default function TasksPage() {
   const { user } = useAuth();
-  const canCreate = user?.role === "admin";
+  const canCreate = user?.role === "admin" || user?.role === "developer";
 
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);

@@ -3,7 +3,7 @@
 用法:python -m app.seed
 
 产出:
-  - 3 个用户:admin(管理员)/ analyst(商分)/ viewer(业务用户)
+  - 4 个用户:admin/analyst(管理员)、dev(开发者)、viewer(普通用户)
   - 演示业务库 rubic_demo.orders(与平台元数据库同一 MySQL 实例,不同 database)
   - 一个 MySQL 数据源指向 rubic_demo
   - 一条已发布模板"按日期查订单",授权给 viewer 个人
@@ -19,7 +19,7 @@ from app.core.database import Base, SessionLocal, engine
 import app.models  # noqa: F401
 from app.models.datasource import DataSource
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, ROLE_USER, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn
 from app.services import permission_service, template_service
@@ -85,7 +85,8 @@ def main() -> None:
         print("3) users")
         admin = upsert_user(db, "ou_admin", "管理员小A", ROLE_ADMIN)
         analyst = upsert_user(db, "ou_analyst", "管理员小B", ROLE_ADMIN)  # 原商分并入管理员
-        viewer = upsert_user(db, "ou_viewer", "业务小C", ROLE_USER)
+        upsert_user(db, "ou_dev", "开发小D", ROLE_DEVELOPER)  # 开发者:近似管理员,不含治理
+        viewer = upsert_user(db, "ou_viewer", "普通小C", ROLE_USER)
 
         print("4) demo datasource")
         ds = db.scalar(select(DataSource).where(DataSource.name == "demo-mysql"))
@@ -145,7 +146,7 @@ def main() -> None:
             )
 
         print("\nSeed done. 登录 open_id:")
-        print("  管理员 = ou_admin / ou_analyst(均为管理员)   业务用户 = ou_viewer")
+        print("  管理员 = ou_admin / ou_analyst   开发者 = ou_dev   普通用户 = ou_viewer")
     finally:
         db.close()
 

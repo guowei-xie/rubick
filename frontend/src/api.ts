@@ -46,7 +46,7 @@ export interface ValueListOut {
 export interface User {
   id: number;
   name: string;
-  role: "user" | "admin";
+  role: "user" | "admin" | "developer";
   email?: string;
 }
 

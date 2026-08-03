@@ -8,12 +8,12 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
-from app.models.user import ROLE_ADMIN, ROLE_USER, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import UserOut
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-_ROLES = {ROLE_USER, ROLE_ADMIN}
+_ROLES = {ROLE_USER, ROLE_ADMIN, ROLE_DEVELOPER}
 
 
 class RoleIn(BaseModel):

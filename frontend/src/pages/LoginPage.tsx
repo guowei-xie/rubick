@@ -7,7 +7,8 @@ import { useAuth } from "../auth";
 const MOCK_USERS = [
   { open_id: "ou_admin", label: "管理员小A(admin)" },
   { open_id: "ou_analyst", label: "管理员小B(admin)" },
-  { open_id: "ou_viewer", label: "业务小C(user)" },
+  { open_id: "ou_dev", label: "开发小D(developer)" },
+  { open_id: "ou_viewer", label: "普通小C(user)" },
 ];
 
 export default function LoginPage() {

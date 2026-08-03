@@ -4,11 +4,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_manager
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError
 from app.models.permission import Permission
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import User
 from app.schemas.permission import GrantIn, PermissionOut
 from app.services import permission_service
 
@@ -36,15 +36,15 @@ def list_permissions(
     resource_type: str | None = None,
     resource_id: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_admin),
+    user: User = Depends(require_manager),
 ):
     stmt = select(Permission).order_by(Permission.id.desc())
     if resource_type:
         stmt = stmt.where(Permission.resource_type == resource_type)
     if resource_id:
         stmt = stmt.where(Permission.resource_id == resource_id)
-    # 商分只能看自己模板的授权;管理员看全部
-    if user.role != ROLE_ADMIN:
+    # 普通用户只能看自己作为作者的模板授权;管理者(管理员/开发者)看全部
+    if not permission_service.is_manager(user):
         owned = [str(i) for i in permission_service.owned_template_ids(db, user)]
         if not owned:
             return []
@@ -55,7 +55,7 @@ def list_permissions(
 
 
 @router.post("", response_model=list[PermissionOut])
-def grant(data: GrantIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def grant(data: GrantIn, db: Session = Depends(get_db), user: User = Depends(require_manager)):
     # 商分只能对自己发布/维护的模板授权(主体仅 user 由 GrantIn.subject_type=Literal 在入参层保证)
     if data.resource_type != "template":
         raise PermissionDeniedError("仅支持对模板授权")
@@ -73,7 +73,7 @@ def grant(data: GrantIn, db: Session = Depends(get_db), user: User = Depends(req
 
 
 @router.delete("/{perm_id}")
-def revoke(perm_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def revoke(perm_id: int, db: Session = Depends(get_db), user: User = Depends(require_manager)):
     p = db.get(Permission, perm_id)
     if p:
         if p.resource_type == "template" and not permission_service.owns_template(db, user, p.resource_id):

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user, require_manager
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
@@ -33,9 +33,9 @@ def _load(db: Session, template_id: int) -> SqlTemplate:
     return tmpl
 
 
-def _require_author_or_admin(tmpl: SqlTemplate, user: User) -> None:
+def _require_author_or_manager(tmpl: SqlTemplate, user: User) -> None:
     if not permission_service.is_template_owner(user, tmpl):
-        raise PermissionDeniedError("只有作者或管理员可操作该模板")
+        raise PermissionDeniedError("只有作者或管理者可操作该模板")
 
 
 @router.get("", response_model=list[TemplateOut])
@@ -61,7 +61,7 @@ def list_templates(
 
 @router.post("", response_model=TemplateOut)
 def create_template(
-    data: TemplateCreateIn, db: Session = Depends(get_db), user: User = Depends(require_admin)
+    data: TemplateCreateIn, db: Session = Depends(get_db), user: User = Depends(require_manager)
 ):
     return template_service.create_template(db, user, data)
 
@@ -92,10 +92,10 @@ def update_template(
     template_id: int,
     data: TemplateUpdateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_admin),
+    user: User = Depends(require_manager),
 ):
     tmpl = _load(db, template_id)
-    _require_author_or_admin(tmpl, user)
+    _require_author_or_manager(tmpl, user)
     return template_service.add_version(db, user, tmpl, data)
 
 
@@ -104,36 +104,36 @@ def publish(
     template_id: int,
     data: PublishIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_admin),
+    user: User = Depends(require_manager),
 ):
     """发布最新版本。"""
     tmpl = _load(db, template_id)
-    _require_author_or_admin(tmpl, user)
+    _require_author_or_manager(tmpl, user)
     template_service.publish(db, tmpl, user, data.note)
     return {"status": tmpl.status, "published_version_id": tmpl.published_version_id}
 
 
 @router.post("/{template_id}/archive")
-def archive(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def archive(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_manager)):
     tmpl = _load(db, template_id)
-    _require_author_or_admin(tmpl, user)
+    _require_author_or_manager(tmpl, user)
     template_service.archive(db, tmpl)
     return {"status": tmpl.status}
 
 
 @router.post("/test-run")
-def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_manager)):
     """作者自检试跑:返回样例行;关联到已存在任务时同时落一条 source=test 的运行记录。"""
     return template_service.test_run(db, data, user)
 
 
 @router.post("/preview-sql", response_model=PreviewSqlOut)
-def preview_sql(data: PreviewSqlIn, _: User = Depends(require_admin)):
+def preview_sql(data: PreviewSqlIn, _: User = Depends(require_manager)):
     """SQL 预览:代入当前测试值渲染即将执行的 SQL(不连库执行),未填变量原样保留 :变量。"""
     return {"rendered_sql": params_service.preview_sql(data.sql_text, data.params, data.values)}
 
 
 @router.post("/enum-sql", response_model=ValueListOut)
-def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_manager)):
     """分析师测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
     return template_service.run_value_query(db, data.datasource_id, data.sql)
