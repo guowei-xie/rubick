@@ -124,7 +124,6 @@ def main() -> None:
                 analyst,
                 TemplateCreateIn(
                     name="按日期查订单",
-                    domain="销售",
                     description="查询指定起始日期之后的订单明细",
                     tags=["订单", "演示"],
                     datasource_id=ds.id,

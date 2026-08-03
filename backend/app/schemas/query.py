@@ -35,7 +35,6 @@ class TaskOut(BaseModel):
 
     id: int
     name: str
-    domain: str | None = None
     description: str | None = None
     status: str
     datasource_id: int

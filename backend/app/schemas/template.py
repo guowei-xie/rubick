@@ -8,7 +8,6 @@ from app.schemas.common import ParamDef
 
 class TemplateCreateIn(BaseModel):
     name: str
-    domain: str | None = None
     description: str | None = None
     tags: list[str] = []
     datasource_id: int
@@ -21,7 +20,6 @@ class TemplateUpdateIn(BaseModel):
     """更新会生成新版本(草稿)。"""
 
     name: str | None = None
-    domain: str | None = None
     description: str | None = None
     tags: list[str] | None = None
     datasource_id: int | None = None
@@ -72,7 +70,6 @@ class TemplateVersionOut(BaseModel):
 class TemplateOut(BaseModel):
     id: int
     name: str
-    domain: str | None
     description: str | None
     tags: list[str]
     datasource_id: int

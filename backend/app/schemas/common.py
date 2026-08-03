@@ -16,18 +16,24 @@ class ParamDef(BaseModel):
 
     name: str
     kind: Literal["single", "list"] = "single"
-    label: str | None = None
-    description: str | None = None  # 变量说明,业务填参时作为提示展示
+    label: str | None = None  # 变量说明:给业务看的名字兼填参提示(合并了原 中文名+说明)
+    test_value: str | list[str] | None = None  # 测试值:作者试跑用,兼作业务填参示例
     # ---- 值列表(list)专用 ----
     enum_sql: str | None = None  # 取候选值的独立 SELECT(业务点「获取枚举值」时跑,单列)
-    list_mode: Literal["in", "not_in"] | None = None  # 方向提示(由 SQL 写法判定),供填参 UI 展示
+    allow_bulk_input: bool = False  # 是否允许业务「上传/粘贴」批量输入(编辑者勾选)
 
     @model_validator(mode="before")
     @classmethod
     def _from_legacy(cls, data):
-        """兜底:漏迁移的旧 shape(有 type 无 kind)归一,防序列化打崩。"""
-        if isinstance(data, dict) and "kind" not in data and "type" in data:
-            data = {**data, "kind": "list" if data.get("type") == "multi_enum" else "single"}
+        """兜底:旧 shape 归一,防序列化打崩(未知字段如 list_mode 由 pydantic 默认忽略)。
+        - 有 type 无 kind → 归一 kind;
+        - label 为空但有旧 description → 用 description 回填(中文名/说明已合并为 label)。
+        """
+        if isinstance(data, dict):
+            if "kind" not in data and "type" in data:
+                data = {**data, "kind": "list" if data.get("type") == "multi_enum" else "single"}
+            if not data.get("label") and data.get("description"):
+                data = {**data, "label": data["description"]}
         return data
 
 

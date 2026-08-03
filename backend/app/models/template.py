@@ -20,7 +20,8 @@ class SqlTemplate(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200))
-    domain: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # 业务域
+    # 业务域:已废弃,不再读写(留空列避免破坏性 DROP;如需清理可另起迁移单独删列)
+    domain: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
 
@@ -74,7 +75,7 @@ class TemplateVersion(Base, TimestampMixin):
     )
     version_no: Mapped[int] = mapped_column(Integer)  # 模板内自增
     sql_text: Mapped[str] = mapped_column(Text)
-    # 参数定义:[{name, kind(single|list), label, description, enum_sql, list_mode}]
+    # 参数定义:[{name, kind(single|list), label, test_value, enum_sql, allow_bulk_input}]
     params: Mapped[list] = mapped_column(JSON, default=list)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 

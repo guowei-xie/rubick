@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Button, Card, Modal, Space, Table, Tag } from "antd";
-import { archiveTemplate, listTasks } from "../api";
+import { archiveTemplate, listTasks, publishTemplate } from "../api";
 import { useAuth } from "../auth";
 import StatusTag, { TEMPLATE_STATUS } from "../components/StatusTag";
 import TaskEditor from "../components/TaskEditor";
@@ -46,18 +46,21 @@ export default function TasksPage() {
       onOk: () => archiveTemplate(row.id).then(load),
     });
 
+  const doPublish = (row: any) =>
+    Modal.confirm({
+      title: `上线任务「${row.name}」?`,
+      content: "上线后,被授权的业务用户即可运行该任务的最新版本。",
+      okText: "上线",
+      onOk: () => publishTemplate(row.id, "任务列表上线").then(load),
+    });
+
   const columns = [
     {
       title: "项目名称",
       dataIndex: "name",
       width: 240,
       ellipsis: true,
-      render: (n: string, r: any) => (
-        <span>
-          <strong>{n}</strong>
-          {r.domain && <Tag style={{ marginLeft: 6 }}>{r.domain}</Tag>}
-        </span>
-      ),
+      render: (n: string) => <strong>{n}</strong>,
     },
     { title: "创建人", dataIndex: "author_name", width: 90 },
     { title: "创建时间", dataIndex: "created_at", width: 160, render: (t: string) => (t ? t.replace("T", " ").slice(0, 19) : "-") },
@@ -95,8 +98,10 @@ export default function TasksPage() {
           <Space size={0} wrap>
             <Button type="link" size="small" onClick={() => setEditorId(r.id)}>编辑</Button>
             <Button type="link" size="small" onClick={() => setGrantTarget(r)}>授权</Button>
-            {r.status === "published" && (
+            {r.status === "published" ? (
               <Button type="link" size="small" danger onClick={() => doArchive(r)}>下线</Button>
+            ) : (
+              <Button type="link" size="small" onClick={() => doPublish(r)}>上线</Button>
             )}
           </Space>
         ) : (

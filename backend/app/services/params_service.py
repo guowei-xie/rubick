@@ -13,17 +13,15 @@ from app.core.exceptions import RubicError
 from app.schemas.common import ParamDef
 
 
-def detect_list_mode(sql: str, name: str) -> str | None:
-    """按 SQL 里 :变量 旁的运算符判定列表方向:not_in / in / None(=单值)。NOT IN 要先判。
+def detect_is_list(sql: str, name: str) -> bool:
+    """按 SQL 写法判定变量是否为「值列表」:`字段 IN (:x)` / `NOT IN (:x)` → True,其余 → False。
 
-    值列表(kind=list)与其方向都由 SQL 写法单一决定,前端 listKind 与本函数保持等价。
+    只判 list / single,不再区分 in / not_in 方向。前端 isListVar 与本函数保持等价。
     """
+    if not name:
+        return False
     esc = re.escape(name)
-    if re.search(rf"\bNOT\s+IN\s*\(\s*:{esc}\b", sql or "", re.I):
-        return "not_in"
-    if re.search(rf"\bIN\s*\(\s*:{esc}\b", sql or "", re.I):
-        return "in"
-    return None
+    return bool(re.search(rf"\bIN\s*\(\s*:{esc}\b", sql or "", re.I))
 
 
 def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any]) -> dict[str, Any]:
@@ -47,10 +45,9 @@ def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any])
 def expand_list_params(sql: str, bound: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """把值为 list 的绑定参数展开成 :x__0, :x__1, … 逐值绑定。非 list 参数原样透传。
 
-    对列表变量 :x 依次应用三条可预测的重写规则:
-      1. `字段 IN (:x)` / `字段 NOT IN (:x)` → 括号内展开(NOT 会被捕获组当"列名"原样回填,方向不变);
-      2. `字段 = :x` → 统一升级为 `字段 IN (...)`(兼容历史模板的等号写法);
-      3. 裸 `:x` 兜底 → `(:x__0, …)`。
+    最小占位符展开:仅把裸 `:x` 替换为逗号连接的 `:x__0, :x__1, …`。作者已在 SQL 写好括号
+    (`字段 IN (:x)` / `NOT IN (:x)`),替换后天然得到 `IN (:x__0, :x__1, …)`,方向由作者的
+    IN/NOT IN 决定。不再做运算符嗅探、`= → IN` 升级或方向处理。
     """
     new_sql = sql
     out: dict[str, Any] = {}
@@ -64,20 +61,8 @@ def expand_list_params(sql: str, bound: dict[str, Any]) -> tuple[str, dict[str, 
         inner = ", ".join(f":{k}" for k in keys)
         for k, v in zip(keys, val):
             out[k] = v
-        # 1) 字段 [NOT] IN (:x)  2) 字段 = :x → IN  3) 裸 :x 兜底
-        new_sql = re.sub(
-            rf"([\w.`]+(?:\s+NOT)?)\s+IN\s*\(\s*:{esc}\s*\)",
-            lambda m, _i=inner: f"{m.group(1)} IN ({_i})",
-            new_sql,
-            flags=re.I,
-        )
-        new_sql = re.sub(
-            rf"([\w.`]+)\s*=\s*:{esc}\b",
-            lambda m, _i=inner: f"{m.group(1)} IN ({_i})",
-            new_sql,
-            flags=re.I,
-        )
-        new_sql = re.sub(rf":{esc}\b", f"({inner})", new_sql)
+        # 用函数替换(而非字符串),避免 inner 里的 : / 数字被当作组引用解释
+        new_sql = re.sub(rf":{esc}\b", lambda _m: inner, new_sql)
     return new_sql, out
 
 

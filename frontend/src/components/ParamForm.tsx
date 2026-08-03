@@ -107,7 +107,7 @@ function ListField({
         mode="tags"
         allowClear
         style={{ width: "100%" }}
-        placeholder="可直接输入值,或获取候选/上传列表后选择"
+        placeholder="可直接输入值,或获取候选后选择"
         value={list}
         onChange={onChange}
         options={options.map((o) => ({ value: o, label: o }))}
@@ -118,26 +118,30 @@ function ListField({
             获取枚举值
           </Button>
         )}
-        <PasteListButton onAdd={merge} />
+        {/* 上传/粘贴仅在编辑者为该变量开启时提供 */}
+        {pd.allow_bulk_input && <PasteListButton onAdd={merge} />}
         {list.length ? <span style={{ color: "#888", fontSize: 12 }}>已选 {list.length} 个</span> : null}
       </Space>
     </div>
   );
 }
 
+/** 填写示例(取自作者配的测试值),作为 extra 提示;变量说明已作字段名展示。 */
+function paramExtra(pd: ParamDef): string | undefined {
+  const example = Array.isArray(pd.test_value) ? pd.test_value.join(", ") : pd.test_value;
+  return example ? `示例:${example}` : undefined;
+}
+
 /** 按参数形态渲染一个 Form.Item(一律必填):list=值列表多选,其余=单值文本框。 */
 export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: number }) {
   const label = pd.label || pd.name;
 
-  // 值列表:输入/获取枚举/上传。方向(包含 / 排除)由模板 SQL 的 IN / NOT IN 决定,如实提示业务
   if (pd.kind === "list") {
-    const excludeMode = pd.list_mode === "not_in";
-    const dirHint = excludeMode ? "命中项将被排除(NOT IN)" : "仅保留命中项(IN)";
     return (
       <Form.Item
         name={pd.name}
-        label={`${label} · ${excludeMode ? "排除" : "包含"}`}
-        extra={pd.description ? `${pd.description}(${dirHint})` : dirHint}
+        label={label}
+        extra={paramExtra(pd)}
         rules={[{ required: true, message: `请为「${label}」选值或填写` }]}
       >
         <ListField pd={pd} templateId={templateId} />
@@ -150,7 +154,7 @@ export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: numb
       name={pd.name}
       label={label}
       rules={[{ required: true, message: `请填写${label}` }]}
-      extra={pd.description || undefined}
+      extra={paramExtra(pd)}
     >
       <Input />
     </Form.Item>

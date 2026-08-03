@@ -44,7 +44,16 @@ def test_legacy_type_normalizes_to_kind():
         ps.validate_and_bind(defs, {"ids": ["a"]})
 
 
+def test_detect_is_list():
+    sql = "SELECT * FROM t WHERE d = :d AND uid IN (:ids) AND city NOT IN (:cs)"
+    assert ps.detect_is_list(sql, "ids") is True
+    assert ps.detect_is_list(sql, "cs") is True  # NOT IN 也是值列表
+    assert ps.detect_is_list(sql, "d") is False  # 单值
+    assert ps.detect_is_list(sql, "") is False
+
+
 def test_expand_in_list():
+    # 最小占位符展开:作者已写好括号,替换裸 :ids 即得 IN (:ids__0, :ids__1)
     sql = "SELECT * FROM t WHERE user_id IN (:ids)"
     new_sql, out = ps.expand_list_params(sql, {"ids": ["u1", "u2"]})
     assert "user_id IN (:ids__0, :ids__1)" in new_sql
@@ -58,17 +67,13 @@ def test_expand_not_in_keeps_direction():
     assert out == {"ids__0": "u1", "ids__1": "u2"}
 
 
-def test_expand_eq_becomes_in():
-    sql = "SELECT * FROM t WHERE city = :c"
-    new_sql, out = ps.expand_list_params(sql, {"c": ["bj", "sh"]})
-    assert "city IN (:c__0, :c__1)" in new_sql
-    assert out == {"c__0": "bj", "c__1": "sh"}
-
-
-def test_expand_bare_placeholder_fallback():
-    sql = "SELECT * FROM t WHERE user_id IN (SELECT uid FROM u WHERE uid IN (:ids)) AND x LIKE :ids"
-    new_sql, _ = ps.expand_list_params(sql, {"ids": ["a"]})
-    assert ":ids" not in new_sql.replace(":ids__0", "")  # 无残留裸占位符
+def test_expand_word_boundary_no_prefix_clobber():
+    # :id 不应误伤 :ids;展开后无残留裸占位符
+    sql = "SELECT * FROM t WHERE a IN (:id) AND b IN (:ids)"
+    new_sql, out = ps.expand_list_params(sql, {"id": ["x"], "ids": ["y", "z"]})
+    assert "a IN (:id__0)" in new_sql
+    assert "b IN (:ids__0, :ids__1)" in new_sql
+    assert out == {"id__0": "x", "ids__0": "y", "ids__1": "z"}
 
 
 def test_expand_passthrough_scalar():

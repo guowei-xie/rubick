@@ -17,7 +17,6 @@ import app.models  # noqa: F401  注册所有模型
 from app.core.database import Base, engine, tbl
 from app.models.template import TemplateVersion
 from app.reencrypt_secrets import main as reencrypt_secrets
-from app.services import params_service
 
 
 def _ensure_column(table: str, column: str, coltype: str) -> None:
@@ -90,13 +89,7 @@ def _migrate_params_v2() -> None:
                     )
 
                 if t == "multi_enum":
-                    # 值列表:方向随 SQL 写法(作者用 = 写的历史数据默认 in)
-                    d = {
-                        "name": name,
-                        "kind": "list",
-                        "label": label,
-                        "list_mode": params_service.detect_list_mode(ver.sql_text, name) or "in",
-                    }
+                    d = {"name": name, "kind": "list", "label": label}
                     if desc:
                         d["description"] = desc
                     if p.get("enum_sql"):
@@ -126,6 +119,46 @@ def _migrate_params_v2() -> None:
         print("\n".join(report))
 
 
+def _param_needs_v3(p: dict) -> bool:
+    """v2 → v3 是否需要迁移该参数:仍带 description/list_mode,或 list 参数缺 allow_bulk_input。"""
+    return (
+        "description" in p
+        or "list_mode" in p
+        or (p.get("kind") == "list" and "allow_bulk_input" not in p)
+    )
+
+
+def _migrate_params_v3() -> None:
+    """参数定义 v2 → v3:中文名/说明合并为单一 label(变量说明),去掉 list_mode 方向,
+    给存量 list 参数补 allow_bulk_input=True(保持既有「上传/粘贴」可用)。幂等。
+    """
+    changed_versions = 0
+    with Session(engine) as db:
+        for ver in db.query(TemplateVersion).order_by(TemplateVersion.id):
+            old = ver.params or []
+            if not old or not any(isinstance(p, dict) and _param_needs_v3(p) for p in old):
+                continue
+
+            new_params: list[dict] = []
+            for p in old:
+                p = dict(p)
+                desc = p.pop("description", None)
+                p.pop("list_mode", None)
+                # 中文名(label)+ 说明(description)合并为单一「变量说明」,两者都在则拼接保留
+                label = p.get("label")
+                if desc:
+                    p["label"] = f"{label}({desc})" if label else desc
+                if p.get("kind") == "list":
+                    p.setdefault("allow_bulk_input", True)  # 存量列表保持可上传/粘贴
+                new_params.append(p)
+
+            ver.params = new_params
+            changed_versions += 1
+        db.commit()
+
+    print(f"[migrate] params v2 → v3:重写 {changed_versions} 个版本")
+
+
 def main() -> None:
     print("[migrate] create_all on", engine.url)
     Base.metadata.create_all(bind=engine)  # 建缺失的表(如新表)
@@ -138,9 +171,10 @@ def main() -> None:
     # 存量敏感字段明文 → 密文(P0-2)
     reencrypt_secrets()
 
-    # 发布流简化 + 参数定义 v2(幂等)
+    # 发布流简化 + 参数定义迁移(幂等)
     _migrate_pending_accept()
     _migrate_params_v2()
+    _migrate_params_v3()
 
     print("[migrate] 完成。")
 

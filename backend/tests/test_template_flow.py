@@ -1,4 +1,4 @@
-"""模板生命周期(v2):创建草稿 → 发布 → 更新回草稿 → 下线。"""
+"""模板生命周期:创建待上线 → 上线 → 编辑保持上线 → 下线。"""
 import pytest
 
 from app.core.exceptions import RubicError
@@ -36,7 +36,7 @@ def ds(db):
     return d
 
 
-def test_lifecycle_draft_publish_archive(db, admin, ds):
+def test_lifecycle_pending_publish_archive(db, admin, ds):
     tmpl = template_service.create_template(
         db, admin,
         TemplateCreateIn(
@@ -44,33 +44,51 @@ def test_lifecycle_draft_publish_archive(db, admin, ds):
             sql_text="SELECT * FROM o WHERE d = :d AND c IN (:cs)",
             params=[
                 ParamDef(name="d", kind="single", label="日期"),
-                ParamDef(name="cs", kind="list", list_mode="in"),
+                ParamDef(name="cs", kind="list"),
             ],
         ),
     )
-    assert tmpl.status == STATUS_DRAFT
+    assert tmpl.status == STATUS_DRAFT  # 新建 = 待上线
     assert tmpl.dialect == "mysql"  # 方言自动跟随数据源
 
-    # 发布:一步到位,写发布留痕
+    # 上线:一步到位,写发布留痕
     template_service.publish(db, tmpl, admin, note="上线")
     assert tmpl.status == STATUS_PUBLISHED
     ver = db.get(type(tmpl).versions.prop.mapper.class_, tmpl.published_version_id)
     assert ver.accepted_by == admin.id
     assert ver.params[0] == {
         "name": "d", "kind": "single", "label": "日期",
-        "description": None, "enum_sql": None, "list_mode": None,
+        "test_value": None, "enum_sql": None, "allow_bulk_input": False,
     }
 
-    # 更新 = 新草稿版本,状态回 draft
+    # 编辑已上线任务:新版本自动接替上线,状态保持 published
     v2 = template_service.add_version(
         db, admin, tmpl, TemplateUpdateIn(sql_text="SELECT * FROM o WHERE d = :d", params=[ParamDef(name="d")])
     )
-    assert tmpl.status == STATUS_DRAFT and v2.version_no == 2
+    assert tmpl.status == STATUS_PUBLISHED and v2.version_no == 2
+    assert tmpl.published_version_id == v2.id  # 上线指向新版本
+    assert v2.accepted_by == admin.id
 
     # 下线清空已发布版本
-    template_service.publish(db, tmpl, admin, note=None)
     template_service.archive(db, tmpl)
     assert tmpl.status == STATUS_ARCHIVED and tmpl.published_version_id is None
+
+
+def test_edit_draft_stays_draft(db, admin, ds):
+    tmpl = template_service.create_template(
+        db, admin,
+        TemplateCreateIn(
+            name="草稿编辑", datasource_id=ds.id,
+            sql_text="SELECT * FROM o WHERE d = :d", params=[ParamDef(name="d")],
+        ),
+    )
+    assert tmpl.status == STATUS_DRAFT
+    template_service.add_version(
+        db, admin, tmpl, TemplateUpdateIn(sql_text="SELECT * FROM o WHERE d = :d AND x = :x",
+                                          params=[ParamDef(name="d"), ParamDef(name="x")])
+    )
+    # 待上线任务编辑后仍待上线,不会被意外上线
+    assert tmpl.status == STATUS_DRAFT and tmpl.published_version_id is None
 
 
 def test_publish_without_version_raises(db, admin, ds):

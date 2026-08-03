@@ -32,15 +32,18 @@ def _next_version_no(db: Session, template_id: int) -> int:
 
 
 def _normalize_params(sql: str, params: list[ParamDef] | list[dict]) -> list[dict]:
-    """落库前按 SQL 写法定死 kind/list_mode,让「kind 由 SQL 判定」的约束在持久化边界生效
-    (不依赖前端如实传值)。字段 IN/NOT IN (:x) → list(方向随之),其余 → single。
+    """落库前按 SQL 写法定死 kind,让「kind 由 SQL 判定」的约束在持久化边界生效
+    (不依赖前端如实传值)。字段 IN/NOT IN (:x) → list,其余 → single。
+    single 变量不落 list 专用字段(enum_sql / allow_bulk_input)。
     """
     out = []
     for p in params:
         d = p.model_dump() if isinstance(p, ParamDef) else dict(p)
-        lm = params_service.detect_list_mode(sql, d.get("name", ""))
-        d["kind"] = "list" if lm else "single"
-        d["list_mode"] = lm
+        is_list = params_service.detect_is_list(sql, d.get("name", ""))
+        d["kind"] = "list" if is_list else "single"
+        if not is_list:
+            d["enum_sql"] = None
+            d["allow_bulk_input"] = False
         out.append(d)
     return out
 
@@ -54,7 +57,6 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
 
     tmpl = SqlTemplate(
         name=data.name,
-        domain=data.domain,
         description=data.description,
         tags=data.tags,
         datasource_id=data.datasource_id,
@@ -80,14 +82,16 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
 
 
 def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateVersion:
-    """更新模板 = 生成新草稿版本;模板回到 draft 状态。"""
+    """更新模板 = 生成新版本。编辑不改变上线状态:
+    - 原本已上线(published)→ 新版本自动接替上线,保持对业务可运行;
+    - 原本待上线(draft)/已下线 → 维持原状态,由列表「上线」操作再晋升。
+    """
+    was_published = tmpl.status == STATUS_PUBLISHED
     latest = latest_version(db, tmpl.id)
     sql_text = data.sql_text if data.sql_text is not None else (latest.sql_text if latest else "")
 
     if data.name is not None:
         tmpl.name = data.name
-    if data.domain is not None:
-        tmpl.domain = data.domain
     if data.description is not None:
         tmpl.description = data.description
     if data.tags is not None:
@@ -100,7 +104,6 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     ds = db.get(DataSource, tmpl.datasource_id)
     tmpl.dialect = ds.engine if ds else tmpl.dialect
     validate_readonly(sql_text, tmpl.dialect)
-    tmpl.status = STATUS_DRAFT
 
     params = data.params if data.params is not None else (latest.params if latest else [])
     version = TemplateVersion(
@@ -111,6 +114,13 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
         author_id=author.id,
     )
     db.add(version)
+    db.flush()
+
+    # 已上线任务被编辑:新版本自动接替上线,状态与可运行性不变;
+    # 待上线(draft)/已下线则维持原状态,由列表「上线」操作再晋升。
+    if was_published:
+        _mark_published(tmpl, version, author, "编辑保存自动上线")
+
     db.commit()
     db.refresh(version)
     return version
@@ -125,15 +135,20 @@ def latest_version(db: Session, template_id: int) -> TemplateVersion | None:
     )
 
 
+def _mark_published(tmpl: SqlTemplate, version: TemplateVersion, publisher: User, note: str | None) -> None:
+    """把某版本标记为已上线并写发布留痕(不提交,由调用方统一 commit)。"""
+    version.accepted_by = publisher.id
+    version.accepted_note = note
+    tmpl.published_version_id = version.id
+    tmpl.status = STATUS_PUBLISHED
+
+
 def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -> None:
     """发布最新版本(accepted_by/accepted_note 作发布留痕)。"""
     version = latest_version(db, tmpl.id)
     if version is None:
         raise RubicError("模板没有可发布的版本")
-    version.accepted_by = publisher.id
-    version.accepted_note = note
-    tmpl.published_version_id = version.id
-    tmpl.status = STATUS_PUBLISHED
+    _mark_published(tmpl, version, publisher, note)
     db.commit()
 
 

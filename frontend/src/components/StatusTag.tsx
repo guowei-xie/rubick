@@ -12,8 +12,8 @@ export const JOB_STATUS: TagMap = {
 };
 
 export const TEMPLATE_STATUS: TagMap = {
-  draft: { color: "default", label: "草稿" },
-  published: { color: "green", label: "已发布" },
+  draft: { color: "gold", label: "待上线" },
+  published: { color: "green", label: "已上线" },
   archived: { color: "red", label: "已下线" },
 };
 

@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Divider, Form, Input, InputNumber, message, Modal, Select, Space, Tag, Typography } from "antd";
+import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Select, Space, Tag, Typography } from "antd";
 import {
   createTemplate,
   errMsg,
   getTemplate,
   listDatasources,
-  publishTemplate,
   runEnumSql,
   testRun,
   updateTemplate,
@@ -14,24 +13,12 @@ import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import { PasteListButton } from "./ParamForm";
 
-// 按 SQL 里 :变量 旁的运算符判定列表写法:not_in / in / null(=单值)。NOT IN 要先判,否则会被 IN 命中
-function listKind(sql: string, name: string): "in" | "not_in" | null {
-  if (!name) return null;
+/** 变量形态只判 值列表 / 单值:`字段 IN (:x)` / `NOT IN (:x)` → 值列表,其余 → 单值。
+ *  与后端 params_service.detect_is_list 保持等价,改此正则需同步后端。 */
+function isListVar(sql: string, name: string): boolean {
+  if (!name) return false;
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`\\bNOT\\s+IN\\s*\\(\\s*:${esc}\\b`, "i").test(sql || "")) return "not_in";
-  if (new RegExp(`\\bIN\\s*\\(\\s*:${esc}\\b`, "i").test(sql || "")) return "in";
-  return null;
-}
-
-// 变量形态由 SQL 写法判定:IN / NOT IN → 值列表(业务多选),其余 → 单值文本
-function deriveKind(sql: string, name: string): "single" | "list" {
-  return listKind(sql, name) ? "list" : "single";
-}
-
-// 落库/试跑用的参数形态:kind 与 list_mode 都来自 SQL 写法,一次判定复用(避免重复扫描)
-function deriveDef(sql: string, name: string): { name: string; kind: "single" | "list"; list_mode?: "in" | "not_in" } {
-  const lk = listKind(sql, name);
-  return { name, kind: lk ? "list" : "single", list_mode: lk ?? undefined };
+  return new RegExp(`\\bIN\\s*\\(\\s*:${esc}\\b`, "i").test(sql || "");
 }
 
 /** 从 SQL 解析出去重的 :变量 名。 */
@@ -45,13 +32,6 @@ function parseVariables(sql: string): string[] {
     }
   }
   return out;
-}
-
-/** 变量形态徽标:单值 / 列表(含方向)。 */
-function KindTag({ sql, name }: { sql: string; name: string }) {
-  const lk = listKind(sql, name);
-  if (!lk) return <Tag>单值</Tag>;
-  return lk === "not_in" ? <Tag color="red">列表 · 排除</Tag> : <Tag color="blue">列表 · 包含</Tag>;
 }
 
 export default function TaskEditor({
@@ -71,44 +51,40 @@ export default function TaskEditor({
   const [saving, setSaving] = useState(false);
   const [enumSqlTesting, setEnumSqlTesting] = useState<string | null>(null); // 正在测试 enum_sql 的变量
   const [enumSample, setEnumSample] = useState<Record<string, { values: string[]; truncated: boolean }>>({}); // 各变量 enum_sql 测试结果
-  const [testValues, setTestValues] = useState<Record<string, any>>({}); // 试跑用的测试值(不入库)
   const [showSql, setShowSql] = useState(false);
-  const [expand, setExpand] = useState<Record<string, boolean>>({}); // 卡片里可折叠区(enum_sql / 说明)的展开态
+  const [activeKeys, setActiveKeys] = useState<string[]>([]); // 展开的变量卡(默认全部展开)
   const [form] = Form.useForm();
   const sqlWatch = Form.useWatch("sql_text", form);
-
-  // 折叠区是否展开:显式点过则用点过的;否则字段有值就默认展开
-  const isExpanded = (key: string, hasValue: boolean) => (key in expand ? expand[key] : hasValue);
-  const setExpanded = (key: string, open: boolean) => setExpand((e) => ({ ...e, [key]: open }));
 
   useEffect(() => {
     if (!open) return;
     listDatasources().then(setDatasources);
     setPreview(null);
-    setTestValues({});
     setEnumSample({});
-    setExpand({});
     if (editingId) {
       getTemplate(editingId).then((d) => {
         const v = d.latest_version || d.published_version;
+        const params = (v?.params || []).map((p: any) => ({
+          name: p.name,
+          label: p.label,
+          test_value: p.test_value,
+          enum_sql: p.enum_sql,
+          allow_bulk_input: p.allow_bulk_input,
+        }));
         form.setFieldsValue({
           name: d.name,
-          domain: d.domain,
           description: d.description,
           datasource_id: d.datasource_id,
           timeout_seconds: d.timeout_seconds,
           sql_text: v?.sql_text,
-          params: (v?.params || []).map((p: any) => ({
-            name: p.name,
-            label: p.label,
-            description: p.description,
-            enum_sql: p.enum_sql,
-          })),
+          params,
         });
+        setActiveKeys(params.map((p: any) => p.name)); // 默认全部展开
       });
     } else {
       form.resetFields();
       form.setFieldsValue({ params: [] });
+      setActiveKeys([]);
     }
   }, [open, editingId]);
 
@@ -122,6 +98,7 @@ export default function TaskEditor({
       if (vars.join(",") === existing.map((p) => p?.name).join(",")) return;
       const byName = Object.fromEntries(existing.map((p) => [p?.name, p]));
       form.setFieldsValue({ params: vars.map((name) => byName[name] || { name, label: name }) });
+      setActiveKeys(vars); // 变量集变化时默认展开全部(含新增)
     }, 400);
     return () => clearTimeout(t);
   }, [sqlWatch, open]);
@@ -136,7 +113,7 @@ export default function TaskEditor({
     try {
       const res = await runEnumSql({ datasource_id, sql });
       setEnumSample((s) => ({ ...s, [varName]: { values: res.values, truncated: res.truncated } }));
-      message.success(`取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""},可在下方试跑面板勾选`);
+      message.success(`取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""},可作为测试值/业务候选`);
     } catch (e: any) {
       message.error(errMsg(e, "枚举 SQL 测试失败"));
     } finally {
@@ -146,16 +123,19 @@ export default function TaskEditor({
 
   const collect = async () => {
     const v = await form.validateFields();
+    const sql = v.sql_text || "";
     return {
       ...v,
-      // 落库的参数:形态(kind/list_mode)由 SQL 写法判定;另留 展示名/说明/枚举获取SQL
+      // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
       params: (v.params || []).map((p: any) => {
-        const def = deriveDef(v.sql_text, p.name);
+        const list = isListVar(sql, p.name);
         return {
-          ...def,
-          label: p.label,
-          description: p.description || undefined,
-          enum_sql: def.kind === "list" ? p.enum_sql || undefined : undefined,
+          name: p.name,
+          kind: list ? "list" : "single",
+          label: p.label || undefined,
+          test_value: normalizeTestValue(p.test_value, list),
+          enum_sql: list ? p.enum_sql || undefined : undefined,
+          allow_bulk_input: list ? !!p.allow_bulk_input : undefined,
         };
       }),
     };
@@ -166,14 +146,17 @@ export default function TaskEditor({
     const v = form.getFieldsValue(true);
     if (!v.datasource_id) return message.warning("请先选择数据源");
     if (!v.sql_text) return message.warning("请先填写 SQL");
-    const defs = (v.params || []).map((p: any) => deriveDef(v.sql_text, p.name));
-    // 所有变量运行时必填:试跑同样要求填全测试值
+    const params: any[] = v.params || [];
+    // 所有变量运行时必填:试跑用各变量配置的「测试值」。一次遍历同时产出 defs 与 values
+    const defs: { name: string; kind: "single" | "list" }[] = [];
     const values: any = {};
-    for (const d of defs) {
-      const tv = testValues[d.name];
+    for (const p of params) {
+      const list = isListVar(v.sql_text, p.name);
+      const tv = normalizeTestValue(p.test_value, list);
       const empty = tv == null || tv === "" || (Array.isArray(tv) && !tv.length);
-      if (empty) return message.warning(`请先填写变量「${d.name}」的测试值`);
-      values[d.name] = tv;
+      if (empty) return message.warning(`请先给变量「${p.name}」填测试值`);
+      defs.push({ name: p.name, kind: list ? "list" : "single" });
+      values[p.name] = tv;
     }
     setTesting(true);
     setPreview(null);
@@ -198,14 +181,14 @@ export default function TaskEditor({
     }
   };
 
-  const doSave = async (payload: any, publish: boolean) => {
+  const save = async () => {
+    const payload = await collect().catch(() => null);
+    if (!payload) return;
     setSaving(true);
     try {
-      let id = editingId;
-      if (id) await updateTemplate(id, payload);
-      else id = (await createTemplate(payload)).id;
-      if (publish) await publishTemplate(id!, "编辑器保存并上线");
-      message.success(publish ? "已保存并上线" : "已保存为草稿");
+      if (editingId) await updateTemplate(editingId, payload);
+      else await createTemplate(payload);
+      message.success(editingId ? "已保存" : "已创建(待上线)");
       onSaved();
       onClose();
     } catch (e: any) {
@@ -215,17 +198,91 @@ export default function TaskEditor({
     }
   };
 
-  const save = async (publish: boolean) => {
-    const payload = await collect().catch(() => null);
-    if (!payload) return;
-    if (!publish) return doSave(payload, false);
-    Modal.confirm({
-      title: "保存并上线?",
-      content: "上线后,被授权的业务用户即可运行该任务的最新版本。",
-      okText: "上线",
-      onOk: () => doSave(payload, true),
-    });
-  };
+  // 单个变量折叠卡(默认展开):头部只读展示,内容体承载可编辑项
+  function variablePanel(f: any) {
+    const sql = form.getFieldValue("sql_text") || "";
+    const p = form.getFieldValue(["params", f.name]) || {};
+    const list = isListVar(sql, p.name);
+    const sample = enumSample[p.name];
+    return {
+      key: p.name,
+      forceRender: true, // 折叠时也注册 Form.Item,保证保存不丢
+      label: (
+        <Space wrap size={6}>
+          <code style={{ fontSize: 14 }}>:{p.name}</code>
+          <Tag color={list ? "blue" : "default"}>{list ? "值列表" : "单值"}</Tag>
+          {p.label && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{p.label}</Typography.Text>}
+        </Space>
+      ),
+      children: (
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>变量说明(业务填参时显示为该字段名与提示)</div>
+            <Form.Item {...f} name={[f.name, "label"]} noStyle>
+              <Input placeholder="例如:开始日期(格式 yyyy-mm-dd)" />
+            </Form.Item>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>
+              测试值 <Typography.Text type="secondary" style={{ fontSize: 12 }}>(用于试跑,并作为业务填写示例)</Typography.Text>
+            </div>
+            {list ? (
+              <Space wrap align="center" style={{ width: "100%" }}>
+                <Form.Item {...f} name={[f.name, "test_value"]} noStyle>
+                  <Select
+                    mode="tags"
+                    allowClear
+                    style={{ minWidth: 320 }}
+                    placeholder="输入若干示例值,或从候选/粘贴选取"
+                    options={(sample?.values || []).map((v) => ({ value: v, label: v }))}
+                  />
+                </Form.Item>
+                <PasteListButton
+                  onAdd={(vals) => {
+                    const cur: string[] = form.getFieldValue(["params", f.name, "test_value"]) || [];
+                    form.setFieldValue(["params", f.name, "test_value"], Array.from(new Set([...cur, ...vals])));
+                  }}
+                />
+              </Space>
+            ) : (
+              <Form.Item {...f} name={[f.name, "test_value"]} noStyle>
+                <Input style={{ maxWidth: 360 }} placeholder="样例值(如 2026-07-01 或 100)" />
+              </Form.Item>
+            )}
+          </div>
+
+          {list && (
+            <>
+              <Form.Item {...f} name={[f.name, "allow_bulk_input"]} valuePropName="checked" noStyle>
+                <Checkbox>允许业务「上传 / 粘贴」批量输入(勾选后业务填参才出现该入口)</Checkbox>
+              </Form.Item>
+              <div>
+                <div style={{ fontSize: 13, marginBottom: 4 }}>
+                  枚举值获取 SQL <Typography.Text type="secondary" style={{ fontSize: 12 }}>(选填,业务点「获取枚举值」时跑,返回一列候选)</Typography.Text>
+                  <Button type="link" size="small" loading={enumSqlTesting === p.name} onClick={() => testEnumSql(f.name, p.name)}>
+                    测试
+                  </Button>
+                </div>
+                <Form.Item {...f} name={[f.name, "enum_sql"]} noStyle>
+                  <Input.TextArea
+                    rows={2}
+                    style={{ fontFamily: "monospace" }}
+                    placeholder="SELECT DISTINCT user_id FROM dim_user ORDER BY 1"
+                  />
+                </Form.Item>
+                {sample && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#52c41a" }}>
+                    ✓ 取到 {sample.values.length} 个候选值{sample.truncated ? "(已截断)" : ""},可用于上方测试值选择
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </Space>
+      ),
+    };
+  }
 
   return (
     <Modal
@@ -236,23 +293,21 @@ export default function TaskEditor({
       styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       footer={[
         <Button key="cancel" onClick={onClose}>取消</Button>,
-        <Button key="draft" loading={saving} onClick={() => save(false)}>保存草稿</Button>,
-        <Button key="publish" type="primary" loading={saving} onClick={() => save(true)}>保存并上线</Button>,
+        <Button key="save" type="primary" loading={saving} onClick={save}>
+          {editingId ? "保存" : "创建"}
+        </Button>,
       ]}
     >
       <Form form={form} layout="vertical">
         <Space style={{ width: "100%" }} size="large" wrap>
           <Form.Item name="name" label="任务名称" rules={[{ required: true }]}>
-            <Input style={{ width: 280 }} />
+            <Input style={{ width: 300 }} />
           </Form.Item>
           <Form.Item name="datasource_id" label="数据源" rules={[{ required: true }]}>
             <Select
               style={{ width: 240 }}
               options={datasources.map((d) => ({ value: d.id, label: `${d.name} (${d.engine})` }))}
             />
-          </Form.Item>
-          <Form.Item name="domain" label="业务域">
-            <Input style={{ width: 140 }} />
           </Form.Item>
           <Form.Item
             name="timeout_seconds"
@@ -262,8 +317,8 @@ export default function TaskEditor({
             <InputNumber style={{ width: 140 }} min={1} placeholder="默认" />
           </Form.Item>
         </Space>
-        <Form.Item name="description" label="说明">
-          <Input.TextArea rows={2} />
+        <Form.Item name="description" label="任务说明">
+          <Input.TextArea rows={2} placeholder="这个取数任务是做什么的,给协作者/业务参考" />
         </Form.Item>
         <Form.Item
           name="sql_text"
@@ -271,93 +326,30 @@ export default function TaskEditor({
           tooltip="用 :变量 做占位符;写 字段 IN (:x) / NOT IN (:x) 的变量会让业务多选一组值,其余变量业务填单个值。所有变量运行时必填。"
           rules={[{ required: true }]}
         >
-          <Input.TextArea rows={7} style={{ fontFamily: "monospace" }} />
+          <Input.TextArea rows={7} style={{ fontFamily: "monospace" }} placeholder="SELECT ... WHERE dt = :dt AND uid IN (:uids)" />
         </Form.Item>
 
-        <Divider orientation="left">变量</Divider>
+        <Divider orientation="left">变量配置</Divider>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          变量随 SQL 自动识别:<code>字段 IN (:x)</code> / <code>NOT IN (:x)</code> → 列表(业务多选),
-          其余 → 单值文本。给变量起个业务能看懂的展示名即可;试跑用的测试值在下方「试跑预览」里填。
+          变量随 SQL 自动识别:<code>字段 IN (:x)</code> / <code>NOT IN (:x)</code> → 值列表(业务多选),其余 → 单值。
+          每个变量可折叠;填「变量说明」与「测试值」即可。
         </Typography.Text>
         <Form.List name="params">
           {(fields) => (
-            <div style={{ marginTop: 8 }}>
-              {fields.length === 0 && (
+            <div style={{ marginTop: 10 }}>
+              {fields.length === 0 ? (
                 <Typography.Text type="secondary">SQL 里还没有 :变量 占位符</Typography.Text>
+              ) : (
+                <Form.Item noStyle shouldUpdate>
+                  {() => (
+                    <Collapse
+                      activeKey={activeKeys}
+                      onChange={(k) => setActiveKeys(k as string[])}
+                      items={fields.map(variablePanel)}
+                    />
+                  )}
+                </Form.Item>
               )}
-              {fields.map((f) => (
-                <Card key={f.key} size="small" style={{ marginBottom: 10 }}>
-                  <Form.Item noStyle shouldUpdate>
-                    {() => {
-                      const sql = form.getFieldValue("sql_text") || "";
-                      const p = form.getFieldValue(["params", f.name]) || {};
-                      const kind = deriveKind(sql, p.name);
-                      const sqlKey = `${p.name}:sql`;
-                      const descKey = `${p.name}:desc`;
-                      const sqlOpen = isExpanded(sqlKey, !!p.enum_sql);
-                      const descOpen = isExpanded(descKey, !!p.description);
-                      return (
-                        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                          <Space wrap align="center">
-                            <code style={{ fontSize: 14 }}>:{p.name}</code>
-                            <KindTag sql={sql} name={p.name} />
-                            <Form.Item {...f} name={[f.name, "label"]} noStyle>
-                              <Input placeholder="展示名(给业务看)" style={{ width: 200 }} />
-                            </Form.Item>
-                            {kind === "list" && !sqlOpen && (
-                              <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpanded(sqlKey, true)}>
-                                + 配置枚举值获取SQL
-                              </Button>
-                            )}
-                            {!descOpen && (
-                              <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpanded(descKey, true)}>
-                                + 添加说明
-                              </Button>
-                            )}
-                          </Space>
-
-                          {kind === "list" && sqlOpen && (
-                            <div>
-                              <div style={{ marginBottom: 4 }}>
-                                <span style={{ fontSize: 13 }}>枚举值获取SQL</span>
-                                <Button type="link" size="small" loading={enumSqlTesting === p.name} onClick={() => testEnumSql(f.name, p.name)}>
-                                  测试
-                                </Button>
-                                <Button type="link" size="small" onClick={() => setExpanded(sqlKey, false)}>收起</Button>
-                              </div>
-                              <Form.Item {...f} name={[f.name, "enum_sql"]} noStyle>
-                                <Input.TextArea
-                                  rows={2}
-                                  style={{ fontFamily: "monospace" }}
-                                  placeholder="SELECT DISTINCT user_id FROM dim_user ORDER BY 1 —— 业务点「获取枚举值」时跑,返回一列候选"
-                                />
-                              </Form.Item>
-                              {enumSample[p.name] && (
-                                <div style={{ marginTop: 6, fontSize: 12, color: "#52c41a" }}>
-                                  ✓ 取到 {enumSample[p.name].values.length} 个候选值
-                                  {enumSample[p.name].truncated ? "(已截断)" : ""},已作为下方试跑面板的可选项
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {descOpen && (
-                            <div>
-                              <div style={{ marginBottom: 4 }}>
-                                <span style={{ fontSize: 13 }}>说明(业务填参时显示)</span>
-                                <Button type="link" size="small" onClick={() => setExpanded(descKey, false)}>收起</Button>
-                              </div>
-                              <Form.Item {...f} name={[f.name, "description"]} noStyle>
-                                <Input.TextArea rows={2} placeholder="给业务的填写提示,例如字段含义、格式要求、示例值" />
-                              </Form.Item>
-                            </div>
-                          )}
-                        </Space>
-                      );
-                    }}
-                  </Form.Item>
-                </Card>
-              ))}
             </div>
           )}
         </Form.List>
@@ -367,60 +359,12 @@ export default function TaskEditor({
             {testing ? "试跑中…" : "测试运行"}
           </Button>
         </Divider>
-        <Form.Item noStyle shouldUpdate>
-          {() => {
-            const sql = form.getFieldValue("sql_text") || "";
-            const defs: any[] = form.getFieldValue("params") || [];
-            if (!defs.length) return null;
-            return (
-              <Space direction="vertical" size={6} style={{ width: "100%", marginBottom: 8 }}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  测试值仅供试跑,不保存、不展示给业务:
-                </Typography.Text>
-                {defs.map((p) => {
-                  const kind = deriveKind(sql, p?.name);
-                  return (
-                    <Space key={p?.name} wrap align="center">
-                      <code style={{ width: 140, display: "inline-block" }}>:{p?.name}</code>
-                      {kind === "list" ? (
-                        <>
-                          <Select
-                            mode="tags"
-                            allowClear
-                            showSearch
-                            style={{ width: 360 }}
-                            placeholder="勾选枚举候选,或直接输入 / 上传"
-                            value={testValues[p?.name] || []}
-                            onChange={(vals) => setTestValues((s) => ({ ...s, [p?.name]: vals }))}
-                            options={(enumSample[p?.name]?.values || []).map((v) => ({ value: v, label: v }))}
-                          />
-                          <PasteListButton
-                            onAdd={(vals) =>
-                              setTestValues((s) => ({
-                                ...s,
-                                [p?.name]: Array.from(new Set([...(s[p?.name] || []), ...vals])),
-                              }))
-                            }
-                          />
-                        </>
-                      ) : (
-                        <Input
-                          style={{ width: 360 }}
-                          placeholder="样例值(如 2026-07-01 或 100)"
-                          value={testValues[p?.name]}
-                          onChange={(e) => setTestValues((s) => ({ ...s, [p?.name]: e.target.value }))}
-                        />
-                      )}
-                    </Space>
-                  );
-                })}
-              </Space>
-            );
-          }}
-        </Form.Item>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          用各变量配置的「测试值」试跑,返回样例行供自检。
+        </Typography.Text>
         {preview && (
           <>
-            <div style={{ margin: "4px 0", color: "#52c41a" }}>
+            <div style={{ margin: "8px 0 4px", color: "#52c41a" }}>
               ✓ 返回 {preview.row_count} 行 · {preview.columns.length} 列
               {preview.executed_sql && (
                 <Button type="link" size="small" onClick={() => setShowSql(true)}>查看执行SQL</Button>
@@ -433,4 +377,14 @@ export default function TaskEditor({
       <SqlModal sql={showSql ? preview?.executed_sql || "" : null} onClose={() => setShowSql(false)} />
     </Modal>
   );
+}
+
+/** 测试值归一:list → 字符串数组;single → 字符串。空值归一为 undefined。 */
+function normalizeTestValue(tv: any, list: boolean): any {
+  if (list) {
+    if (Array.isArray(tv)) return tv.length ? tv : undefined;
+    return tv == null || tv === "" ? undefined : [String(tv)];
+  }
+  if (Array.isArray(tv)) return tv.length ? String(tv[0]) : undefined;
+  return tv == null || tv === "" ? undefined : String(tv);
 }
