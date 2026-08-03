@@ -59,6 +59,7 @@ def test_lifecycle_pending_publish_archive(db, admin, ds):
     assert ver.params[0] == {
         "name": "d", "kind": "single", "value_type": "text", "label": "日期",
         "test_value": None, "enum_sql": None, "allow_bulk_input": False,
+        "enum_sql_duration_ms": None,
     }
 
     # 编辑已上线任务:新版本自动接替上线,状态保持 published

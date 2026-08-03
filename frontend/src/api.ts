@@ -33,6 +33,14 @@ export interface ParamDef {
   test_value?: string | string[]; // 测试值:作者试跑用,兼作业务填参示例
   enum_sql?: string; // 仅 list:取候选值的独立 SELECT(业务点「获取枚举值」时跑)
   allow_bulk_input?: boolean; // 仅 list:是否允许业务「上传/粘贴」批量输入
+  enum_sql_duration_ms?: number; // 仅 list:作者测试 enum_sql 时捕获的获取耗时(ms),供业务参考
+}
+
+// 枚举值获取结果:候选值 + 是否截断 + 本次获取耗时(ms)
+export interface ValueListOut {
+  values: string[];
+  truncated: boolean;
+  duration_ms?: number;
 }
 
 export interface User {
@@ -66,10 +74,10 @@ export const previewSql = (data: { sql_text: string; params: any[]; values: any 
   http.post("/templates/preview-sql", data).then((r) => r.data as { rendered_sql: string });
 // 分析师测试「枚举值获取 SQL」
 export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
-  http.post("/templates/enum-sql", data).then((r) => r.data);
+  http.post("/templates/enum-sql", data).then((r) => r.data as ValueListOut);
 // 业务填参:跑某变量已配置的 enum_sql 取候选值
 export const taskEnumValues = (templateId: number, variable: string) =>
-  http.get(`/tasks/${templateId}/enum-values`, { params: { variable } }).then((r) => r.data);
+  http.get(`/tasks/${templateId}/enum-values`, { params: { variable } }).then((r) => r.data as ValueListOut);
 
 // ---- tasks(统一任务列表)----
 export const listTasks = () => http.get("/tasks").then((r) => r.data);
