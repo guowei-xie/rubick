@@ -1,4 +1,4 @@
-"""SQL 模板的编写、版本、发布、验收、试跑。"""
+"""SQL 模板的编写、版本、发布、试跑。"""
 from __future__ import annotations
 
 from sqlalchemy import func, select
@@ -13,7 +13,6 @@ from app.models.query_job import JOB_FAILED, JOB_RUNNING, JOB_SUCCESS, SOURCE_TE
 from app.models.template import (
     STATUS_ARCHIVED,
     STATUS_DRAFT,
-    STATUS_PENDING_ACCEPT,
     STATUS_PUBLISHED,
     SqlTemplate,
     TemplateVersion,
@@ -32,10 +31,17 @@ def _next_version_no(db: Session, template_id: int) -> int:
     return (current or 0) + 1
 
 
-def _param_dicts(params: list[ParamDef] | list[dict]) -> list[dict]:
+def _normalize_params(sql: str, params: list[ParamDef] | list[dict]) -> list[dict]:
+    """落库前按 SQL 写法定死 kind/list_mode,让「kind 由 SQL 判定」的约束在持久化边界生效
+    (不依赖前端如实传值)。字段 IN/NOT IN (:x) → list(方向随之),其余 → single。
+    """
     out = []
     for p in params:
-        out.append(p.model_dump() if isinstance(p, ParamDef) else dict(p))
+        d = p.model_dump() if isinstance(p, ParamDef) else dict(p)
+        lm = params_service.detect_list_mode(sql, d.get("name", ""))
+        d["kind"] = "list" if lm else "single"
+        d["list_mode"] = lm
+        out.append(d)
     return out
 
 
@@ -64,7 +70,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         template_id=tmpl.id,
         version_no=1,
         sql_text=data.sql_text,
-        params=_param_dicts(data.params),
+        params=_normalize_params(data.sql_text, data.params),
         author_id=author.id,
     )
     db.add(version)
@@ -101,7 +107,7 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
         template_id=tmpl.id,
         version_no=_next_version_no(db, tmpl.id),
         sql_text=sql_text,
-        params=_param_dicts(params),
+        params=_normalize_params(sql_text, params),
         author_id=author.id,
     )
     db.add(version)
@@ -119,17 +125,12 @@ def latest_version(db: Session, template_id: int) -> TemplateVersion | None:
     )
 
 
-def submit_for_accept(db: Session, tmpl: SqlTemplate) -> None:
-    tmpl.status = STATUS_PENDING_ACCEPT
-    db.commit()
-
-
-def accept_and_publish(db: Session, tmpl: SqlTemplate, accepter: User, note: str | None) -> None:
-    """验收通过并发布最新版本。"""
+def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -> None:
+    """发布最新版本(accepted_by/accepted_note 作发布留痕)。"""
     version = latest_version(db, tmpl.id)
     if version is None:
         raise RubicError("模板没有可发布的版本")
-    version.accepted_by = accepter.id
+    version.accepted_by = publisher.id
     version.accepted_note = note
     tmpl.published_version_id = version.id
     tmpl.status = STATUS_PUBLISHED
@@ -212,9 +213,6 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
     }
 
 
-# 候选枚举值发现:一次最多返回这么多个不同取值;超过则大概率不适合做下拉枚举
-_ENUM_VALUES_CAP = 500
-
 # 「枚举值获取 SQL」一次最多返回的候选数
 _ENUM_SQL_CAP = 1000
 
@@ -246,101 +244,3 @@ def run_value_query(db: Session, datasource_id: int, sql: str) -> dict:
             seen.add(s)
             values.append(s)
     return {"values": values, "truncated": result.truncated}
-
-
-def discover_enum_values(db: Session, data) -> dict:
-    """自动发现变量对应字段的候选枚举值。
-
-    做法:用 sqlglot 解析 SQL,定位 `字段 = :变量` / `字段 IN (:变量)` 里的字段,
-    重写成 `SELECT DISTINCT 字段 FROM ... WHERE <保留的静态过滤> AND 字段 IS NOT NULL`
-    (含变量的谓词全部去掉,静态过滤保留),读只读连接器取回全部取值。
-    """
-    ds = db.get(DataSource, data.datasource_id)
-    if ds is None:
-        raise NotFoundError("数据源不存在")
-    validate_readonly(data.sql_text, ds.engine)  # 源 SQL 先过安全网关
-
-    column, disco_sql = _build_enum_query(data.sql_text, data.variable, ds.engine)
-    validate_readonly(disco_sql, ds.engine)  # 生成的发现查询也过一遍网关(纵深防御)
-
-    connector = get_connector(ds)
-    try:
-        result = connector.execute(
-            disco_sql,
-            {},
-            timeout_seconds=settings.QUERY_TIMEOUT_SECONDS,
-            max_rows=_ENUM_VALUES_CAP,
-        )
-    except RubicError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise RubicError(f"取候选值失败(字段 {column}):{str(e)[:400]}") from e
-    values = [str(r[0]) for r in result.rows if r and r[0] is not None]
-    return {"column": column, "values": values, "truncated": result.truncated}
-
-
-def _build_enum_query(sql_text: str, variable: str, engine: str) -> tuple[str, str]:
-    """返回 (字段表达式, 发现查询 SQL);无法识别时抛 RubicError。"""
-    import sqlglot
-    from sqlglot import exp
-
-    dialect = engine if engine in ("hive", "mysql") else None
-    try:
-        tree = sqlglot.parse_one(sql_text, dialect=dialect)
-    except Exception as e:  # noqa: BLE001
-        raise RubicError(f"SQL 解析失败,无法自动取候选值:{e}") from e
-
-    if not isinstance(tree, exp.Select) or "from" not in tree.args:
-        raise RubicError("仅支持单层 SELECT(含 FROM)的查询自动取候选值,请手动填写枚举值")
-    if tree.args.get("with"):
-        raise RubicError("SQL 含 CTE(WITH …),结构较复杂,无法安全自动取候选值,请手动填写枚举值")
-    from_this = tree.args["from"].this
-    if not isinstance(from_this, exp.Table):
-        raise RubicError("主查询来源不是单张表(含子查询/派生表),无法自动取候选值,请手动填写枚举值")
-
-    col = None
-    for node in tree.walk():
-        node = node[0] if isinstance(node, tuple) else node
-        if isinstance(node, exp.EQ):
-            for side, other in ((node.left, node.right), (node.right, node.left)):
-                if (
-                    isinstance(side, exp.Placeholder)
-                    and side.this == variable
-                    and isinstance(other, exp.Column)
-                ):
-                    col = other
-        elif isinstance(node, exp.In):
-            phs = node.args.get("expressions") or []
-            if isinstance(node.this, exp.Column) and any(
-                isinstance(e, exp.Placeholder) and e.this == variable for e in phs
-            ):
-                col = node.this
-    if col is None:
-        raise RubicError(
-            f"未能自动识别变量 :{variable} 对应的字段"
-            "(仅支持「字段 = :变量」或「字段 IN (:变量)」这类等值筛选)"
-        )
-
-    preds = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.In, exp.Like, exp.ILike)
-
-    def _has_placeholder(n) -> bool:
-        for d in n.walk():
-            d = d[0] if isinstance(d, tuple) else d
-            if isinstance(d, exp.Placeholder):
-                return True
-        return False
-
-    # 把所有含变量占位符的谓词替换成 TRUE,保留静态过滤条件
-    stripped = tree.transform(
-        lambda n: exp.true() if isinstance(n, preds) and _has_placeholder(n) else n
-    )
-
-    disco = exp.Select().select(exp.Distinct(expressions=[col.copy()]))
-    disco.set("from", stripped.args["from"].copy())
-    for j in stripped.args.get("joins", []) or []:
-        disco = disco.join(j.copy())
-    not_null = exp.Is(this=col.copy(), expression=exp.Not(this=exp.Null()))
-    where = stripped.args.get("where")
-    disco = disco.where(exp.and_(where.this, not_null) if where else not_null)
-    disco = disco.order_by(exp.Literal.number(1)).limit(_ENUM_VALUES_CAP + 1)
-    return col.sql(dialect), disco.sql(dialect)

@@ -7,9 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
-# 模板生命周期
+# 模板生命周期:草稿 → 已发布 →(可下线)
 STATUS_DRAFT = "draft"
-STATUS_PENDING_ACCEPT = "pending_accept"
 STATUS_PUBLISHED = "published"
 STATUS_ARCHIVED = "archived"
 
@@ -26,7 +25,8 @@ class SqlTemplate(Base, TimestampMixin):
     tags: Mapped[list] = mapped_column(JSON, default=list)
 
     datasource_id: Mapped[int] = mapped_column(ForeignKey(tbl("data_sources.id")))
-    dialect: Mapped[str] = mapped_column(String(32))  # hive / mysql,与数据源一致
+    # hive / mysql;冗余存储,始终=数据源 engine,仅内部使用(不出现在 API)
+    dialect: Mapped[str] = mapped_column(String(32))
 
     status: Mapped[str] = mapped_column(String(32), default=STATUS_DRAFT)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
@@ -64,7 +64,7 @@ class SqlTemplate(Base, TimestampMixin):
 
 
 class TemplateVersion(Base, TimestampMixin):
-    """模板的一个不可变版本:SQL 原文快照 + 参数定义 + 验收记录。"""
+    """模板的一个不可变版本:SQL 原文快照 + 参数定义 + 发布留痕。"""
 
     __tablename__ = tbl("template_versions")
 
@@ -74,11 +74,11 @@ class TemplateVersion(Base, TimestampMixin):
     )
     version_no: Mapped[int] = mapped_column(Integer)  # 模板内自增
     sql_text: Mapped[str] = mapped_column(Text)
-    # 参数定义:[{name,type,required,default,label,options}]
+    # 参数定义:[{name, kind(single|list), label, description, enum_sql, list_mode}]
     params: Mapped[list] = mapped_column(JSON, default=list)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 
-    # 验收留痕
+    # 发布留痕(历史数据含验收记录)
     accepted_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     accepted_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

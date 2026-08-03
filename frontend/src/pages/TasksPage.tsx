@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Modal, Space, Table, Tag, message } from "antd";
-import { archiveTemplate, errMsg, listTasks, publishTemplate } from "../api";
+import { Button, Card, Modal, Space, Table, Tag } from "antd";
+import { archiveTemplate, listTasks } from "../api";
 import { useAuth } from "../auth";
 import StatusTag, { TEMPLATE_STATUS } from "../components/StatusTag";
 import TaskEditor from "../components/TaskEditor";
@@ -38,21 +38,6 @@ export default function TasksPage() {
     sp.delete("records");
     setSp(sp, { replace: true });
   }, [tasks]);
-
-  const doPublish = (row: any) =>
-    Modal.confirm({
-      title: `发布任务「${row.name}」?`,
-      content: "发布 = 验收通过并对被授权的业务用户可运行(发布最新版本)。",
-      onOk: async () => {
-        try {
-          await publishTemplate(row.id, "任务列表发布");
-          message.success("已发布");
-          load();
-        } catch (e: any) {
-          message.error(errMsg(e, "发布失败"));
-        }
-      },
-    });
 
   const doArchive = (row: any) =>
     Modal.confirm({
@@ -108,12 +93,10 @@ export default function TasksPage() {
       render: (_: any, r: any) =>
         r.can_manage ? (
           <Space size={0} wrap>
-            <Button type="link" size="small" onClick={() => setEditorId(r.id)}>代码编辑</Button>
+            <Button type="link" size="small" onClick={() => setEditorId(r.id)}>编辑</Button>
             <Button type="link" size="small" onClick={() => setGrantTarget(r)}>授权</Button>
-            {r.status === "published" ? (
+            {r.status === "published" && (
               <Button type="link" size="small" danger onClick={() => doArchive(r)}>下线</Button>
-            ) : (
-              <Button type="link" size="small" onClick={() => doPublish(r)}>发布</Button>
             )}
           </Space>
         ) : (

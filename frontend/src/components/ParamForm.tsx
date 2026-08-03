@@ -1,14 +1,7 @@
 import { useState } from "react";
-import { Button, DatePicker, Form, Input, InputNumber, message, Modal, Select, Space, Upload } from "antd";
+import { Button, Form, Input, message, Modal, Select, Space, Upload } from "antd";
 import { CloudUploadOutlined, ThunderboltOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
 import { errMsg, ParamDef, taskEnumValues } from "../api";
-
-const { RangePicker } = DatePicker;
-
-// 兼容旧类型名(把历史类型别名归一到当前取值方式);多处复用
-export const norm = (t?: string): string =>
-  (({ string: "text", daterange: "date_range" } as any)[t || "text"] || t || "text");
 
 // 把粘贴/上传的文本解析成去重的值列表(按换行/逗号/分号/空白分隔)
 function parseIdList(text: string): string[] {
@@ -69,8 +62,8 @@ export function PasteListButton({ onAdd }: { onAdd: (vals: string[]) => void }) 
   );
 }
 
-/** 枚举/列表多选控件:自由输入 / 获取枚举值 / 上传粘贴。筛选方向(IN 包含 / NOT IN 排除)由模板 SQL 决定。 */
-function MultiEnumField({
+/** 值列表多选控件:自由输入 / 获取枚举值 / 上传粘贴。筛选方向(IN 包含 / NOT IN 排除)由模板 SQL 决定。 */
+function ListField({
   pd,
   templateId,
   value,
@@ -81,7 +74,7 @@ function MultiEnumField({
   value?: string[];
   onChange?: (v: string[]) => void;
 }) {
-  const [options, setOptions] = useState<string[]>(pd.options || []);
+  const [options, setOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const list: string[] = Array.isArray(value) ? value : [];
@@ -132,103 +125,34 @@ function MultiEnumField({
   );
 }
 
-/** 数字范围控件:值为 [min, max],交给外层 Form 收集。 */
-function NumberRange({ value, onChange }: { value?: any[]; onChange?: (v: any[]) => void }) {
-  const [min, max] = value || [];
-  return (
-    <Space>
-      <InputNumber placeholder="最小" value={min} onChange={(v) => onChange?.([v, max])} />
-      <span>~</span>
-      <InputNumber placeholder="最大" value={max} onChange={(v) => onChange?.([min, v])} />
-    </Space>
-  );
-}
-
-/** 按参数取值方式渲染一个 Form.Item。 */
+/** 按参数形态渲染一个 Form.Item(一律必填):list=值列表多选,其余=单值文本框。 */
 export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: number }) {
-  const baseLabel = pd.label || pd.name;
-  const kind = norm(pd.type);
-  // required===false(或旧的 all_when_empty)= 选填:留空即不筛选
-  const optional = pd.required === false || pd.all_when_empty;
-  const rules = optional ? [] : [{ required: true, message: `请填写${baseLabel}` }];
-  const label = `${baseLabel}${optional ? "(选填)" : ""}`;
+  const label = pd.label || pd.name;
 
-  // 枚举/列表筛选:输入/获取枚举/上传。方向(包含 / 排除)由模板 SQL 的 IN / NOT IN 决定,如实提示业务
-  if (kind === "multi_enum") {
+  // 值列表:输入/获取枚举/上传。方向(包含 / 排除)由模板 SQL 的 IN / NOT IN 决定,如实提示业务
+  if (pd.kind === "list") {
     const excludeMode = pd.list_mode === "not_in";
     const dirHint = excludeMode ? "命中项将被排除(NOT IN)" : "仅保留命中项(IN)";
-    const listLabel = `${label} · ${excludeMode ? "排除" : "包含"}`;
     return (
       <Form.Item
         name={pd.name}
-        label={listLabel}
-        required={!optional}
+        label={`${label} · ${excludeMode ? "排除" : "包含"}`}
         extra={pd.description ? `${pd.description}(${dirHint})` : dirHint}
-        rules={optional ? [] : [{ required: true, message: `请为「${baseLabel}」选值或填写` }]}
+        rules={[{ required: true, message: `请为「${label}」选值或填写` }]}
       >
-        <MultiEnumField pd={pd} templateId={templateId} />
+        <ListField pd={pd} templateId={templateId} />
       </Form.Item>
     );
   }
 
-  let control: React.ReactNode;
-  switch (kind) {
-    case "number":
-      control = <InputNumber style={{ width: "100%" }} />;
-      break;
-    case "date":
-      control = <DatePicker style={{ width: "100%" }} format="YYYY-MM-DD" />;
-      break;
-    case "date_range":
-      control = <RangePicker style={{ width: "100%" }} format="YYYY-MM-DD" />;
-      break;
-    case "number_range":
-      control = <NumberRange />;
-      break;
-    case "enum":
-      control = (
-        <Select
-          allowClear
-          showSearch
-          options={(pd.options || []).map((o) => ({ value: o, label: o }))}
-        />
-      );
-      break;
-    default:
-      control = <Input />;
-  }
   return (
-    <Form.Item name={pd.name} label={label} rules={rules} extra={pd.description || undefined}>
-      {control}
+    <Form.Item
+      name={pd.name}
+      label={label}
+      rules={[{ required: true, message: `请填写${label}` }]}
+      extra={pd.description || undefined}
+    >
+      <Input />
     </Form.Item>
   );
-}
-
-/** 把 Ant Design 表单值转成后端期望的 JSON(日期转字符串、范围转 [a,b])。 */
-export function serializeValues(defs: ParamDef[], values: any): Record<string, any> {
-  const out: Record<string, any> = {};
-  for (const pd of defs) {
-    const v = values[pd.name];
-    if (v == null) continue;
-    const kind = norm(pd.type);
-    if (kind === "date") out[pd.name] = dayjs(v).format("YYYY-MM-DD");
-    else if (kind === "date_range")
-      out[pd.name] = [dayjs(v[0]).format("YYYY-MM-DD"), dayjs(v[1]).format("YYYY-MM-DD")];
-    else if (kind === "number_range") out[pd.name] = [v[0], v[1]];
-    else out[pd.name] = v;
-  }
-  return out;
-}
-
-/** 把默认值填入 Form 的 initialValues(多选变量的默认值归一为数组)。 */
-export function initialValues(defs: ParamDef[]): any {
-  const out: any = {};
-  for (const pd of defs) {
-    if (pd.default == null) continue;
-    const kind = norm(pd.type);
-    if (kind === "date") out[pd.name] = dayjs(pd.default);
-    else if (kind === "multi_enum") out[pd.name] = Array.isArray(pd.default) ? pd.default : [pd.default];
-    else out[pd.name] = pd.default;
-  }
-  return out;
 }

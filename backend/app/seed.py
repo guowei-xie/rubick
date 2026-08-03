@@ -128,7 +128,6 @@ def main() -> None:
                     description="查询指定起始日期之后的订单明细",
                     tags=["订单", "演示"],
                     datasource_id=ds.id,
-                    dialect="mysql",
                     sql_text=(
                         "SELECT order_id, customer, amount, created_date "
                         "FROM orders WHERE created_date >= :start_date "
@@ -137,15 +136,14 @@ def main() -> None:
                     params=[
                         ParamDef(
                             name="start_date",
-                            type="date",
+                            kind="single",
                             label="起始日期",
-                            required=True,
-                            default="2024-01-01",
+                            description="格式 YYYY-MM-DD,例 2024-01-01",
                         )
                     ],
                 ),
             )
-            template_service.accept_and_publish(db, tmpl, admin, note="演示验收通过")
+            template_service.publish(db, tmpl, admin, note="演示发布")
             print(f"  published template id={tmpl.id}")
 
             print("6) grant 市场部 view/run/download")

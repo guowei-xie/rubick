@@ -42,7 +42,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
         out.append(
             TaskOut(
                 id=t.id, name=t.name, domain=t.domain, description=t.description,
-                status=t.status, dialect=t.dialect, datasource_id=t.datasource_id,
+                status=t.status, datasource_id=t.datasource_id,
                 datasource_name=t.datasource_name, engine=t.engine,
                 author_id=t.author_id, author_name=t.author_name,
                 published_version_id=t.published_version_id, created_at=t.created_at,

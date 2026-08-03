@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Drawer, Form, message, Space, Typography } from "antd";
 import { downloadJob, errMsg, getJob, getTemplate, ParamDef, previewJob, runQuery } from "../api";
-import { initialValues, ParamField, serializeValues } from "./ParamForm";
+import { ParamField } from "./ParamForm";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 
@@ -33,7 +33,6 @@ export default function RunDrawer({
       setParams(defs);
       setDesc(d.description || "");
       form.resetFields();
-      form.setFieldsValue(initialValues(defs));
     });
   }, [open, task]);
 
@@ -57,7 +56,7 @@ export default function RunDrawer({
     setPreview(null);
     const hide = message.loading("已提交,执行中…(复杂查询可能要几分钟,请稍候)", 0);
     try {
-      let j = await runQuery(task.id, serializeValues(params, values));
+      let j = await runQuery(task.id, values);
       // 有些 Hive 查询要跑十几分钟,轮询窗口放宽到 20 分钟;用退避间隔(1s→4s)减少请求
       const started = Date.now();
       const MAX_WAIT_MS = 20 * 60 * 1000;

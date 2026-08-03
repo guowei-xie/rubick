@@ -9,10 +9,8 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.template import (
-    AcceptIn,
     EnumSqlIn,
-    EnumValuesIn,
-    EnumValuesOut,
+    PublishIn,
     TemplateCreateIn,
     TemplateDetailOut,
     TemplateOut,
@@ -99,25 +97,17 @@ def update_template(
     return template_service.add_version(db, user, tmpl, data)
 
 
-@router.post("/{template_id}/submit")
-def submit(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    tmpl = _load(db, template_id)
-    _require_author_or_admin(tmpl, user)
-    template_service.submit_for_accept(db, tmpl)
-    return {"status": tmpl.status}
-
-
 @router.post("/{template_id}/publish")
 def publish(
     template_id: int,
-    data: AcceptIn,
+    data: PublishIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_admin),
 ):
-    """验收通过并发布最新版本。"""
+    """发布最新版本。"""
     tmpl = _load(db, template_id)
     _require_author_or_admin(tmpl, user)
-    template_service.accept_and_publish(db, tmpl, user, data.note)
+    template_service.publish(db, tmpl, user, data.note)
     return {"status": tmpl.status, "published_version_id": tmpl.published_version_id}
 
 
@@ -133,12 +123,6 @@ def archive(template_id: int, db: Session = Depends(get_db), user: User = Depend
 def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     """作者自检试跑:返回样例行;关联到已存在任务时同时落一条 source=test 的运行记录。"""
     return template_service.test_run(db, data, user)
-
-
-@router.post("/enum-values", response_model=EnumValuesOut)
-def enum_values(data: EnumValuesIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """自动发现变量对应字段的候选枚举值(后台跑 SELECT DISTINCT)。"""
-    return template_service.discover_enum_values(db, data)
 
 
 @router.post("/enum-sql", response_model=ValueListOut)

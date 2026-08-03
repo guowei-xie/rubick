@@ -23,31 +23,15 @@ http.interceptors.response.use(
   }
 );
 
-// 取值方式:text/number/date=单值;enum=枚举;date_range/number_range=范围。
-// 兼容后端旧值 string/daterange/multi_enum(前端用 norm() 归一)。
-export type ParamType =
-  | "text"
-  | "number"
-  | "date"
-  | "enum"
-  | "date_range"
-  | "number_range"
-  | "string"
-  | "daterange"
-  | "multi_enum";
-
+// 参数只分两种形态,一律必填:single=单值文本;list=值列表(多选,执行前展开成 IN)。
+// kind 由 SQL 写法判定(字段 IN (:x) / NOT IN (:x) → list,其余 → single)。
 export interface ParamDef {
   name: string;
-  type: ParamType;
+  kind?: "single" | "list";
   label?: string;
   description?: string; // 变量说明,业务填参时提示
-  required?: boolean;
-  default?: any;
-  options?: string[];
-  enum_sql?: string; // 取候选值的独立 SELECT(业务点「获取枚举值」时跑)
-  column?: string; // 表中字段名(展示/备注)
-  list_mode?: "in" | "not_in"; // 列表筛选方向:in=命中项包含,not_in=命中项排除(由 SQL 写法决定)
-  all_when_empty?: boolean; // 兼容旧数据
+  enum_sql?: string; // 仅 list:取候选值的独立 SELECT(业务点「获取枚举值」时跑)
+  list_mode?: "in" | "not_in"; // 仅 list:in=命中项包含,not_in=命中项排除(由 SQL 写法决定)
 }
 
 export interface User {

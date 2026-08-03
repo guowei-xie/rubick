@@ -38,7 +38,6 @@ class TaskOut(BaseModel):
     domain: str | None = None
     description: str | None = None
     status: str
-    dialect: str
     datasource_id: int
     datasource_name: str | None = None
     engine: str | None = None
