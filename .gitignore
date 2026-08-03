@@ -19,6 +19,7 @@ venv/
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
 
 # 系统
 .DS_Store

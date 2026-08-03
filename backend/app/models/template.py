@@ -9,7 +9,6 @@ from app.models.mixins import TimestampMixin
 
 # 模板生命周期
 STATUS_DRAFT = "draft"
-STATUS_TESTING = "testing"
 STATUS_PENDING_ACCEPT = "pending_accept"
 STATUS_PUBLISHED = "published"
 STATUS_ARCHIVED = "archived"
@@ -31,6 +30,9 @@ class SqlTemplate(Base, TimestampMixin):
 
     status: Mapped[str] = mapped_column(String(32), default=STATUS_DRAFT)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
+
+    # 该任务的查询超时(秒);None=按数据源引擎默认(Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)
+    timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # 指向当前"已发布"的版本;未发布时为 None
     published_version_id: Mapped[Optional[int]] = mapped_column(

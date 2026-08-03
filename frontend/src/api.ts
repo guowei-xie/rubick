@@ -46,6 +46,7 @@ export interface ParamDef {
   options?: string[];
   enum_sql?: string; // 取候选值的独立 SELECT(业务点「获取枚举值」时跑)
   column?: string; // 表中字段名(展示/备注)
+  list_mode?: "in" | "not_in"; // 列表筛选方向:in=命中项包含,not_in=命中项排除(由 SQL 写法决定)
   all_when_empty?: boolean; // 兼容旧数据
 }
 
@@ -66,8 +67,6 @@ export const feishuCallback = (code: string) =>
 export const getMe = () => http.get("/auth/me").then((r) => r.data as User);
 
 // ---- templates ----
-export const listTemplates = (mine = false) =>
-  http.get("/templates", { params: { mine } }).then((r) => r.data);
 export const getTemplate = (id: number) => http.get(`/templates/${id}`).then((r) => r.data);
 export const createTemplate = (data: any) => http.post("/templates", data).then((r) => r.data);
 export const updateTemplate = (id: number, data: any) =>
@@ -77,9 +76,6 @@ export const publishTemplate = (id: number, note?: string) =>
 export const archiveTemplate = (id: number) =>
   http.post(`/templates/${id}/archive`).then((r) => r.data);
 export const testRun = (data: any) => http.post("/templates/test-run", data).then((r) => r.data);
-// 自动发现变量对应字段的候选枚举值(后台 SELECT DISTINCT)
-export const fetchEnumValues = (data: { datasource_id: number; sql_text: string; variable: string }) =>
-  http.post("/templates/enum-values", data).then((r) => r.data);
 // 分析师测试「枚举值获取 SQL」
 export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
   http.post("/templates/enum-sql", data).then((r) => r.data);
@@ -96,7 +92,6 @@ export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((
 // ---- query ----
 export const runQuery = (template_id: number, values: any) =>
   http.post("/run", { template_id, values }).then((r) => r.data);
-export const listJobs = () => http.get("/jobs").then((r) => r.data);
 export const getJob = (jobId: number) => http.get(`/jobs/${jobId}`).then((r) => r.data);
 export const downloadJob = (jobId: number) =>
   http.get(`/jobs/${jobId}/download`).then((r) => r.data);
@@ -135,10 +130,11 @@ export const lookupDepartments = (q?: string) =>
 // ---- audit ----
 export const listAuditLogs = (params: any = {}) =>
   http.get("/audit/logs", { params }).then((r) => r.data);
+export const exportAuditLogs = (params: any = {}) =>
+  http.get("/audit/logs/export", { params, responseType: "blob" }).then((r) => r.data as Blob);
 
 // ---- admin: users & 飞书同步 ----
 export const listUsers = (q?: string) =>
   http.get("/admin/users", { params: { q } }).then((r) => r.data);
 export const setUserRole = (userId: number, role: string) =>
   http.post(`/admin/users/${userId}/role`, { role }).then((r) => r.data);
-export const syncContacts = () => http.post("/admin/sync-contacts").then((r) => r.data);

@@ -28,7 +28,6 @@ export default function GrantModal({
   const [subjectId, setSubjectId] = useState<string>();
   const [options, setOptions] = useState<any[]>([]);
   const [actions, setActions] = useState<string[]>(ALL_ACTIONS);
-  const [query, setQuery] = useState("");
 
   const loadGrants = () => {
     if (templateId != null) listPermissions(String(templateId)).then(setGrants);
@@ -58,14 +57,10 @@ export default function GrantModal({
       )
     );
   };
-  const search = (q: string) => {
-    setQuery(q);
-    runFetch(q);
-  };
+  const search = (q: string) => runFetch(q);
   // 输入框搜索防抖:避免每敲一个字就打一次飞书/DB(live 搜索尤其贵)
   const searchTimer = useRef<any>(null);
   const debouncedSearch = (q: string) => {
-    setQuery(q);
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => runFetch(q), 350);
   };

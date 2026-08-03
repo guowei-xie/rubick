@@ -50,8 +50,8 @@ setup_backend() {
 }
 
 init_db() {
-  info "初始化 / 校验平台元数据表(带 rubick_ 前缀,幂等)"
-  ( cd "$BACKEND" && "$PY" -m app.initdb )
+  info "初始化 / 迁移平台元数据表(建表 + 幂等 ALTER + 敏感字段加密升级)"
+  ( cd "$BACKEND" && "$PY" -m app.migrate )
 }
 
 build_frontend() {
@@ -122,7 +122,7 @@ case "${1:-}" in
     build_frontend
     stop || true
     start
-    info "初始化部署完成。前端静态产物在 frontend/dist,交给 nginx 托管即可。"
+    info "初始化部署完成。单端口即完整应用,直接访问 APP_BASE_URL 即可(无需 nginx)。"
     ;;
   update)
     info "拉取最新代码"

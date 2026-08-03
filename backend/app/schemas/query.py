@@ -10,13 +10,6 @@ class RunIn(BaseModel):
     values: dict[str, Any] = {}
 
 
-class PreviewOut(BaseModel):
-    columns: list[str]
-    rows: list[list[Any]]
-    truncated: bool = False
-    row_count: int
-
-
 class JobOut(BaseModel):
     id: int
     template_id: int
@@ -53,5 +46,6 @@ class TaskOut(BaseModel):
     author_name: str | None = None
     published_version_id: int | None = None
     created_at: datetime | None = None
+    timeout_seconds: int | None = None  # 该任务查询超时(秒);None=按引擎默认
     can_manage: bool = False  # 可编辑/授权/下线(管理员或作者)
     can_run: bool = False      # 可填参取数(已发布且有运行权限)

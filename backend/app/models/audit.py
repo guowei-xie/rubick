@@ -9,7 +9,8 @@ from app.models.mixins import TimestampMixin
 
 
 class AuditLog(Base, TimestampMixin):
-    """一次可审计动作:谁、何时、干了什么、命中哪个资源。仅追加,不更新不删除。"""
+    """一次可审计动作:谁、何时、干了什么、命中哪个资源。应用层仅追加写(不更新不删除);
+    DB 层未强制不可篡改(见 PRD「实现现状」)。"""
 
     __tablename__ = tbl("audit_logs")
 

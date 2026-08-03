@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Button, Card, Modal, Space, Table, Tag, message } from "antd";
 import { archiveTemplate, errMsg, listTasks, publishTemplate } from "../api";
 import { useAuth } from "../auth";
@@ -18,6 +19,7 @@ export default function TasksPage() {
   const [runTarget, setRunTarget] = useState<any>(null);
   const [grantTarget, setGrantTarget] = useState<any>(null);
   const [recordsTarget, setRecordsTarget] = useState<any>(null);
+  const [sp, setSp] = useSearchParams();
 
   const load = () => {
     setLoading(true);
@@ -26,6 +28,16 @@ export default function TasksPage() {
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  // 从通知深链进来(/tasks?records=<taskId>):任务加载后打开对应运行记录抽屉,并清掉参数
+  useEffect(() => {
+    const rid = sp.get("records");
+    if (!rid || !tasks.length) return;
+    const t = tasks.find((x) => String(x.id) === rid);
+    if (t) setRecordsTarget(t);
+    sp.delete("records");
+    setSp(sp, { replace: true });
+  }, [tasks]);
 
   const doPublish = (row: any) =>
     Modal.confirm({
@@ -91,7 +103,7 @@ export default function TasksPage() {
         ),
     },
     {
-      title: "权限控制",
+      title: "管理",
       width: 200,
       render: (_: any, r: any) =>
         r.can_manage ? (

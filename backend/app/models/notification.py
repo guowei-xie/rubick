@@ -22,6 +22,8 @@ class Notification(Base, TimestampMixin):
     title: Mapped[str] = mapped_column(String(200))
     body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # 所属任务(模板)id,供前端点击通知直接深链到该任务运行记录,免去再查 job
+    template_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     level: Mapped[str] = mapped_column(String(16), default="info")  # info / success / error
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     # 飞书推送是否成功(mock 或失败时为 False)

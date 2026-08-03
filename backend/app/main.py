@@ -22,6 +22,9 @@ from app.api.routes import (
 )
 from app.core.config import settings
 from app.core.exceptions import RubicError
+from app.core.logging_setup import get_logger
+
+log = get_logger("rubick.main")
 
 
 @asynccontextmanager
@@ -34,9 +37,14 @@ async def lifespan(app: FastAPI):
     try:
         n = auth_service.apply_bootstrap_admins(db)
         if n:
-            print(f"[bootstrap] 启动时按 BOOTSTRAP_ADMINS 提权 {n} 名管理员")
+            log.info("启动时按 BOOTSTRAP_ADMINS 提权 %d 名管理员", n)
     finally:
         db.close()
+    if settings.MOCK_AUTH:
+        log.warning(
+            "MOCK_AUTH 已开启——mock 登录信任前端传入的 open_id、无凭证校验,"
+            "命中 BOOTSTRAP_ADMINS 即可无凭证成为管理员。切勿在生产环境开启!"
+        )
     yield
 
 

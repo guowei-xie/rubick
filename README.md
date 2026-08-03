@@ -15,8 +15,9 @@
 
 ## 单机部署
 
-下面是从 `git clone` 到启动服务的完整步骤。前端会构建出静态产物 `frontend/dist`,
-之后交给 nginx 托管并反代 `/api` 到后端(nginx 配置不在本文范围)。
+下面是从 `git clone` 到启动服务的完整步骤。**单端口部署**:后端 uvicorn 同时托管前端静态产物
+(`frontend/dist`)与 `/api`,一个端口即完整应用,**无需 nginx**。对外要 HTTPS/自定义域名时,
+可选在前面加一层 nginx 反代(见文末「可选:nginx 反代」)。
 
 ### 0. 前置依赖
 
@@ -69,7 +70,13 @@ cp backend/config.example.ini backend/config.ini
 ./deploy.sh update     # 滚动更新:git pull → 装依赖 → 建表 → 重建前端 → 重启
 ```
 
-### 5. 交给 nginx
+### 5. 访问应用
 
-后端在 `BACKEND_HOST:BACKEND_PORT` 提供 `/api` 与 `/health`;前端静态产物在 `frontend/dist`。
-将 `frontend/dist` 交给 nginx 托管、并把 `/api` 反代到后端即可(nginx 配置略)。
+`./deploy.sh init` 后,直接访问 `APP_BASE_URL`(默认 `http://localhost:BACKEND_PORT`)即可——
+SPA 与 `/api`、`/health` 都由后端这一个端口提供,无需额外组件。
+
+### 可选:nginx 反代
+
+单端口部署本身已可用;仅当需要 HTTPS 终止、自定义域名或与其它站点共用 80/443 时,
+才在后端前面加一层 nginx,把所有请求(含 `/api`)反代到 `BACKEND_HOST:BACKEND_PORT` 即可
+(此时前端仍由后端托管,无需单独让 nginx 托管 `frontend/dist`)。nginx 配置不在本文范围。

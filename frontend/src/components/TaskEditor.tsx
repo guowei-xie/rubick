@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Divider, Form, Input, message, Modal, Select, Space, Typography } from "antd";
+import { Button, Card, Divider, Form, Input, InputNumber, message, Modal, Select, Space, Typography } from "antd";
 import {
   createTemplate,
   errMsg,
@@ -23,9 +23,26 @@ function listKind(sql: string, name: string): "in" | "not_in" | null {
   return null;
 }
 
-// 类型:IN / NOT IN → 列表(多选);其余 → 单值文本
+// 自动判定:IN / NOT IN → 列表(多选);其余 → 单值文本
 function detectType(sql: string, name: string): "multi_enum" | "text" {
   return listKind(sql, name) ? "multi_enum" : "text";
+}
+
+// 作者可显式指定取值方式;选「自动」时回退到 detectType。让日期/数字/区间等控件在填参时可达。
+const VALUE_TYPES = [
+  { value: "auto", label: "自动(按 SQL 判定)" },
+  { value: "text", label: "文本" },
+  { value: "number", label: "数字" },
+  { value: "date", label: "日期" },
+  { value: "date_range", label: "日期区间" },
+  { value: "number_range", label: "数字区间" },
+  { value: "multi_enum", label: "列表多选" },
+];
+
+// 解析某参数最终取值方式:显式选择优先,否则自动判定
+function resolveType(sql: string, p: any): string {
+  const chosen = p?.value_type;
+  return chosen && chosen !== "auto" ? chosen : detectType(sql, p?.name);
 }
 
 /** 从 SQL 解析出去重的 :变量 名。 */
@@ -78,12 +95,14 @@ export default function TaskEditor({
           domain: d.domain,
           description: d.description,
           datasource_id: d.datasource_id,
+          timeout_seconds: d.timeout_seconds,
           sql_text: v?.sql_text,
           params: (v?.params || []).map((p: any) => ({
             name: p.name,
             label: p.label,
             description: p.description,
             enum_sql: p.enum_sql,
+            value_type: p.type || "auto", // 回填已存的取值方式(旧数据可能无,视为自动)
             test_values: [], // 测试运行专用,不入库,加载时清空
             test_value: undefined,
           })),
@@ -133,13 +152,15 @@ export default function TaskEditor({
       ...v,
       // 落库的参数:类型由 SQL 自动判定;只留 变量名/展示名/说明/枚举获取SQL;测试值不入库
       params: (v.params || []).map((p: any) => {
-        const type = detectType(v.sql_text, p.name);
+        const type = resolveType(v.sql_text, p);
         return {
           name: p.name,
           type,
           label: p.label,
           description: p.description || undefined,
           enum_sql: type === "multi_enum" ? p.enum_sql || undefined : undefined,
+          // 列表筛选方向由 SQL 写法(IN / NOT IN)决定,存下来供业务填参时如实提示「包含/排除」
+          list_mode: type === "multi_enum" ? listKind(v.sql_text, p.name) || "in" : undefined,
         };
       }),
     };
@@ -153,12 +174,12 @@ export default function TaskEditor({
     // 用「测试值」当各变量的值跑一次;测试时不强制必填(留空=不筛该字段),便于验 SQL 结构
     const params = (v.params || []).map((p: any) => ({
       name: p.name,
-      type: detectType(v.sql_text, p.name),
+      type: resolveType(v.sql_text, p),
       required: false,
     }));
     const values: any = {};
     for (const p of v.params || []) {
-      const type = detectType(v.sql_text, p.name);
+      const type = resolveType(v.sql_text, p);
       if (type === "multi_enum") {
         if (p.test_values?.length) values[p.name] = p.test_values;
       } else if (p.test_value != null && p.test_value !== "") {
@@ -234,6 +255,13 @@ export default function TaskEditor({
           <Form.Item name="domain" label="业务域">
             <Input style={{ width: 140 }} />
           </Form.Item>
+          <Form.Item
+            name="timeout_seconds"
+            label="查询超时(秒)"
+            tooltip="留空按引擎默认:Hive 3600s(长批处理),MySQL 120s。超时会自动终止查询。"
+          >
+            <InputNumber style={{ width: 140 }} min={1} placeholder="默认" />
+          </Form.Item>
         </Space>
         <Form.Item name="description" label="说明">
           <Input.TextArea rows={2} />
@@ -246,9 +274,9 @@ export default function TaskEditor({
           参数定义 <Button size="small" style={{ marginLeft: 8 }} onClick={parse}>解析变量</Button>
         </Divider>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          点「解析变量」自动带出 SQL 里的变量,类型由写法自动判定:<code>字段 IN (:x)</code> / <code>NOT IN (:x)</code> →
-          <b>列表</b>(业务多选);<code>= / &gt;= / &lt;= / LIKE :x</code> → <b>单值</b>(时间范围就写两个单值,如
-          <code>&lt;= :d_max AND &gt; :d_min</code>)。测试值仅供下方测试运行,不保存、不展示给业务。
+          点「解析变量」自动带出 SQL 里的变量。<b>取值方式</b>默认「自动」:<code>字段 IN (:x)</code> /
+          <code>NOT IN (:x)</code> → 列表(业务多选),其余 → 单值文本;需要日期选择、数字、日期/数字区间时,
+          在每个变量上把「取值方式」改成对应类型即可(业务填参时会渲染成日期选择器等对应控件)。测试值仅供下方测试运行,不保存、不展示给业务。
         </Typography.Text>
         <Form.List name="params">
           {(fields, { add, remove }) => (
@@ -267,12 +295,16 @@ export default function TaskEditor({
                       <Form.Item {...f} name={[f.name, "label"]} label="展示名称" style={{ marginBottom: 0 }}>
                         <Input placeholder="给业务看的名字" style={{ width: 160 }} />
                       </Form.Item>
+                      <Form.Item {...f} name={[f.name, "value_type"]} label="取值方式" style={{ marginBottom: 0 }}>
+                        <Select style={{ width: 150 }} options={VALUE_TYPES} placeholder="自动" allowClear />
+                      </Form.Item>
                     </Space>
                   }
                 >
                   <Form.Item noStyle shouldUpdate>
                     {() => {
-                      const type = detectType(form.getFieldValue("sql_text"), form.getFieldValue(["params", f.name, "name"]));
+                      const p = form.getFieldValue(["params", f.name]) || {};
+                      const type = resolveType(form.getFieldValue("sql_text"), p);
                       const k = String(f.key);
                       const sqlKey = `${k}:sql`;
                       const descKey = `${k}:desc`;

@@ -10,6 +10,7 @@ class NotificationOut(BaseModel):
     title: str
     body: str | None = None
     job_id: int | None = None
+    template_id: int | None = None
     level: str
     is_read: bool
     feishu_sent: bool

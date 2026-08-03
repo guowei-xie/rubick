@@ -3,10 +3,9 @@ import { UserOutlined } from "@ant-design/icons";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import NotificationBell from "./NotificationBell";
+import { ROLE } from "./StatusTag";
 
 const { Header, Content } = Layout;
-
-const ROLE_LABEL: Record<string, string> = { user: "业务使用者", admin: "管理员" };
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
@@ -42,7 +41,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Space style={{ color: "#fff", cursor: "pointer" }}>
             <Avatar size="small" icon={<UserOutlined />} />
             {user?.name}
-            <Tag color="blue">{ROLE_LABEL[user?.role || "user"]}</Tag>
+            <Tag color="blue">{ROLE[user?.role || "user"]?.label}</Tag>
           </Space>
         </Dropdown>
       </Header>

@@ -1,7 +1,8 @@
-"""首次建表:直接 create_all(Phase 1 便捷起步)。
+"""首次建表:直接 create_all。
 
 用法:python -m app.initdb
-后续 schema 演进请改用 Alembic。
+schema 演进(增量列、存量数据升级)请用 `python -m app.migrate`(幂等,含轻量 ALTER 与加密迁移);
+部署脚本已默认走 migrate。本模块保留为「仅建表」的最小入口。
 """
 from __future__ import annotations
 from app.core.database import Base, engine

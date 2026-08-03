@@ -46,6 +46,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 datasource_name=t.datasource_name, engine=t.engine,
                 author_id=t.author_id, author_name=t.author_name,
                 published_version_id=t.published_version_id, created_at=t.created_at,
+                timeout_seconds=t.timeout_seconds,
                 can_manage=can_manage, can_run=can_run,
             )
         )

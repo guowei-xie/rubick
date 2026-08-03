@@ -70,6 +70,8 @@ def login_with_code(db: Session, code: str) -> tuple[str, User]:
 
 
 def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
+    """开发用 mock 登录。注意:信任前端传入的 open_id、无凭证校验,命中 BOOTSTRAP_ADMINS
+    即自动提权——故由 MOCK_AUTH 开关严格保护,默认关闭,生产切勿开启(见 config.MOCK_AUTH)。"""
     if not settings.MOCK_AUTH:
         raise UnauthorizedError("mock 登录未启用")
     user = db.scalar(select(User).where(User.feishu_open_id == feishu_open_id))

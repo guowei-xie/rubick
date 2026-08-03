@@ -5,6 +5,9 @@
 
 单进程即可(部署脚本以 nohup 拉起一个)。若崩溃时有任务停留在 running,
 不会自动重跑(取数无副作用,重跑意义不大),与原 Celery max_retries=0 行为一致。
+
+注意:当 RUN_INLINE=true(取数在请求内同步执行)时,不会有 queued 任务可认领,
+worker 仅承担「定期清理过期结果文件」这一职责;生产建议 RUN_INLINE=false 走异步。
 """
 from __future__ import annotations
 
@@ -15,9 +18,11 @@ from sqlalchemy import update
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.logging_setup import get_logger
 from app.models.query_job import JOB_QUEUED, JOB_RUNNING, QueryJob
 from app.services import query_service, result_service
 
+log = get_logger("rubick.worker")
 _running = True
 # 每隔约 1 小时清理一次过期结果文件
 _CLEANUP_EVERY_SECONDS = 3600
@@ -57,27 +62,27 @@ def _handle_stop(*_a) -> None:
 def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
-    print(f"[worker] started; poll={settings.WORKER_POLL_INTERVAL}s, result_dir={settings.result_dir_path}")
+    log.info("started; poll=%ss, result_dir=%s", settings.WORKER_POLL_INTERVAL, settings.result_dir_path)
     last_cleanup = 0.0
     while _running:
         job_id = _claim_next_job_id()
         if job_id is not None:
-            print(f"[worker] executing job {job_id}")
+            log.info("executing job %s", job_id)
             try:
                 query_service.execute_job(job_id)
             except Exception as e:  # 兜底:execute_job 内部已落库失败,这里只记日志
-                print(f"[worker] job {job_id} crashed: {e}")
+                log.exception("job %s crashed: %s", job_id, e)
             continue  # 立刻取下一个,不睡
 
         now = time.time()
         if now - last_cleanup > _CLEANUP_EVERY_SECONDS:
             removed = result_service.cleanup_expired()
             if removed:
-                print(f"[worker] cleaned {removed} expired result file(s)")
+                log.info("cleaned %d expired result file(s)", removed)
             last_cleanup = now
 
         time.sleep(settings.WORKER_POLL_INTERVAL)
-    print("[worker] stopped")
+    log.info("stopped")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Input, Space, Table, Tag } from "antd";
-import { listAuditLogs } from "../../api";
+import { Button, Card, Input, message, Space, Table, Tag } from "antd";
+import { DownloadOutlined } from "@ant-design/icons";
+import { errMsg, exportAuditLogs, listAuditLogs } from "../../api";
 import SqlModal from "../../components/SqlModal";
 
 const AUTH_ACTIONS = ["login", "logout"]; // 登录/登出:详情留空
@@ -24,6 +25,7 @@ export default function AuditPage() {
   const [action, setAction] = useState("");
   const [loading, setLoading] = useState(false);
   const [viewRow, setViewRow] = useState<any>(null);
+  const [exporting, setExporting] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -32,6 +34,23 @@ export default function AuditPage() {
       .finally(() => setLoading(false));
   };
   useEffect(load, []);
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const blob = await exportAuditLogs(action ? { action } : {});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "audit_logs.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      message.error(errMsg(e, "导出失败"));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const detail = asObj(viewRow?.detail);
   const sql = SQL_ACTIONS.includes(viewRow?.action) ? detail?.executed_sql : null;
@@ -70,6 +89,9 @@ export default function AuditPage() {
         />
         <Button type="primary" onClick={load}>
           查询
+        </Button>
+        <Button icon={<DownloadOutlined />} loading={exporting} onClick={doExport}>
+          导出 CSV
         </Button>
       </Space>
       <Table rowKey="id" loading={loading} dataSource={logs} columns={columns} />

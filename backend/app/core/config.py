@@ -29,10 +29,15 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "change-me-in-prod"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 720
+    # 库内敏感字段(数据源密码、用户飞书 token)的加密密钥;留空则由 JWT_SECRET 派生。
+    # 生产建议单独配置,与 JWT_SECRET 区分:轮换 JWT 密钥时不影响已加密数据。
+    SECRET_ENCRYPTION_KEY: str = ""
 
     # ---- 登录 ----
-    # mock 登录开关,默认开启(免飞书凭证即可登录)
-    MOCK_AUTH: bool = True
+    # mock 登录开关,默认关闭(生产安全默认)。
+    # 注意:mock 登录信任前端传入的 open_id、无凭证校验,一旦开启且该 open_id 命中
+    # BOOTSTRAP_ADMINS 即可无凭证登录为管理员。仅本地无飞书想快速试跑时才显式改 true。
+    MOCK_AUTH: bool = False
     # 引导管理员:逗号分隔的飞书邮箱或 open_id,登录时自动授予管理员(解决上线冷启动)
     BOOTSTRAP_ADMINS: str = ""
     FEISHU_APP_ID: str = ""
@@ -49,7 +54,10 @@ class Settings(BaseSettings):
     RESULT_RETENTION_DAYS: int = 7
 
     # ---- 取数资源治理 ----
+    # 默认查询超时(秒)。适用于 MySQL 等即时查询;单个任务可在模板上单独设置覆盖。
     QUERY_TIMEOUT_SECONDS: int = 120
+    # Hive 批处理查询默认超时(秒),默认 1 小时——Hive 多为长耗时批处理,不套用上面的即时默认。
+    HIVE_QUERY_TIMEOUT_SECONDS: int = 3600
     MAX_RESULT_ROWS: int = 100_000
 
     # ---- 异步取数(独立 DB 轮询 worker,无需 Redis/Celery)----

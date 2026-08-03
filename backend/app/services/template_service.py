@@ -55,6 +55,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         dialect=dialect,
         status=STATUS_DRAFT,
         author_id=author.id,
+        timeout_seconds=data.timeout_seconds,
     )
     db.add(tmpl)
     db.flush()
@@ -87,6 +88,8 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
         tmpl.tags = data.tags
     if data.datasource_id is not None:
         tmpl.datasource_id = data.datasource_id
+    # 超时:编辑器每次提交完整表单,直接覆盖(None=恢复引擎默认)
+    tmpl.timeout_seconds = data.timeout_seconds
     # 方言始终跟随数据源引擎
     ds = db.get(DataSource, tmpl.datasource_id)
     tmpl.dialect = ds.engine if ds else tmpl.dialect

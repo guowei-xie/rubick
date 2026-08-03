@@ -1,4 +1,5 @@
-"""取数任务。Phase 1 同步执行,状态仍完整记录以便前端展示与审计。"""
+"""取数任务(一次运行的记录)。默认由独立 DB 轮询 worker 异步执行
+(RUN_INLINE=true 时在请求内同步执行);状态全程记录以便前端展示与审计。"""
 from __future__ import annotations
 from typing import Optional
 from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
@@ -30,7 +31,6 @@ class QueryJob(Base, TimestampMixin):
     datasource_id: Mapped[int] = mapped_column(ForeignKey(tbl("data_sources.id")))
 
     params: Mapped[dict] = mapped_column(JSON, default=dict)  # 用户填入的参数值
-    modes: Mapped[dict] = mapped_column(JSON, default=dict)  # 各变量运行时选的正/反选(业务可切)
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, index=True)
     # 运行来源:run=业务正式取数,test=作者在编辑器里的试跑(运行记录里据此区分)
     source: Mapped[str] = mapped_column(String(16), default=SOURCE_RUN, nullable=False, index=True)
@@ -42,7 +42,7 @@ class QueryJob(Base, TimestampMixin):
     # 实际发给数据库的最终 SQL(参数已代入,供运行记录查阅)
     executed_sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # 结果文件在对象存储中的 key(下载时换签名 URL)
+    # 结果文件在本地结果目录(RESULT_DIR)下的相对路径 key;下载时换带签名 token 的 URL
     result_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     result_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
@@ -60,7 +60,7 @@ class QueryJob(Base, TimestampMixin):
 
     @property
     def result_expired(self) -> bool:
-        """结果文件是否已过保留期(到期后由 MinIO 生命周期规则删除)。"""
+        """结果文件是否已过保留期(到期后由 worker 定期清理本地文件,见 result_service.cleanup_expired)。"""
         from datetime import datetime, timedelta
 
         from app.core.config import settings

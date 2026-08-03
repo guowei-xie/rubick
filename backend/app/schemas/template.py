@@ -15,6 +15,7 @@ class TemplateCreateIn(BaseModel):
     dialect: str | None = None  # 忽略,方言由数据源引擎决定(保留以兼容旧前端)
     sql_text: str
     params: list[ParamDef] = []
+    timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
 
 
 class TemplateUpdateIn(BaseModel):
@@ -28,6 +29,7 @@ class TemplateUpdateIn(BaseModel):
     dialect: str | None = None
     sql_text: str | None = None
     params: list[ParamDef] | None = None
+    timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
 
 
 class TestRunIn(BaseModel):
@@ -96,6 +98,7 @@ class TemplateOut(BaseModel):
     status: str
     author_id: int
     published_version_id: int | None
+    timeout_seconds: int | None = None
 
     class Config:
         from_attributes = True

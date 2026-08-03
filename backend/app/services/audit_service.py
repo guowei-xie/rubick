@@ -1,4 +1,5 @@
-"""审计写入。所有可审计动作统一走这里,保证 append-only。"""
+"""审计写入。所有可审计动作统一走这里,只追加不更新/删除(append-only 为应用层约定;
+如需 DB 层强制不可篡改,应另加只写账号/触发器/哈希链,见 PRD「实现现状」)。"""
 from __future__ import annotations
 
 from sqlalchemy.orm import Session

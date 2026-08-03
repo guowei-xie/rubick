@@ -21,6 +21,7 @@ from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE
 from app.models.query_job import JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS, QueryJob
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
+from app.models.datasource import ENGINE_HIVE
 from app.services import (
     audit_service,
     notify_service,
@@ -28,6 +29,16 @@ from app.services import (
     permission_service,
     result_service,
 )
+
+
+def effective_timeout(tmpl: SqlTemplate, ds: DataSource) -> int:
+    """该任务生效的查询超时(秒):任务显式配置优先,否则按引擎默认
+    (Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)。"""
+    if tmpl.timeout_seconds:
+        return tmpl.timeout_seconds
+    if ds and ds.engine == ENGINE_HIVE:
+        return settings.HIVE_QUERY_TIMEOUT_SECONDS
+    return settings.QUERY_TIMEOUT_SECONDS
 
 
 def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | None = None) -> QueryJob:
@@ -93,7 +104,7 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             connector = get_connector(ds)
             res = connector.execute(
                 sql_text, bound,
-                timeout_seconds=settings.QUERY_TIMEOUT_SECONDS,
+                timeout_seconds=effective_timeout(tmpl, ds),
                 max_rows=settings.MAX_RESULT_ROWS,
             )
             filename = f"{tmpl.name}_{job.id}.csv"

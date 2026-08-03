@@ -76,9 +76,12 @@ class HiveConnector(DataSourceConnector):
                     # 只替换已定义的参数名,避免误伤字符串里的 :xx(如时间格式 '%H:%i:%s')
                     for name in params:
                         pyformat_sql = re.sub(rf":{re.escape(name)}\b", f"%({name})s", pyformat_sql)
-                    cursor.execute(pyformat_sql, params)
+                    cursor.execute(pyformat_sql, params, async_=True)
                 else:
-                    cursor.execute(sql)
+                    cursor.execute(sql, async_=True)
+                # 异步提交后轮询状态,超过 timeout_seconds 就取消——Hive 无语句级 MAX_EXECUTION_TIME,
+                # 只能在客户端设截止时间并主动 cancel,避免长批处理拖垮数仓(见 QUERY/HIVE 超时治理)。
+                self._await_completion(cursor, timeout_seconds)
             except Exception as e:  # noqa: BLE001 -- 把 Hive 的原始错误提炼成一句可读信息
                 raise RuntimeError(f"Hive 执行失败:{_hive_error_message(e)}") from e
             columns = [d[0] for d in cursor.description]
@@ -93,6 +96,39 @@ class HiveConnector(DataSourceConnector):
             truncated=truncated,
             meta={"duration_ms": int((time.perf_counter() - start) * 1000)},
         )
+
+    @staticmethod
+    def _await_completion(cursor, timeout_seconds: int) -> None:
+        """轮询异步查询直到结束;超过 timeout_seconds 主动 cancel 并报错。
+
+        Hive 无 MySQL 的语句级 MAX_EXECUTION_TIME,只能在客户端设截止时间轮询状态,
+        超时即 cursor.cancel(),防止长批处理无限占用数仓资源。
+        """
+        from TCLIService.ttypes import TOperationState
+
+        pending = (
+            TOperationState.INITIALIZED_STATE,
+            TOperationState.PENDING_STATE,
+            TOperationState.RUNNING_STATE,
+        )
+        deadline = time.perf_counter() + max(1, int(timeout_seconds))
+        interval = 1.0
+        state = cursor.poll().operationState
+        while state in pending:
+            if time.perf_counter() >= deadline:
+                try:
+                    cursor.cancel()
+                finally:
+                    raise RuntimeError(f"Hive 查询超时(>{timeout_seconds}s)已被终止")
+            time.sleep(min(interval, max(0.1, deadline - time.perf_counter())))
+            interval = min(interval * 1.5, 5.0)  # 退避,降低轮询开销
+            state = cursor.poll().operationState
+        if state in (
+            TOperationState.CANCELED_STATE,
+            TOperationState.CLOSED_STATE,
+            TOperationState.ERROR_STATE,
+        ):
+            raise RuntimeError(f"Hive 查询未成功(operationState={state})")
 
     def test_connection(self) -> None:
         conn = self._connect()

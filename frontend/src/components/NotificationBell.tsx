@@ -38,7 +38,9 @@ export default function NotificationBell() {
       refreshList();
     }
     setOpen(false);
-    if (n.job_id) nav("/jobs");
+    // 深链到该任务的运行记录(template_id 由通知直接携带,无需再查 job)
+    if (n.template_id) nav(`/tasks?records=${n.template_id}`);
+    else if (n.job_id) nav("/tasks");
   };
 
   const markAll = async () => {

@@ -15,7 +15,8 @@ def notify_job_done(db: Session, job: QueryJob) -> Notification:
     user = db.get(User, job.user_id)
     tmpl = db.get(SqlTemplate, job.template_id)
     tmpl_name = tmpl.name if tmpl else f"模板#{job.template_id}"
-    link = f"{settings.APP_BASE_URL}/jobs"
+    # 深链到该任务的运行记录(前端 /tasks 读 records 参数打开对应抽屉)
+    link = f"{settings.APP_BASE_URL}/tasks?records={job.template_id}"
 
     if job.status == JOB_SUCCESS:
         title = "取数完成"
@@ -35,6 +36,7 @@ def notify_job_done(db: Session, job: QueryJob) -> Notification:
         title=title,
         body=body,
         job_id=job.id,
+        template_id=job.template_id,
         level=level,
         feishu_sent=sent,
     )

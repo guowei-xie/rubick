@@ -69,7 +69,7 @@ export function PasteListButton({ onAdd }: { onAdd: (vals: string[]) => void }) 
   );
 }
 
-/** 枚举/列表多选控件:自由输入 / 获取枚举值 / 上传粘贴,统一按正选 IN 筛选。 */
+/** 枚举/列表多选控件:自由输入 / 获取枚举值 / 上传粘贴。筛选方向(IN 包含 / NOT IN 排除)由模板 SQL 决定。 */
 function MultiEnumField({
   pd,
   templateId,
@@ -153,14 +153,17 @@ export function ParamField({ pd, templateId }: { pd: ParamDef; templateId?: numb
   const rules = optional ? [] : [{ required: true, message: `请填写${baseLabel}` }];
   const label = `${baseLabel}${optional ? "(选填)" : ""}`;
 
-  // 枚举/列表筛选:输入/获取枚举/上传,统一按正选 IN 筛选
+  // 枚举/列表筛选:输入/获取枚举/上传。方向(包含 / 排除)由模板 SQL 的 IN / NOT IN 决定,如实提示业务
   if (kind === "multi_enum") {
+    const excludeMode = pd.list_mode === "not_in";
+    const dirHint = excludeMode ? "命中项将被排除(NOT IN)" : "仅保留命中项(IN)";
+    const listLabel = `${label} · ${excludeMode ? "排除" : "包含"}`;
     return (
       <Form.Item
         name={pd.name}
-        label={label}
+        label={listLabel}
         required={!optional}
-        extra={pd.description || undefined}
+        extra={pd.description ? `${pd.description}(${dirHint})` : dirHint}
         rules={optional ? [] : [{ required: true, message: `请为「${baseLabel}」选值或填写` }]}
       >
         <MultiEnumField pd={pd} templateId={templateId} />
@@ -217,7 +220,7 @@ export function serializeValues(defs: ParamDef[], values: any): Record<string, a
   return out;
 }
 
-/** 把默认值填入 Form 的 initialValues(含各多选变量的正/反选默认)。 */
+/** 把默认值填入 Form 的 initialValues(多选变量的默认值归一为数组)。 */
 export function initialValues(defs: ParamDef[]): any {
   const out: any = {};
   for (const pd of defs) {
