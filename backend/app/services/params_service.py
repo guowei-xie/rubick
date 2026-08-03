@@ -29,12 +29,29 @@ def _is_empty(val: Any) -> bool:
     return val is None or val == "" or (isinstance(val, (list, tuple)) and len(val) == 0)
 
 
+def _to_number(pd: ParamDef, x: Any) -> int | float:
+    """把单个值转数值:优先 int,带小数点/科学计数退 float;转不动抛明确错误。"""
+    s = str(x).strip()
+    try:
+        return int(s)
+    except ValueError:
+        try:
+            return float(s)
+        except ValueError:
+            raise RubicError(f"参数「{pd.label or pd.name}」需为数值,收到:{x}")
+
+
 def _coerce(pd: ParamDef, val: Any) -> Any:
-    """按 kind 归一绑定值:list → [str…](执行前由 expand_list_params 展开),single → str。"""
+    """按 kind + value_type 归一绑定值。
+
+    kind:list → [值…](执行前由 expand_list_params 展开),single → 标量。
+    value_type:number → int/float(不加引号),text(默认)→ str(加引号)。
+    """
+    conv = (lambda x: _to_number(pd, x)) if pd.value_type == "number" else str
     if pd.kind == "list":
         items = list(val) if isinstance(val, (list, tuple)) else [val]
-        return [str(x) for x in items]
-    return str(val)
+        return [conv(x) for x in items]
+    return conv(val)
 
 
 def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any]) -> dict[str, Any]:

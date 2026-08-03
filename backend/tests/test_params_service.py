@@ -21,6 +21,42 @@ def test_bind_list_is_str_list():
     assert bound == {"ids": ["u1", "2"]}
 
 
+def test_bind_number_single_is_int():
+    defs = _defs({"name": "n", "kind": "single", "value_type": "number"})
+    bound = ps.validate_and_bind(defs, {"n": "18"})
+    assert bound == {"n": 18} and isinstance(bound["n"], int)
+
+
+def test_bind_number_float():
+    defs = _defs({"name": "x", "kind": "single", "value_type": "number"})
+    bound = ps.validate_and_bind(defs, {"x": "3.14"})
+    assert bound == {"x": 3.14} and isinstance(bound["x"], float)
+
+
+def test_bind_number_list_is_num_list():
+    defs = _defs({"name": "ids", "kind": "list", "value_type": "number"})
+    bound = ps.validate_and_bind(defs, {"ids": ["18", "20"]})
+    assert bound == {"ids": [18, 20]}
+
+
+def test_bind_number_non_numeric_raises():
+    defs = _defs({"name": "n", "kind": "single", "value_type": "number"})
+    with pytest.raises(RubicError):
+        ps.validate_and_bind(defs, {"n": "abc"})
+
+
+def test_number_single_renders_without_quotes():
+    defs = _defs({"name": "age", "kind": "single", "value_type": "number"})
+    out = ps.preview_sql("SELECT * FROM t WHERE age > :age", defs, {"age": "18"})
+    assert "age > 18" in out and "'18'" not in out
+
+
+def test_number_list_renders_without_quotes():
+    defs = _defs({"name": "ids", "kind": "list", "value_type": "number"})
+    out = ps.preview_sql("SELECT * FROM t WHERE id IN (:ids)", defs, {"ids": ["18", "20"]})
+    assert "id IN (18, 20)" in out and "'18'" not in out
+
+
 def test_missing_raises():
     for empty in ({}, {"x": ""}, {"x": None}):
         with pytest.raises(RubicError):

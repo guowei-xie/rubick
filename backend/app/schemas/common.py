@@ -16,6 +16,9 @@ class ParamDef(BaseModel):
 
     name: str
     kind: Literal["single", "list"] = "single"
+    # 值形态:text=文本(默认,SQL 里加单引号);number=数值(绑定为 int/float,不加引号,
+    # 用于 age > :x、LIMIT :n、数值主键比较等)。与 kind 正交:单值/值列表都可为数值。
+    value_type: Literal["text", "number"] = "text"
     label: str | None = None  # 变量说明:给业务看的名字兼填参提示(合并了原 中文名+说明)
     test_value: str | list[str] | None = None  # 测试值:作者试跑用,兼作业务填参示例
     # ---- 值列表(list)专用 ----

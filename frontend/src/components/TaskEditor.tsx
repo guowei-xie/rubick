@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Select, Space, Tag, Typography } from "antd";
+import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Segmented, Select, Space, Tag, Typography } from "antd";
 import {
   createTemplate,
   errMsg,
   getTemplate,
   listDatasources,
+  ParamDef,
   previewSql,
   runEnumSql,
   testRun,
@@ -20,6 +21,12 @@ function isListVar(sql: string, name: string): boolean {
   if (!name) return false;
   const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`\\bIN\\s*\\(\\s*:${esc}\\b`, "i").test(sql || "");
+}
+
+/** 把一行变量配置转成发给后端的最小 def(name + kind + value_type)。kind 由 SQL 判定,
+ *  value_type 兜底文本。试跑 / SQL 预览共用,避免形状漂移。 */
+function toDef(sql: string, p: any): Pick<ParamDef, "name" | "kind" | "value_type"> {
+  return { name: p.name, kind: isListVar(sql, p.name) ? "list" : "single", value_type: p.value_type || "text" };
 }
 
 /** 从 SQL 解析出去重的 :变量 名。 */
@@ -69,6 +76,7 @@ export default function TaskEditor({
         const params = (v?.params || []).map((p: any) => ({
           name: p.name,
           label: p.label,
+          value_type: p.value_type || "text",
           test_value: p.test_value,
           enum_sql: p.enum_sql,
           allow_bulk_input: p.allow_bulk_input,
@@ -99,7 +107,7 @@ export default function TaskEditor({
       const existing: any[] = form.getFieldValue("params") || [];
       if (vars.join(",") === existing.map((p) => p?.name).join(",")) return;
       const byName = Object.fromEntries(existing.map((p) => [p?.name, p]));
-      form.setFieldsValue({ params: vars.map((name) => byName[name] || { name, label: name }) });
+      form.setFieldsValue({ params: vars.map((name) => byName[name] || { name, label: name, value_type: "text" }) });
       // 变量卡默认收起:卡头已展示 :名 + 单值/值列表 + 说明,要配再点开(不强制展开新增变量)
     }, 400);
     return () => clearTimeout(t);
@@ -134,6 +142,7 @@ export default function TaskEditor({
         return {
           name: p.name,
           kind: list ? "list" : "single",
+          value_type: p.value_type || "text",
           label: p.label || undefined,
           test_value: normalizeTestValue(p.test_value, list),
           enum_sql: list ? p.enum_sql || undefined : undefined,
@@ -150,14 +159,14 @@ export default function TaskEditor({
     if (!v.sql_text) return message.warning("请先填写 SQL");
     const params: any[] = v.params || [];
     // 所有变量运行时必填:试跑用各变量配置的「测试值」。一次遍历同时产出 defs 与 values
-    const defs: { name: string; kind: "single" | "list" }[] = [];
+    const defs: Pick<ParamDef, "name" | "kind" | "value_type">[] = [];
     const values: any = {};
     for (const p of params) {
-      const list = isListVar(v.sql_text, p.name);
-      const tv = normalizeTestValue(p.test_value, list);
+      const def = toDef(v.sql_text, p);
+      const tv = normalizeTestValue(p.test_value, def.kind === "list");
       const empty = tv == null || tv === "" || (Array.isArray(tv) && !tv.length);
       if (empty) return message.warning(`请先给变量「${p.name}」填测试值`);
-      defs.push({ name: p.name, kind: list ? "list" : "single" });
+      defs.push(def);
       values[p.name] = tv;
     }
     setTesting(true);
@@ -188,12 +197,12 @@ export default function TaskEditor({
     const v = form.getFieldsValue(true);
     if (!v.sql_text) return message.warning("请先填写 SQL");
     const params: any[] = v.params || [];
-    const defs: { name: string; kind: "single" | "list" }[] = [];
+    const defs: Pick<ParamDef, "name" | "kind" | "value_type">[] = [];
     const values: any = {};
     for (const p of params) {
-      const list = isListVar(v.sql_text, p.name);
-      defs.push({ name: p.name, kind: list ? "list" : "single" });
-      values[p.name] = normalizeTestValue(p.test_value, list); // 空值照传,后端跳过、保留占位符
+      const def = toDef(v.sql_text, p);
+      defs.push(def);
+      values[p.name] = normalizeTestValue(p.test_value, def.kind === "list"); // 空值照传,后端跳过、保留占位符
     }
     try {
       const res = await previewSql({ sql_text: v.sql_text, params: defs, values });
@@ -238,6 +247,15 @@ export default function TaskEditor({
       ),
       children: (
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <div>
+            <div style={{ fontSize: 13, marginBottom: 4 }}>
+              类型 <Typography.Text type="secondary" style={{ fontSize: 12 }}>(数值型不加引号,用于 age &gt; :x、LIMIT :n 等;默认文本)</Typography.Text>
+            </div>
+            <Form.Item {...f} name={[f.name, "value_type"]} noStyle initialValue="text">
+              <Segmented options={[{ label: "文本", value: "text" }, { label: "数值", value: "number" }]} />
+            </Form.Item>
+          </div>
+
           <div>
             <div style={{ fontSize: 13, marginBottom: 4 }}>变量说明(业务填参时显示为该字段名与提示)</div>
             <Form.Item {...f} name={[f.name, "label"]} noStyle>

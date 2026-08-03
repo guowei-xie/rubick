@@ -57,7 +57,7 @@ def test_lifecycle_pending_publish_archive(db, admin, ds):
     ver = db.get(type(tmpl).versions.prop.mapper.class_, tmpl.published_version_id)
     assert ver.accepted_by == admin.id
     assert ver.params[0] == {
-        "name": "d", "kind": "single", "label": "日期",
+        "name": "d", "kind": "single", "value_type": "text", "label": "日期",
         "test_value": None, "enum_sql": None, "allow_bulk_input": False,
     }
 

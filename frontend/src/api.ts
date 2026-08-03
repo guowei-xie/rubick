@@ -28,6 +28,7 @@ http.interceptors.response.use(
 export interface ParamDef {
   name: string;
   kind?: "single" | "list";
+  value_type?: "text" | "number"; // 值形态:text=文本(加引号),number=数值(绑定为 int/float,不加引号)
   label?: string; // 变量说明:给业务看的名字兼填参提示(合并了原 中文名+说明)
   test_value?: string | string[]; // 测试值:作者试跑用,兼作业务填参示例
   enum_sql?: string; // 仅 list:取候选值的独立 SELECT(业务点「获取枚举值」时跑)
