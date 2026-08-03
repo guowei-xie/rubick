@@ -78,7 +78,7 @@ export default function AuditPage() {
   ];
 
   return (
-    <Card title="审计日志">
+    <Card title="审计日志" style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}>
       <Space style={{ marginBottom: 12 }}>
         <Input
           placeholder="按动作筛选,如 run_query / download / login"

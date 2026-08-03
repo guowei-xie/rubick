@@ -30,6 +30,14 @@ class JobOut(BaseModel):
         from_attributes = True
 
 
+class AuthorizedUserOut(BaseModel):
+    """被授权运行某任务的用户(用于任务卡片的参与者头像)。"""
+
+    id: int
+    name: str
+    avatar: str | None = None
+
+
 class TaskOut(BaseModel):
     """统一任务列表的一行(项目/模板 + 展示与能力标记)。"""
 
@@ -44,6 +52,9 @@ class TaskOut(BaseModel):
     author_name: str | None = None
     published_version_id: int | None = None
     created_at: datetime | None = None
+    updated_at: datetime | None = None  # 最后编辑时间
+    last_run_at: datetime | None = None  # 最后一次运行时间(含试跑);无则为空
     timeout_seconds: int | None = None  # 该任务查询超时(秒);None=按引擎默认
     can_manage: bool = False  # 可编辑/授权/下线(管理员或作者)
     can_run: bool = False      # 可填参取数(已发布且有运行权限)
+    authorized_users: list[AuthorizedUserOut] = []  # 显式授权可运行的用户(卡片参与者头像)

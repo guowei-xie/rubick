@@ -62,6 +62,7 @@ export default function UsersPage() {
   return (
     <Card
       title="用户管理 / 角色分配"
+      style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}
       extra={
         <Input.Search
           placeholder="搜姓名"

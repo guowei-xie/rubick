@@ -30,11 +30,13 @@ export default function SqlModal({
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
           background: "#f6f8fa",
-          padding: 12,
-          borderRadius: 4,
+          border: "1px solid #eef0f7",
+          padding: 16,
+          borderRadius: 12,
           maxHeight: "60vh",
           overflow: "auto",
           fontSize: 12,
+          lineHeight: "18px",
           margin: 0,
         }}
       >

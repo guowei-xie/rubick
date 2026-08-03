@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.permission import (
+    ACTION_RUN,
     ACTION_VIEW,
     RESOURCE_TEMPLATE,
     SUBJECT_USER,
@@ -97,6 +98,51 @@ def action_template_ids(db: Session, user: User, action: str) -> set[int] | None
 def visible_template_ids(db: Session, user: User) -> set[int] | None:
     """该用户可见(view)的模板 id 集合;管理员返回 None 表示全部。"""
     return action_template_ids(db, user, ACTION_VIEW)
+
+
+def authorized_run_users(db: Session, template_ids: list[int]) -> dict[int, list[dict]]:
+    """每个模板「显式授权了 run 动作」的用户列表(id/name/avatar),按模板 id 分组。
+
+    两步查询(仿 permissions.py::_enrich):先取授权行,再按 user.id 批量取用户,避免对
+    subject_id(String) 做 cast join,MySQL/SQLite 皆安全,且 O(1) 次查询无 N+1。
+    仅含显式授权用户;作者/管理者的隐式权限不入列(即卡片上的「参与者」语义)。
+    """
+    if not template_ids:
+        return {}
+    rid_strs = [str(i) for i in template_ids]
+    rows = list(
+        db.execute(
+            select(Permission.resource_id, Permission.subject_id).where(
+                Permission.resource_type == RESOURCE_TEMPLATE,
+                Permission.action == ACTION_RUN,
+                Permission.subject_type == SUBJECT_USER,
+                Permission.resource_id.in_(rid_strs),
+            )
+        )
+    )
+    if not rows:
+        return {}
+
+    def _as_int(v) -> int | None:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None  # subject_id 是自由字符串列(将来可能是组 id 等),非数字则跳过
+
+    pairs = [(_as_int(rid), _as_int(sid)) for rid, sid in rows]
+    uid_ints = {uid for _, uid in pairs if uid is not None}
+    if not uid_ints:
+        return {}
+    users = {
+        u.id: {"id": u.id, "name": u.name, "avatar": u.avatar}
+        for u in db.execute(select(User.id, User.name, User.avatar).where(User.id.in_(uid_ints)))
+    }
+    grouped: dict[int, list[dict]] = {}
+    for rid, uid in pairs:
+        u = users.get(uid) if uid is not None else None
+        if rid is not None and u:
+            grouped.setdefault(rid, []).append(u)
+    return grouped
 
 
 def grant(

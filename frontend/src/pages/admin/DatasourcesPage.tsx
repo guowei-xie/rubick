@@ -127,6 +127,7 @@ export default function DatasourcesPage() {
   return (
     <Card
       title="数据源"
+      style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}
       extra={
         <Button type="primary" onClick={openCreate}>
           新增数据源

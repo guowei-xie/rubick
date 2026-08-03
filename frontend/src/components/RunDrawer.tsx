@@ -122,7 +122,20 @@ export default function RunDrawer({
         )
       }
     >
-      <Typography.Paragraph type="secondary">{desc}</Typography.Paragraph>
+      {desc && (
+        <div
+          style={{
+            background: "var(--app-bg)",
+            borderRadius: 14,
+            padding: "12px 16px",
+            marginBottom: 16,
+            color: "#4a4a4a",
+            lineHeight: "22px",
+          }}
+        >
+          {desc}
+        </div>
+      )}
       <Form form={form} layout="vertical">
         {params.map((pd) => (
           <ParamField key={pd.name} pd={pd} templateId={task?.id} />
@@ -131,9 +144,29 @@ export default function RunDrawer({
       </Form>
 
       {preview && (
-        <>
-          <div style={{ margin: "8px 0", color: "#888" }}>
-            结果预览(前 {preview.rows.length} 行,共 {preview.row_count} 行);下载为完整结果
+        <div
+          style={{
+            marginTop: 8,
+            background: "#fafbff",
+            border: "1px solid #eef0f7",
+            borderRadius: 16,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
+          >
+            <span style={{ fontWeight: 600, color: "var(--ink)" }}>
+              结果预览
+              <span style={{ fontWeight: 400, color: "#888", marginLeft: 8, fontSize: 13 }}>
+                前 {preview.rows.length} 行 / 共 {preview.row_count} 行,下载为完整结果
+              </span>
+            </span>
             {job?.executed_sql && (
               <Button type="link" size="small" onClick={() => setShowSql(true)}>
                 查看执行SQL
@@ -141,7 +174,7 @@ export default function RunDrawer({
             )}
           </div>
           <ResultPreviewTable columns={preview.columns} rows={preview.rows} scrollY={400} />
-        </>
+        </div>
       )}
       <SqlModal sql={showSql ? job?.executed_sql || "" : null} onClose={() => setShowSql(false)} />
     </Drawer>

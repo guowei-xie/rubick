@@ -364,6 +364,7 @@ export default function TaskEditor({
       ]}
     >
       <Form form={form} layout="vertical">
+        <Divider orientation="left" style={{ marginTop: 0 }}>基本信息</Divider>
         <Space style={{ width: "100%" }} size="large" wrap>
           <Form.Item name="name" label="任务名称" rules={[{ required: true }]}>
             <Input style={{ width: 300 }} />
@@ -385,6 +386,7 @@ export default function TaskEditor({
         <Form.Item name="description" label="任务说明">
           <Input.TextArea rows={2} placeholder="这个取数任务是做什么的,给协作者/业务参考" />
         </Form.Item>
+        <Divider orientation="left">SQL 语句</Divider>
         <Form.Item
           name="sql_text"
           label="SQL"

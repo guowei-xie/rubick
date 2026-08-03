@@ -1,0 +1,150 @@
+/* 登录页专属样式:动态标题 + 呼吸按钮 + 右上角 mock 面板 */
+
+/* ---------- 动态标题(改编自 sonar-label-tuning 的弹跳效果) ---------- */
+.rk-login-title {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+
+  color: var(--ink);
+  font-family: "Libre Franklin", "DM Sans", -apple-system, "PingFang SC",
+    "Helvetica Neue", sans-serif;
+  font-size: clamp(56px, 11vw, 92px);
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.01em;
+
+  /* 给弹跳的 🔍 留出头顶空间,避免动画区被裁切 */
+  padding-top: 96px;
+  user-select: none;
+}
+
+.rk-login-bouncer-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 字母 u:挤压回弹(rubber-ball) */
+@keyframes rk-login-letter-bounce {
+  0% {
+    transform: scaleX(1.2) scaleY(0.75);
+  }
+  45% {
+    transform: scaleX(1) scaleY(1);
+  }
+}
+
+.rk-login-letter {
+  display: inline-block;
+  will-change: transform;
+  transform-origin: bottom center;
+  animation: rk-login-letter-bounce 0.35s ease both infinite alternate;
+}
+
+/* 🔍:上下弹跳(与字母同步)+ 匀速自转 */
+@keyframes rk-login-bounce {
+  from {
+    translate: -50% 100%;
+  }
+  to {
+    translate: -50% 0;
+  }
+}
+
+@keyframes rk-login-rotate {
+  from {
+    rotate: 0deg;
+  }
+  to {
+    rotate: 360deg;
+  }
+}
+
+.rk-login-bouncer {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  translate: -50% 0;
+
+  --size: 46px;
+  width: var(--size);
+  height: var(--size);
+  font-size: calc(var(--size) * 0.8);
+  margin-bottom: 22px;
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  will-change: transform;
+  animation: rk-login-rotate 4s linear infinite,
+    rk-login-bounce 0.35s ease-out both infinite alternate;
+}
+
+.rk-login-subtitle {
+  margin: 20px 0 32px;
+  text-align: center;
+
+  color: var(--ink-secondary);
+  font-size: 16px;
+  letter-spacing: 0.5em;
+  /* 抵消最后一个字符后多出的字距,保证视觉居中 */
+  text-indent: 0.5em;
+}
+
+/* ---------- 呼吸按钮(主 CTA) ---------- */
+@keyframes rk-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+.rk-breathe {
+  animation: rk-breathe 2.4s ease-in-out infinite;
+  transition: transform 0.2s ease;
+}
+.rk-breathe:hover {
+  transform: translateY(-1px);
+}
+
+/* ---------- 右上角:不显眼的 mock 身份选择入口 ---------- */
+.rk-mock-corner {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 50;
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  /* 平时低调隐入背景,悬停时才完全显现 */
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+.rk-mock-corner:hover {
+  opacity: 1;
+}
+
+.rk-mock-corner-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-secondary);
+}
+
+/* ---------- 无障碍:减少动态效果 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .rk-login-letter,
+  .rk-login-bouncer,
+  .rk-breathe {
+    animation: none;
+  }
+  .rk-breathe:hover {
+    transform: none;
+  }
+}

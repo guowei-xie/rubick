@@ -91,7 +91,7 @@ export default function NotificationBell() {
   return (
     <Popover content={content} trigger="click" open={open} onOpenChange={onOpenChange} placement="bottomRight">
       <Badge count={count} size="small">
-        <BellOutlined style={{ color: "#fff", fontSize: 18, cursor: "pointer" }} />
+        <BellOutlined style={{ color: "var(--ink)", fontSize: 18, cursor: "pointer" }} />
       </Badge>
     </Popover>
   );

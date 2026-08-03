@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Card, Divider, message, Select, Space, Typography } from "antd";
+import { Button, message, Select } from "antd";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { feishuCallback, getAuthConfig, mockLogin } from "../api";
 import { useAuth } from "../auth";
+import "../styles/login.css";
 
 const MOCK_USERS = [
   { open_id: "ou_admin", label: "管理员小A(admin)" },
@@ -57,38 +58,67 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ display: "flex", justifyContent: "center", paddingTop: 120 }}>
-      <Card title="登录拉比克 Rubick" style={{ width: 420 }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: "100vh",
+        padding: 24,
+      }}
+    >
+      <div className="rk-login-title">
+        <span>R</span>
+        <span className="rk-login-bouncer-wrapper">
+          <span className="rk-login-letter">u</span>
+          <span className="rk-login-bouncer">🔍</span>
+        </span>
+        <span>bick</span>
+      </div>
+      <div className="rk-login-subtitle">拉比克</div>
+      {/* 去掉卡片背景,只保留登录按钮;
+          mock 与正式登录按钮占据相同位置,便于评估真实 UI 效果,
+          具体演示身份的选择放到右上角不显眼的入口。 */}
+      <div
+        style={{ display: "flex", flexDirection: "column", gap: 12, width: 320 }}
+      >
         {cfg?.feishu_authorize_url && (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <Typography.Text type="secondary">使用企业飞书账号登录</Typography.Text>
-            <Button type="primary" block href={cfg.feishu_authorize_url}>
-              飞书登录
-            </Button>
-          </Space>
+          <Button
+            type="primary"
+            block
+            href={cfg.feishu_authorize_url}
+            className="rk-breathe"
+          >
+            飞书登录
+          </Button>
         )}
-        {cfg?.feishu_authorize_url && cfg?.mock_auth && <Divider plain>或</Divider>}
         {cfg?.mock_auth && (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <Typography.Text type="secondary">
-              开发模式(MOCK_AUTH):选择一个演示身份登录
-            </Typography.Text>
-            <Select
-              style={{ width: "100%" }}
-              value={openId}
-              onChange={setOpenId}
-              options={MOCK_USERS.map((u) => ({ value: u.open_id, label: u.label }))}
-            />
-            <Button block loading={loading} onClick={doMockLogin}>
-              mock 登录
-            </Button>
-          </Space>
+          <Button
+            block
+            loading={loading}
+            onClick={doMockLogin}
+            className="rk-breathe"
+          >
+            mock 登录
+          </Button>
         )}
-        <Divider />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          未授权用户登录后将看不到任何模板。
-        </Typography.Text>
-      </Card>
+      </div>
+
+      {/* 右上角:仅提供 mock 身份选择,尽量不显眼的开发入口 */}
+      {cfg?.mock_auth && (
+        <div className="rk-mock-corner">
+          <span className="rk-mock-corner-label">MOCK</span>
+          <Select
+            size="small"
+            variant="borderless"
+            value={openId}
+            onChange={setOpenId}
+            options={MOCK_USERS.map((u) => ({ value: u.open_id, label: u.label }))}
+            style={{ width: 150 }}
+          />
+        </div>
+      )}
     </div>
   );
 }

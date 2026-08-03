@@ -1,13 +1,48 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Modal, Space, Table, Tag } from "antd";
+import { Button, Card, Empty, Modal, Space } from "antd";
+import { PlusOutlined } from "@ant-design/icons";
 import { archiveTemplate, listTasks, publishTemplate } from "../api";
 import { useAuth } from "../auth";
-import StatusTag, { TEMPLATE_STATUS } from "../components/StatusTag";
 import TaskEditor from "../components/TaskEditor";
 import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
 import GrantModal from "../components/GrantModal";
+import TaskCard, { TaskCardHandlers } from "../components/TaskCard";
+import { TEMPLATE_STATUS } from "../components/StatusTag";
+
+/** 顶部可点击的状态筛选小片:点击切换只看该状态,再点或点「总数」清除。 */
+function StatChip({
+  n,
+  label,
+  active,
+  activeBg,
+  onClick,
+}: {
+  n: number;
+  label: string;
+  active: boolean;
+  activeBg: string;
+  onClick: () => void;
+}) {
+  return (
+    <span
+      onClick={onClick}
+      style={{
+        cursor: "pointer",
+        padding: "3px 12px",
+        borderRadius: 12,
+        background: active ? activeBg : "transparent",
+        color: active ? "var(--ink)" : "var(--ink-secondary)",
+        fontWeight: active ? 600 : 400,
+        transition: ".15s",
+        userSelect: "none",
+      }}
+    >
+      <b style={{ color: "var(--ink)" }}>{n}</b> {label}
+    </span>
+  );
+}
 
 export default function TasksPage() {
   const { user } = useAuth();
@@ -20,6 +55,13 @@ export default function TasksPage() {
   const [grantTarget, setGrantTarget] = useState<any>(null);
   const [recordsTarget, setRecordsTarget] = useState<any>(null);
   const [sp, setSp] = useSearchParams();
+  // 状态筛选与搜索词一样走 URL(?status=),刷新/深链可保留,与 ?q= 同一套来源
+  const statusFilter = sp.get("status"); // null=全部
+  const setStatusFilter = (s: string | null) => {
+    if (s) sp.set("status", s);
+    else sp.delete("status");
+    setSp(sp, { replace: true });
+  };
 
   const load = () => {
     setLoading(true);
@@ -54,89 +96,95 @@ export default function TasksPage() {
       onOk: () => publishTemplate(row.id, "任务列表上线").then(load),
     });
 
-  const columns = [
-    {
-      title: "项目名称",
-      dataIndex: "name",
-      width: 240,
-      ellipsis: true,
-      render: (n: string) => <strong>{n}</strong>,
-    },
-    { title: "创建人", dataIndex: "author_name", width: 90 },
-    { title: "创建时间", dataIndex: "created_at", width: 160, render: (t: string) => (t ? t.replace("T", " ").slice(0, 19) : "-") },
-    {
-      title: "数据库",
-      width: 190,
-      render: (_: any, r: any) => (
-        <span>
-          <Tag color={r.engine === "hive" ? "orange" : "green"}>{r.engine}</Tag>
-          {r.datasource_name}
-        </span>
-      ),
-    },
-    {
-      title: "状态",
-      dataIndex: "status",
-      width: 90,
-      render: (s: string) => <StatusTag map={TEMPLATE_STATUS} value={s} />,
-    },
-    {
-      title: "操作",
-      width: 100,
-      render: (_: any, r: any) =>
-        r.can_run ? (
-          <Button type="link" onClick={() => setRunTarget(r)}>填参取数</Button>
-        ) : (
-          <span style={{ color: "#ccc" }}>—</span>
-        ),
-    },
-    {
-      title: "管理",
-      width: 200,
-      render: (_: any, r: any) =>
-        r.can_manage ? (
-          <Space size={0} wrap>
-            <Button type="link" size="small" onClick={() => setEditorId(r.id)}>编辑</Button>
-            <Button type="link" size="small" onClick={() => setGrantTarget(r)}>授权</Button>
-            {r.status === "published" ? (
-              <Button type="link" size="small" danger onClick={() => doArchive(r)}>下线</Button>
-            ) : (
-              <Button type="link" size="small" onClick={() => doPublish(r)}>上线</Button>
-            )}
-          </Space>
-        ) : (
-          <span style={{ color: "#ccc" }}>—</span>
-        ),
-    },
-    {
-      title: "运行记录",
-      width: 90,
-      render: (_: any, r: any) => (
-        <Button type="link" size="small" onClick={() => setRecordsTarget(r)}>查看</Button>
-      ),
-    },
+  // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感);再叠加状态筛选;下线任务排最后
+  const q = (sp.get("q") ?? "").trim().toLowerCase();
+  const filtered = useMemo(() => {
+    const matchQ = (t: any) => {
+      if (!q) return true;
+      if ((t.name || "").toLowerCase().includes(q)) return true;
+      if ((t.author_name || "").toLowerCase().includes(q)) return true;
+      return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
+    };
+    return tasks
+      .filter((t) => matchQ(t) && (!statusFilter || t.status === statusFilter))
+      .slice()
+      // 下线(archived)默认排到最后,其余保持后端顺序(id desc)
+      .sort((a, b) => (a.status === "archived" ? 1 : 0) - (b.status === "archived" ? 1 : 0));
+  }, [tasks, q, statusFilter]);
+
+  const summary = useMemo(() => {
+    const s = { published: 0, draft: 0, total: tasks.length };
+    for (const t of tasks) {
+      if (t.status === "published") s.published++;
+      else if (t.status === "draft") s.draft++;
+    }
+    return s;
+  }, [tasks]);
+
+  // 顶部筛选片:已上线/待上线读共享状态色(tint),「总数」清除筛选
+  const statChips: { key: string | null; label: string; n: number; tint: string }[] = [
+    { key: "published", label: "已上线", n: summary.published, tint: TEMPLATE_STATUS.published.tint! },
+    { key: "draft", label: "待上线", n: summary.draft, tint: TEMPLATE_STATUS.draft.tint! },
+    { key: null, label: "总数", n: summary.total, tint: "#eef0f7" },
   ];
+
+  const handlers: TaskCardHandlers = {
+    onRun: setRunTarget,
+    onEdit: (r) => setEditorId(r.id),
+    onGrant: setGrantTarget,
+    onRecords: setRecordsTarget,
+    onPublish: doPublish,
+    onArchive: doArchive,
+  };
 
   return (
     <Card
-      title="任务列表"
+      styles={{ body: { paddingTop: 12 } }}
+      style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}
+      loading={loading && !tasks.length}
+      title={
+        <Space size={20} align="center">
+          <span style={{ fontSize: 22, fontWeight: 700 }}>任务列表</span>
+          <Space size={8} style={{ fontSize: 13, fontWeight: 400 }}>
+            {statChips.map((c) => (
+              <StatChip
+                key={c.label}
+                n={c.n}
+                label={c.label}
+                active={statusFilter === c.key}
+                activeBg={c.tint}
+                onClick={() => setStatusFilter(statusFilter === c.key ? null : c.key)}
+              />
+            ))}
+          </Space>
+        </Space>
+      }
       extra={
         canCreate && (
-          <Button type="primary" onClick={() => setEditorId(null)}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditorId(null)}>
             新建任务
           </Button>
         )
       }
     >
-      <Table
-        rowKey="id"
-        loading={loading}
-        dataSource={tasks}
-        columns={columns}
-        size="middle"
-        scroll={{ x: 1100 }}
-        pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 个任务` }}
-      />
+      {filtered.length === 0 ? (
+        <Empty
+          style={{ padding: "48px 0" }}
+          description={q ? `没有匹配「${sp.get("q")}」的任务` : "暂无任务"}
+        />
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+            gap: 20,
+          }}
+        >
+          {filtered.map((t) => (
+            <TaskCard key={t.id} task={t} h={handlers} />
+          ))}
+        </div>
+      )}
 
       <TaskEditor
         editingId={editorId ?? null}

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -31,6 +31,17 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
         rows = list(db.scalars(stmt.where(published_visible)))
 
     runnable = permission_service.action_template_ids(db, user, ACTION_RUN)  # None=管理员(全部)
+    ids = [t.id for t in rows]
+    authorized = permission_service.authorized_run_users(db, ids)  # 一次批量查
+    # 各任务最后一次运行时间(含试跑),一次批量聚合,避免 N+1
+    last_runs: dict[int, object] = {}
+    if ids:
+        for tid, ts in db.execute(
+            select(QueryJob.template_id, func.max(QueryJob.created_at))
+            .where(QueryJob.template_id.in_(ids))
+            .group_by(QueryJob.template_id)
+        ):
+            last_runs[tid] = ts
     out: list[TaskOut] = []
     for t in rows:
         can_manage = permission_service.is_template_owner(user, t)
@@ -46,8 +57,10 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 datasource_name=t.datasource_name, engine=t.engine,
                 author_id=t.author_id, author_name=t.author_name,
                 published_version_id=t.published_version_id, created_at=t.created_at,
+                updated_at=t.updated_at, last_run_at=last_runs.get(t.id),
                 timeout_seconds=t.timeout_seconds,
                 can_manage=can_manage, can_run=can_run,
+                authorized_users=authorized.get(t.id, []),
             )
         )
     return out
