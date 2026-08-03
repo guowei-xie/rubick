@@ -48,7 +48,6 @@ export interface User {
   name: string;
   role: "user" | "admin";
   email?: string;
-  department_id?: number;
 }
 
 // ---- auth ----
@@ -120,8 +119,6 @@ export const revokePermission = (id: number) =>
   http.delete(`/permissions/${id}`).then((r) => r.data);
 export const lookupUsers = (q?: string) =>
   http.get("/lookup/users", { params: { q } }).then((r) => r.data);
-export const lookupDepartments = (q?: string) =>
-  http.get("/lookup/departments", { params: { q } }).then((r) => r.data);
 
 // ---- audit ----
 export const listAuditLogs = (params: any = {}) =>

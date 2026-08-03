@@ -51,7 +51,6 @@ class UserOut(BaseModel):
     email: str | None = None
     avatar: str | None = None
     role: str
-    department_id: int | None = None
     last_login_at: datetime | None = None
 
     class Config:

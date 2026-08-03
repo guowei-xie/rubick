@@ -8,7 +8,7 @@ from app.api.deps import require_admin
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError
 from app.models.permission import Permission
-from app.models.user import ROLE_ADMIN, Department, User
+from app.models.user import ROLE_ADMIN, User
 from app.schemas.permission import GrantIn, PermissionOut
 from app.services import permission_service
 
@@ -16,19 +16,12 @@ router = APIRouter(prefix="/permissions", tags=["permissions"])
 
 
 def _enrich(db: Session, perms: list[Permission]) -> list[PermissionOut]:
-    """给每条授权补上主体名称(用户名/部门名),便于前端展示"谁有什么权限"。"""
-    def _ids(t):
-        return {int(p.subject_id) for p in perms if p.subject_type == t and p.subject_id.isdigit()}
-
-    unames = dict(db.execute(select(User.id, User.name).where(User.id.in_(_ids("user") or {-1}))).all())
-    dnames = dict(
-        db.execute(select(Department.id, Department.name).where(Department.id.in_(_ids("department") or {-1}))).all()
-    )
+    """给每条授权补上主体名称(用户名),便于前端展示"谁有什么权限"。"""
+    uids = {int(p.subject_id) for p in perms if p.subject_id.isdigit()} or {-1}
+    unames = dict(db.execute(select(User.id, User.name).where(User.id.in_(uids))).all())
     out = []
     for p in perms:
-        name = None
-        if p.subject_id.isdigit():
-            name = unames.get(int(p.subject_id)) if p.subject_type == "user" else dnames.get(int(p.subject_id))
+        name = unames.get(int(p.subject_id)) if p.subject_id.isdigit() else None
         out.append(
             PermissionOut(
                 id=p.id, subject_type=p.subject_type, subject_id=p.subject_id, subject_name=name,
@@ -63,7 +56,7 @@ def list_permissions(
 
 @router.post("", response_model=list[PermissionOut])
 def grant(data: GrantIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    # 商分只能对自己发布/维护的模板授权
+    # 商分只能对自己发布/维护的模板授权(主体仅 user 由 GrantIn.subject_type=Literal 在入参层保证)
     if data.resource_type != "template":
         raise PermissionDeniedError("仅支持对模板授权")
     if not permission_service.owns_template(db, user, data.resource_id):

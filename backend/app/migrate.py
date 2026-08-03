@@ -19,19 +19,88 @@ from app.models.template import TemplateVersion
 from app.reencrypt_secrets import main as reencrypt_secrets
 
 
-def _ensure_column(table: str, column: str, coltype: str) -> None:
-    """若列不存在则 ADD COLUMN;已存在则幂等跳过。
+def _has_column(table: str, column: str) -> bool:
+    """SQLAlchemy 自省判断列是否存在(而非靠捕获异常),让真正的失败如实抛出。"""
+    return column in {c["name"] for c in sa_inspect(engine).get_columns(table)}
 
-    用 SQLAlchemy 自省判断存在性(而非靠捕获重复列异常),这样真正的 ALTER 失败
-    (类型错误 / 权限不足 / 锁超时)会如实抛出,不被误当成「已存在」吞掉。
-    """
-    existing = {c["name"] for c in sa_inspect(engine).get_columns(table)}
-    if column in existing:
+
+def _ensure_column(table: str, column: str, coltype: str) -> None:
+    """若列不存在则 ADD COLUMN;已存在则幂等跳过。"""
+    if _has_column(table, column):
         print(f"[migrate] {table}.{column} 已存在,跳过")
         return
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
     print(f"[migrate] {table}: 新增列 {column}")
+
+
+def _drop_column(table_obj, column: str) -> None:
+    """幂等删除列,与 _ensure_column 对称,方言感知。
+
+    MySQL:先删列上的外键约束(名字查 information_schema),再 DROP COLUMN。
+    SQLite:列带外键无法直接 DROP,按当前模型定义重建表并回拷数据(仅本地验证会走到)。
+    """
+    table = table_obj.name
+    if not _has_column(table, column):
+        print(f"[migrate] {table}.{column} 不存在,跳过")
+        return
+    if engine.dialect.name == "mysql":
+        with engine.begin() as conn:
+            fks = conn.execute(
+                text(
+                    "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t "
+                    "AND COLUMN_NAME = :c AND REFERENCED_TABLE_NAME IS NOT NULL"
+                ),
+                {"t": table, "c": column},
+            ).scalars().all()
+            for fk in fks:
+                conn.execute(text(f"ALTER TABLE {table} DROP FOREIGN KEY {fk}"))
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+        print(f"[migrate] {table}: 删除列 {column}(及外键 {fks or '无'})")
+    else:
+        with engine.begin() as conn:
+            # 先删旧表上的命名索引:重命名后索引名不变,重建时会与新表同名索引冲突
+            for r in conn.execute(text(f"PRAGMA index_list('{table}')")).mappings().all():
+                if not str(r["name"]).startswith("sqlite_autoindex_"):
+                    conn.execute(text(f"DROP INDEX IF EXISTS {r['name']}"))
+            tmp = f"_{table}_old"
+            conn.execute(text(f"ALTER TABLE {table} RENAME TO {tmp}"))
+            table_obj.create(bind=conn)  # 按新模型重建(不含被删列,含原索引)
+            cols = ", ".join(c.name for c in table_obj.columns)
+            conn.execute(text(f"INSERT INTO {table} ({cols}) SELECT {cols} FROM {tmp}"))
+            conn.execute(text(f"DROP TABLE {tmp}"))
+        print(f"[migrate] {table}: 重建表以移除列 {column}(SQLite)")
+
+
+def _drop_table(name: str) -> None:
+    """幂等删除表。"""
+    if sa_inspect(engine).has_table(name):
+        with engine.begin() as conn:
+            conn.execute(text(f"DROP TABLE {name}"))
+        print(f"[migrate] 删除表 {name}")
+    else:
+        print(f"[migrate] 表 {name} 不存在,跳过")
+
+
+def _purge_department_permissions() -> None:
+    """取消部门级授权:清除存量 subject_type='department' 的权限行。幂等(二次删 0 行)。
+
+    字符串字面值用单引号即可;reencrypt 那条「列名不加双引号」的坑针对的是标识符,与此无关。
+    """
+    with engine.begin() as conn:
+        res = conn.execute(
+            text(f"DELETE FROM {tbl('permissions')} WHERE subject_type = 'department'")
+        )
+    print(f"[migrate] 清除部门授权行:{res.rowcount} 行")
+
+
+def _drop_department_schema() -> None:
+    """删除部门数据 schema:users.department_id 列 + departments 表。幂等。"""
+    from app.models.user import User  # 当前模型已不含 department_id
+
+    _drop_column(User.__table__, "department_id")
+    _drop_table(tbl("departments"))
 
 
 def _migrate_pending_accept() -> None:
@@ -170,6 +239,10 @@ def main() -> None:
 
     # 存量敏感字段明文 → 密文(P0-2)
     reencrypt_secrets()
+
+    # 取消部门级授权:清部门权限行 + 删部门 schema(表/列)(幂等)
+    _purge_department_permissions()
+    _drop_department_schema()
 
     # 发布流简化 + 参数定义迁移(幂等)
     _migrate_pending_accept()

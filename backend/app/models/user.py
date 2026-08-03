@@ -1,9 +1,8 @@
-"""用户与部门。用户首次飞书扫码登录时按需创建(JIT);管理员也可主动批量同步通讯录
-(feishu_service.sync_contacts / POST /api/admin/sync-contacts)。"""
+"""用户。首次飞书扫码登录时按需创建(JIT);授权选人时实时搜通讯录命中者也会 upsert 成壳用户。"""
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String
+from sqlalchemy import BigInteger, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, tbl
@@ -15,15 +14,6 @@ ROLE_USER = "user"          # 业务使用者
 ROLE_ADMIN = "admin"        # 管理员(含原商分职责)
 
 
-class Department(Base, TimestampMixin):
-    __tablename__ = tbl("departments")
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    feishu_dept_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(128))
-    parent_feishu_dept_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-
-
 class User(Base, TimestampMixin):
     __tablename__ = tbl("users")
 
@@ -33,9 +23,6 @@ class User(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(128))
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     avatar: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    department_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger, ForeignKey(tbl("departments.id")), nullable=True
-    )
     role: Mapped[str] = mapped_column(String(32), default=ROLE_USER, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     # 最近登录时间;仅登录过的用户才在「用户管理」里展示

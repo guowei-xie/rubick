@@ -6,11 +6,10 @@ from app.models.notification import Notification
 from app.models.permission import Permission
 from app.models.query_job import QueryJob
 from app.models.template import SqlTemplate, TemplateVersion
-from app.models.user import Department, User
+from app.models.user import User
 
 __all__ = [
     "User",
-    "Department",
     "DataSource",
     "Notification",
     "SqlTemplate",

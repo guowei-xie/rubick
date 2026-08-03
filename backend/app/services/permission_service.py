@@ -1,6 +1,6 @@
 """授权判定与授予。
 
-有效权限 = 个人授权 ∪ 所属部门授权。管理员全通;模板作者对自己的模板全通。
+有效权限 = 个人授权。管理员全通;模板作者对自己的模板全通。
 Phase 2 再加 RBAC 角色主体与拒绝优先。
 """
 from __future__ import annotations
@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.models.permission import (
     ACTION_VIEW,
     RESOURCE_TEMPLATE,
-    SUBJECT_DEPARTMENT,
     SUBJECT_USER,
     Permission,
 )  # noqa: F401
@@ -20,11 +19,8 @@ from app.models.user import ROLE_ADMIN, User
 
 
 def _subject_filters(user: User):
-    """当前用户对应的所有授权主体 (type, id)。"""
-    subjects = [(SUBJECT_USER, str(user.id))]
-    if user.department_id:
-        subjects.append((SUBJECT_DEPARTMENT, str(user.department_id)))
-    return subjects
+    """当前用户对应的所有授权主体 (type, id)。当前仅个人用户。"""
+    return [(SUBJECT_USER, str(user.id))]
 
 
 def can_access_job(user: User, job) -> bool:
