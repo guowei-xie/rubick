@@ -1,7 +1,7 @@
 """飞书接入。
 
 - 登录:OAuth code 换用户信息(authen,不需通讯录权限)
-- 组织同步:sync_contacts 拉取部门 + 用户(需 contact 通讯录读取权限)
+- 授权选人:search_users 实时按本人可见范围搜通讯录(需 contact:user:search 权限)
 - 通知:send_message 机器人卡片(需 im:message 权限)
 
 所有请求走直连(trust_env=False):规避本地/沙箱注入的不稳定代理;真机无代理时行为一致。
@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -221,104 +220,3 @@ def send_message(open_id: str, title: str, content: str, link: str | None = None
         return resp.json().get("code") == 0
     except Exception:
         return False
-
-
-# ---------------- 通讯录同步 ----------------
-
-def _paged(path: str, headers: dict, params: dict) -> list[dict]:
-    """通用分页拉取,返回 data.items 汇总。"""
-    items: list[dict] = []
-    page_token = None
-    while True:
-        p = dict(params)
-        if page_token:
-            p["page_token"] = page_token
-        r = _client.get(f"{_BASE}{path}", headers=headers, params=p).json()
-        if r.get("code") != 0:
-            raise RubicError(f"飞书通讯录读取失败({path}):{r.get('msg')}")
-        data = r.get("data", {}) or {}
-        items.extend(data.get("items") or [])
-        page_token = data.get("page_token")
-        if not data.get("has_more"):
-            break
-    return items
-
-
-def _scope_department_ids(headers: dict) -> list[str]:
-    ids: list[str] = []
-    page_token = None
-    while True:
-        p = {"page_size": 50}
-        if page_token:
-            p["page_token"] = page_token
-        r = _client.get(f"{_BASE}/contact/v3/scopes", headers=headers, params=p).json()
-        if r.get("code") != 0:
-            raise RubicError(
-                "通讯录权限未开通:请在飞书开放平台为应用开通 contact 通讯录读取权限并发布。"
-                f"(原始:{r.get('msg')})"
-            )
-        data = r.get("data", {}) or {}
-        ids.extend(data.get("department_ids") or [])
-        page_token = data.get("page_token")
-        if not data.get("has_more"):
-            break
-    return ids
-
-
-def sync_contacts(db: Session) -> dict:
-    """把飞书通讯录(部门 + 用户)同步进平台库。返回 {departments, users}。
-
-    需要应用已开通 contact 通讯录读取权限。按应用可见范围(scopes)拉取。
-    """
-    from app.models.user import Department, User  # 延迟导入避免循环
-    from app.services import user_service
-
-    headers = {"Authorization": f"Bearer {_tenant_access_token()}"}
-
-    # 1) 应用可见的顶层部门,连同其所有子部门
-    scope_ids = _scope_department_ids(headers) or ["0"]
-    seen: dict[str, dict] = {}
-    for did in scope_ids:
-        for dep in _paged(
-            "/contact/v3/departments",
-            headers,
-            {"parent_department_id": did, "fetch_child": True, "page_size": 50},
-        ):
-            seen[dep.get("open_department_id") or dep["department_id"]] = dep
-        # 顶层部门本身也补一条
-        if did != "0":
-            r = _client.get(f"{_BASE}/contact/v3/departments/{did}", headers=headers).json()
-            if r.get("code") == 0 and r.get("data", {}).get("department"):
-                dep = r["data"]["department"]
-                seen[dep.get("open_department_id") or dep["department_id"]] = dep
-
-    # upsert 部门
-    for fid, dep in seen.items():
-        user_service.upsert_department(db, fid, dep.get("name", ""), dep.get("parent_department_id"))
-    db.commit()
-
-    # 部门 feishu_id -> 内部 id 映射
-    dept_map = {d.feishu_dept_id: d.id for d in db.scalars(select(Department))}
-
-    # 2) 每个部门下的用户
-    for fid in seen:
-        for u in _paged(
-            "/contact/v3/users/find_by_department",
-            headers,
-            {"department_id": fid, "page_size": 50},
-        ):
-            if not u.get("open_id"):
-                continue
-            row = user_service.upsert_user(db, {
-                "open_id": u["open_id"],
-                "union_id": u.get("union_id"),
-                "name": u.get("name"),
-                "email": u.get("email") or u.get("enterprise_email"),
-                "avatar": (u.get("avatar") or {}).get("avatar_72"),
-            })
-            dept_ids = u.get("department_ids") or []
-            if dept_ids and dept_ids[0] in dept_map:
-                row.department_id = dept_map[dept_ids[0]]
-    db.commit()
-
-    return {"departments": len(seen), "users": db.query(User).count()}

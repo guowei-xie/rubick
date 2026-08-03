@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import require_admin, require_manager
 from app.connectors import get_connector
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
@@ -16,7 +16,8 @@ router = APIRouter(prefix="/datasources", tags=["datasources"])
 
 
 @router.get("", response_model=list[DataSourceOut])
-def list_datasources(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def list_datasources(db: Session = Depends(get_db), _: User = Depends(require_manager)):
+    # 开发者建模板需读数据源下拉;DataSourceOut 不含密码。增删改/测连仍限管理员。
     return list(db.scalars(select(DataSource).order_by(DataSource.id)))
 
 

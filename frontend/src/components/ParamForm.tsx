@@ -118,6 +118,9 @@ function ListField({
             获取枚举值
           </Button>
         )}
+        {pd.enum_sql && pd.enum_sql_duration_ms != null && (
+          <span style={{ color: "#888", fontSize: 12 }}>作者测试约 {pd.enum_sql_duration_ms} ms,供参考</span>
+        )}
         {/* 上传/粘贴仅在编辑者为该变量开启时提供 */}
         {pd.allow_bulk_input && <PasteListButton onAdd={merge} />}
         {list.length ? <span style={{ color: "#888", fontSize: 12 }}>已选 {list.length} 个</span> : null}

@@ -34,7 +34,7 @@ def _next_version_no(db: Session, template_id: int) -> int:
 def _normalize_params(sql: str, params: list[ParamDef] | list[dict]) -> list[dict]:
     """落库前按 SQL 写法定死 kind,让「kind 由 SQL 判定」的约束在持久化边界生效
     (不依赖前端如实传值)。字段 IN/NOT IN (:x) → list,其余 → single。
-    single 变量不落 list 专用字段(enum_sql / allow_bulk_input)。
+    single 变量不落 list 专用字段(见 ParamDef.LIST_ONLY_FIELDS),统一清回其声明默认值。
     """
     out = []
     for p in params:
@@ -42,8 +42,8 @@ def _normalize_params(sql: str, params: list[ParamDef] | list[dict]) -> list[dic
         is_list = params_service.detect_is_list(sql, d.get("name", ""))
         d["kind"] = "list" if is_list else "single"
         if not is_list:
-            d["enum_sql"] = None
-            d["allow_bulk_input"] = False
+            for name in ParamDef.LIST_ONLY_FIELDS:
+                d[name] = ParamDef.model_fields[name].get_default(call_default_factory=True)
         out.append(d)
     return out
 
@@ -258,4 +258,8 @@ def run_value_query(db: Session, datasource_id: int, sql: str) -> dict:
         if s not in seen:
             seen.add(s)
             values.append(s)
-    return {"values": values, "truncated": result.truncated}
+    return {
+        "values": values,
+        "truncated": result.truncated,
+        "duration_ms": result.meta.get("duration_ms"),
+    }

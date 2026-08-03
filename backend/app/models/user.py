@@ -1,27 +1,19 @@
-"""用户与部门。用户首次飞书扫码登录时按需创建(JIT);管理员也可主动批量同步通讯录
-(feishu_service.sync_contacts / POST /api/admin/sync-contacts)。"""
+"""用户。首次飞书扫码登录时按需创建(JIT);授权选人时实时搜通讯录命中者也会 upsert 成壳用户。"""
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String
+from sqlalchemy import BigInteger, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, tbl
 from app.core.db_types import EncryptedText
 from app.models.mixins import TimestampMixin
 
-# 平台角色:只有两种。管理员可建/改/发布任意项目并互相可见;业务用户只填参取数。
-ROLE_USER = "user"          # 业务使用者
+# 平台角色:三种。管理员可建/改/发布任意项目并互相可见,且独揽治理(用户角色赋权/数据源/审计);
+# 开发者近似管理员但不含这三块治理;普通用户只填参取数。
+ROLE_USER = "user"          # 普通用户(业务使用者)
 ROLE_ADMIN = "admin"        # 管理员(含原商分职责)
-
-
-class Department(Base, TimestampMixin):
-    __tablename__ = tbl("departments")
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    feishu_dept_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(128))
-    parent_feishu_dept_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+ROLE_DEVELOPER = "developer"  # 开发者:近似管理员,不含 用户角色赋权/数据源管理/审计
 
 
 class User(Base, TimestampMixin):
@@ -33,9 +25,6 @@ class User(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(128))
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     avatar: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    department_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger, ForeignKey(tbl("departments.id")), nullable=True
-    )
     role: Mapped[str] = mapped_column(String(32), default=ROLE_USER, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     # 最近登录时间;仅登录过的用户才在「用户管理」里展示

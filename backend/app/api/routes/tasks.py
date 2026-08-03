@@ -11,7 +11,7 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.permission import ACTION_RUN
 from app.models.query_job import QueryJob
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import User
 from app.schemas.query import JobOut, TaskOut
 from app.schemas.template import ValueListOut
 from app.services import permission_service, template_service
@@ -21,9 +21,9 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 @router.get("", response_model=list[TaskOut])
 def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """管理员看全部(彼此可见可编辑);业务用户只看被授权的已发布。"""
+    """管理者(管理员/开发者)看全部(彼此可见可编辑);普通用户只看被授权的已发布。"""
     stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
-    if user.role == ROLE_ADMIN:
+    if permission_service.is_manager(user):
         rows = list(db.scalars(stmt))
     else:
         visible = permission_service.visible_template_ids(db, user) or set()

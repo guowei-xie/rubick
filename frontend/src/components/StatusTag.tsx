@@ -18,7 +18,8 @@ export const TEMPLATE_STATUS: TagMap = {
 };
 
 export const ROLE: TagMap = {
-  user: { color: "default", label: "业务使用者" },
+  user: { color: "default", label: "普通用户" },
+  developer: { color: "geekblue", label: "开发者" },
   admin: { color: "red", label: "管理员" },
 };
 

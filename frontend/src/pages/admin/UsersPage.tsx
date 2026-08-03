@@ -78,7 +78,7 @@ export default function UsersPage() {
         dataSource={rows}
         columns={columns}
         size="middle"
-        locale={{ emptyText: "还没有用户登录过。用户通过飞书扫码登录后会自动出现在这里(默认业务使用者)。" }}
+        locale={{ emptyText: "还没有用户登录过。用户通过飞书扫码登录后会自动出现在这里(默认普通用户)。" }}
         pagination={{ pageSize: 15, showTotal: (t) => `共 ${t} 人(仅登录过的)` }}
       />
     </Card>

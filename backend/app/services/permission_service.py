@@ -1,6 +1,6 @@
 """授权判定与授予。
 
-有效权限 = 个人授权 ∪ 所属部门授权。管理员全通;模板作者对自己的模板全通。
+有效权限 = 个人授权。管理员全通;模板作者对自己的模板全通。
 Phase 2 再加 RBAC 角色主体与拒绝优先。
 """
 from __future__ import annotations
@@ -11,35 +11,37 @@ from sqlalchemy.orm import Session
 from app.models.permission import (
     ACTION_VIEW,
     RESOURCE_TEMPLATE,
-    SUBJECT_DEPARTMENT,
     SUBJECT_USER,
     Permission,
 )  # noqa: F401
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User
+
+
+def is_manager(user: User) -> bool:
+    """管理者 = 管理员或开发者。二者对模板/运行记录拥有全通短路;
+    区别仅在治理动作(用户角色赋权/数据源/审计),那三块由 require_admin 单独把守。"""
+    return user.role in (ROLE_ADMIN, ROLE_DEVELOPER)
 
 
 def _subject_filters(user: User):
-    """当前用户对应的所有授权主体 (type, id)。"""
-    subjects = [(SUBJECT_USER, str(user.id))]
-    if user.department_id:
-        subjects.append((SUBJECT_DEPARTMENT, str(user.department_id)))
-    return subjects
+    """当前用户对应的所有授权主体 (type, id)。当前仅个人用户。"""
+    return [(SUBJECT_USER, str(user.id))]
 
 
 def can_access_job(user: User, job) -> bool:
-    """任务结果的访问权:本人或管理员。集中此处避免各处重复写(含 admin 短路)。"""
-    return user.role == ROLE_ADMIN or job.user_id == user.id
+    """任务结果的访问权:本人或管理者(管理员/开发者)。集中此处避免各处重复写。"""
+    return is_manager(user) or job.user_id == user.id
 
 
 def is_template_owner(user: User, tmpl) -> bool:
-    """管理员恒真;否则需为该模板作者。作用于已加载的模板对象,避免重复查询。"""
-    return user.role == ROLE_ADMIN or bool(tmpl and tmpl.author_id == user.id)
+    """管理者(管理员/开发者)恒真;否则需为该模板作者。作用于已加载的模板对象,避免重复查询。"""
+    return is_manager(user) or bool(tmpl and tmpl.author_id == user.id)
 
 
 def owns_template(db: Session, user: User, template_id: int | str) -> bool:
-    """限定商分只能管自己的模板;管理员恒真。"""
-    if user.role == ROLE_ADMIN:
+    """管理者(管理员/开发者)恒真;普通用户只能管自己作为作者的模板。"""
+    if is_manager(user):
         return True
     return is_template_owner(user, db.get(SqlTemplate, int(template_id)))
 
@@ -49,7 +51,7 @@ def owned_template_ids(db: Session, user: User) -> list[int]:
 
 
 def can(db: Session, user: User, action: str, resource_type: str, resource_id: int | str) -> bool:
-    if user.role == ROLE_ADMIN:
+    if is_manager(user):
         return True
     # 模板作者对自己的模板放行
     if resource_type == RESOURCE_TEMPLATE:
@@ -73,9 +75,9 @@ def can(db: Session, user: User, action: str, resource_type: str, resource_id: i
 
 
 def action_template_ids(db: Session, user: User, action: str) -> set[int] | None:
-    """用户对模板可执行 action(view/run/download)的 id 集合;管理员返回 None 表示全部。
+    """用户对模板可执行 action(view/run/download)的 id 集合;管理者(管理员/开发者)返回 None 表示全部。
     作者对自己的模板拥有全部动作。"""
-    if user.role == ROLE_ADMIN:
+    if is_manager(user):
         return None
     ids: set[int] = set(owned_template_ids(db, user))
     for stype, sid in _subject_filters(user):

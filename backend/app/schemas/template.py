@@ -62,6 +62,7 @@ class EnumSqlIn(BaseModel):
 class ValueListOut(BaseModel):
     values: list[str]
     truncated: bool = False
+    duration_ms: int | None = None  # 获取枚举耗时(毫秒),作者测试时捕获,供前端参考
 
 
 class PublishIn(BaseModel):

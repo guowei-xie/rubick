@@ -10,6 +10,7 @@ import {
   runEnumSql,
   testRun,
   updateTemplate,
+  ValueListOut,
 } from "../api";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
@@ -58,7 +59,8 @@ export default function TaskEditor({
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [enumSqlTesting, setEnumSqlTesting] = useState<string | null>(null); // 正在测试 enum_sql 的变量
-  const [enumSample, setEnumSample] = useState<Record<string, { values: string[]; truncated: boolean }>>({}); // 各变量 enum_sql 测试结果
+  const [enumSample, setEnumSample] = useState<Record<string, ValueListOut>>({}); // 各变量 enum_sql 测试结果
+  const [enumEnabled, setEnumEnabled] = useState<Record<string, boolean>>({}); // 作者是否已勾选「允许枚举 SQL」(仅控制编辑框展开)
   const [showSql, setShowSql] = useState(false);
   const [previewSqlText, setPreviewSqlText] = useState<string | null>(null); // SQL 预览浮窗内容
   const [activeKeys, setActiveKeys] = useState<string[]>([]); // 展开的变量卡(默认全部收起)
@@ -70,6 +72,7 @@ export default function TaskEditor({
     listDatasources().then(setDatasources);
     setPreview(null);
     setEnumSample({});
+    setEnumEnabled({});
     if (editingId) {
       getTemplate(editingId).then((d) => {
         const v = d.latest_version || d.published_version;
@@ -80,6 +83,7 @@ export default function TaskEditor({
           test_value: p.test_value,
           enum_sql: p.enum_sql,
           allow_bulk_input: p.allow_bulk_input,
+          enum_sql_duration_ms: p.enum_sql_duration_ms,
         }));
         form.setFieldsValue({
           name: d.name,
@@ -122,14 +126,20 @@ export default function TaskEditor({
     setEnumSqlTesting(varName);
     try {
       const res = await runEnumSql({ datasource_id, sql });
-      setEnumSample((s) => ({ ...s, [varName]: { values: res.values, truncated: res.truncated } }));
-      message.success(`取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""},可作为测试值/业务候选`);
+      setEnumSample((s) => ({ ...s, [varName]: res }));
+      // 落库这次测试的获取耗时,业务填参侧作参考展示
+      form.setFieldValue(["params", fieldIndex, "enum_sql_duration_ms"], res.duration_ms);
+      const took = res.duration_ms != null ? `,耗时 ${res.duration_ms} ms` : "";
+      message.success(`取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""}${took},可作为测试值/业务候选`);
     } catch (e: any) {
       message.error(errMsg(e, "枚举 SQL 测试失败"));
     } finally {
       setEnumSqlTesting(null);
     }
   };
+
+  // 该变量是否已开启枚举 SQL 配置:会话内勾选态优先,默认从已有 enum_sql 派生(仅 UI 层,取消勾选保存时才丢弃)
+  const isEnumOn = (p: any) => enumEnabled[p.name] ?? !!p.enum_sql;
 
   const collect = async () => {
     const v = await form.validateFields();
@@ -139,14 +149,17 @@ export default function TaskEditor({
       // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
       params: (v.params || []).map((p: any) => {
         const list = isListVar(sql, p.name);
+        // 枚举 SQL 未勾选「允许」则不落库(取消勾选会话内仅收起编辑框,保存时才丢弃)
+        const enumOn = list && isEnumOn(p);
         return {
           name: p.name,
           kind: list ? "list" : "single",
           value_type: p.value_type || "text",
           label: p.label || undefined,
           test_value: normalizeTestValue(p.test_value, list),
-          enum_sql: list ? p.enum_sql || undefined : undefined,
+          enum_sql: enumOn ? p.enum_sql || undefined : undefined,
           allow_bulk_input: list ? !!p.allow_bulk_input : undefined,
+          enum_sql_duration_ms: enumOn ? p.enum_sql_duration_ms ?? undefined : undefined,
         };
       }),
     };
@@ -235,6 +248,7 @@ export default function TaskEditor({
     const p = form.getFieldValue(["params", f.name]) || {};
     const list = isListVar(sql, p.name);
     const sample = enumSample[p.name];
+    const enumOn = isEnumOn(p); // 枚举 SQL 编辑框是否展开
     return {
       key: p.name,
       forceRender: true, // 折叠时也注册 Form.Item,保证保存不丢
@@ -297,9 +311,17 @@ export default function TaskEditor({
               <Form.Item {...f} name={[f.name, "allow_bulk_input"]} valuePropName="checked" noStyle>
                 <Checkbox>允许业务「上传 / 粘贴」批量输入(勾选后业务填参才出现该入口)</Checkbox>
               </Form.Item>
-              <div>
+              {/* 枚举 SQL 选填:仿「上传/粘贴」,勾选后再展开 SQL 编辑框 */}
+              <Checkbox
+                checked={enumOn}
+                onChange={(e) => setEnumEnabled((s) => ({ ...s, [p.name]: e.target.checked }))}
+              >
+                允许以自定义 SQL 提供可选枚举值(勾选后展开 SQL 编辑框)
+              </Checkbox>
+              {/* 用 display 隐藏而非卸载,取消勾选仅收起、会话内保留已写 SQL */}
+              <div style={{ display: enumOn ? undefined : "none" }}>
                 <div style={{ fontSize: 13, marginBottom: 4 }}>
-                  枚举值获取 SQL <Typography.Text type="secondary" style={{ fontSize: 12 }}>(选填,业务点「获取枚举值」时跑,返回一列候选)</Typography.Text>
+                  枚举值获取 SQL <Typography.Text type="secondary" style={{ fontSize: 12 }}>(业务点「获取枚举值」时跑,返回一列候选)</Typography.Text>
                   <Button type="link" size="small" loading={enumSqlTesting === p.name} onClick={() => testEnumSql(f.name, p.name)}>
                     测试
                   </Button>
@@ -313,7 +335,8 @@ export default function TaskEditor({
                 </Form.Item>
                 {sample && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#52c41a" }}>
-                    ✓ 取到 {sample.values.length} 个候选值{sample.truncated ? "(已截断)" : ""},可用于上方测试值选择
+                    ✓ 取到 {sample.values.length} 个候选值{sample.truncated ? "(已截断)" : ""}
+                    {sample.duration_ms != null ? ` · 获取耗时 ${sample.duration_ms} ms` : ""},可用于上方测试值选择
                   </div>
                 )}
               </div>

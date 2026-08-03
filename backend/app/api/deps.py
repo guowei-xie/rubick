@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
 from app.core.security import decode_access_token
 from app.models.user import ROLE_ADMIN, User
+from app.services import permission_service
 
 
 def get_current_user(
@@ -28,6 +29,14 @@ def get_current_user(
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != ROLE_ADMIN:
         raise PermissionDeniedError("需要管理员权限")
+    return user
+
+
+def require_manager(user: User = Depends(get_current_user)) -> User:
+    """管理员或开发者:模板/授权等非治理写操作的守卫(治理仍用 require_admin)。
+    「谁是管理者」的定义集中在 permission_service.is_manager,此处只复用不重列角色。"""
+    if not permission_service.is_manager(user):
+        raise PermissionDeniedError("需要开发者或管理员权限")
     return user
 
 

@@ -3,10 +3,10 @@
 用法:python -m app.seed
 
 产出:
-  - 3 个用户:admin(管理员)/ analyst(商分)/ viewer(业务用户,属"市场部")
+  - 4 个用户:admin/analyst(管理员)、dev(开发者)、viewer(普通用户)
   - 演示业务库 rubic_demo.orders(与平台元数据库同一 MySQL 实例,不同 database)
   - 一个 MySQL 数据源指向 rubic_demo
-  - 一条已发布模板"按日期查订单",授权给市场部
+  - 一条已发布模板"按日期查订单",授权给 viewer 个人
 之后即可用 viewer 登录 → 跑模板 → 下载 → 在审计里看到记录。
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from app.core.database import Base, SessionLocal, engine
 import app.models  # noqa: F401
 from app.models.datasource import DataSource
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, ROLE_USER, Department, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn
 from app.services import permission_service, template_service
@@ -61,23 +61,13 @@ def create_demo_business_data() -> None:
     print(f"  demo business data ready: {DEMO_DB}.orders")
 
 
-def upsert_dept(db, feishu_id: str, name: str) -> Department:
-    dept = db.scalar(select(Department).where(Department.feishu_dept_id == feishu_id))
-    if dept is None:
-        dept = Department(feishu_dept_id=feishu_id, name=name)
-        db.add(dept)
-        db.commit()
-        db.refresh(dept)
-    return dept
-
-
-def upsert_user(db, open_id: str, name: str, role: str, dept_id: int | None) -> User:
+def upsert_user(db, open_id: str, name: str, role: str) -> User:
     user = db.scalar(select(User).where(User.feishu_open_id == open_id))
     if user is None:
-        user = User(feishu_open_id=open_id, name=name, role=role, department_id=dept_id)
+        user = User(feishu_open_id=open_id, name=name, role=role)
         db.add(user)
     else:
-        user.role, user.department_id = role, dept_id
+        user.role = role
     db.commit()
     db.refresh(user)
     return user
@@ -92,12 +82,11 @@ def main() -> None:
 
     db = SessionLocal()
     try:
-        print("3) departments & users")
-        analytics = upsert_dept(db, "d_analytics", "商分部")
-        marketing = upsert_dept(db, "d_marketing", "市场部")
-        admin = upsert_user(db, "ou_admin", "管理员小A", ROLE_ADMIN, analytics.id)
-        analyst = upsert_user(db, "ou_analyst", "管理员小B", ROLE_ADMIN, analytics.id)  # 原商分并入管理员
-        viewer = upsert_user(db, "ou_viewer", "业务小C", ROLE_USER, marketing.id)
+        print("3) users")
+        admin = upsert_user(db, "ou_admin", "管理员小A", ROLE_ADMIN)
+        analyst = upsert_user(db, "ou_analyst", "管理员小B", ROLE_ADMIN)  # 原商分并入管理员
+        upsert_user(db, "ou_dev", "开发小D", ROLE_DEVELOPER)  # 开发者:近似管理员,不含治理
+        viewer = upsert_user(db, "ou_viewer", "普通小C", ROLE_USER)
 
         print("4) demo datasource")
         ds = db.scalar(select(DataSource).where(DataSource.name == "demo-mysql"))
@@ -145,11 +134,11 @@ def main() -> None:
             template_service.publish(db, tmpl, admin, note="演示发布")
             print(f"  published template id={tmpl.id}")
 
-            print("6) grant 市场部 view/run/download")
+            print("6) grant viewer view/run/download")
             permission_service.grant(
                 db,
-                subject_type="department",
-                subject_id=str(marketing.id),
+                subject_type="user",
+                subject_id=str(viewer.id),
                 resource_type="template",
                 resource_id=str(tmpl.id),
                 actions=["view", "run", "download"],
@@ -157,7 +146,7 @@ def main() -> None:
             )
 
         print("\nSeed done. 登录 open_id:")
-        print("  管理员 = ou_admin / ou_analyst(均为管理员)   业务用户 = ou_viewer")
+        print("  管理员 = ou_admin / ou_analyst   开发者 = ou_dev   普通用户 = ou_viewer")
     finally:
         db.close()
 

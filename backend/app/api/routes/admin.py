@@ -8,13 +8,12 @@ from sqlalchemy.orm import Session
 from app.api.deps import require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
-from app.models.user import ROLE_ADMIN, ROLE_USER, User
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import UserOut
-from app.services import feishu_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-_ROLES = {ROLE_USER, ROLE_ADMIN}
+_ROLES = {ROLE_USER, ROLE_ADMIN, ROLE_DEVELOPER}
 
 
 class RoleIn(BaseModel):
@@ -50,9 +49,3 @@ def set_role(
     db.commit()
     db.refresh(user)
     return user
-
-
-@router.post("/sync-contacts")
-def sync_contacts(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """从飞书拉取部门+用户同步进平台库(需应用已开通通讯录读取权限)。"""
-    return feishu_service.sync_contacts(db)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, model_validator
 
@@ -24,6 +24,11 @@ class ParamDef(BaseModel):
     # ---- 值列表(list)专用 ----
     enum_sql: str | None = None  # 取候选值的独立 SELECT(业务点「获取枚举值」时跑,单列)
     allow_bulk_input: bool = False  # 是否允许业务「上传/粘贴」批量输入(编辑者勾选)
+    # 作者在编辑器测试 enum_sql 时捕获的获取耗时(毫秒),持久化后在业务填参侧作参考展示
+    enum_sql_duration_ms: int | None = None
+
+    # 仅对 list 有意义的字段;single 落库时统一清回默认值(见 template_service._normalize_params)
+    LIST_ONLY_FIELDS: ClassVar[tuple[str, ...]] = ("enum_sql", "allow_bulk_input", "enum_sql_duration_ms")
 
     @model_validator(mode="before")
     @classmethod
@@ -46,7 +51,6 @@ class UserOut(BaseModel):
     email: str | None = None
     avatar: str | None = None
     role: str
-    department_id: int | None = None
     last_login_at: datetime | None = None
 
     class Config:
