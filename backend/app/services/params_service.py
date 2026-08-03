@@ -24,21 +24,27 @@ def detect_is_list(sql: str, name: str) -> bool:
     return bool(re.search(rf"\bIN\s*\(\s*:{esc}\b", sql or "", re.I))
 
 
+def _is_empty(val: Any) -> bool:
+    """未填判定:None / 空串 / 空序列。校验与预览共用同一口径。"""
+    return val is None or val == "" or (isinstance(val, (list, tuple)) and len(val) == 0)
+
+
+def _coerce(pd: ParamDef, val: Any) -> Any:
+    """按 kind 归一绑定值:list → [str…](执行前由 expand_list_params 展开),single → str。"""
+    if pd.kind == "list":
+        items = list(val) if isinstance(val, (list, tuple)) else [val]
+        return [str(x) for x in items]
+    return str(val)
+
+
 def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any]) -> dict[str, Any]:
     bound: dict[str, Any] = {}
     for raw in param_defs:
         pd = raw if isinstance(raw, ParamDef) else ParamDef(**raw)
-        label = pd.label or pd.name
         val = values.get(pd.name)
-
-        if val is None or val == "" or (isinstance(val, (list, tuple)) and len(val) == 0):
-            raise RubicError(f"缺少必填参数:{label}")
-
-        if pd.kind == "list":
-            items = list(val) if isinstance(val, (list, tuple)) else [val]
-            bound[pd.name] = [str(x) for x in items]  # list → 执行前由 expand_list_params 展开
-        else:
-            bound[pd.name] = str(val)
+        if _is_empty(val):
+            raise RubicError(f"缺少必填参数:{pd.label or pd.name}")
+        bound[pd.name] = _coerce(pd, val)
     return bound
 
 
@@ -85,3 +91,21 @@ def render_sql(sql: str, bound: dict[str, Any]) -> str:
         lit = _lit(bound[name])
         out = re.sub(rf":{re.escape(name)}\b", lambda _m, s=lit: s, out)
     return out
+
+
+def preview_sql(sql: str, param_defs: list[dict | ParamDef], values: dict[str, Any]) -> str:
+    """预览「即将执行」的 SQL:代入已填值,未填变量原样保留 :x。
+
+    供作者 review 写法用,不执行、不校验必填。与 validate_and_bind 共用 _is_empty / _coerce,
+    区别只在:未填 → 跳过(占位符原样留在 SQL 里)而非报错。已填值经与执行态相同的
+    expand_list_params + render_sql 渲染,保证与实际运行一致。
+    """
+    bound: dict[str, Any] = {}
+    for raw in param_defs:
+        pd = raw if isinstance(raw, ParamDef) else ParamDef(**raw)
+        val = values.get(pd.name)
+        if _is_empty(val):
+            continue  # 未填 → 跳过,占位符原样留在 SQL 里
+        bound[pd.name] = _coerce(pd, val)
+    sql2, bound2 = expand_list_params(sql, bound)
+    return render_sql(sql2, bound2)

@@ -5,6 +5,7 @@ import {
   errMsg,
   getTemplate,
   listDatasources,
+  previewSql,
   runEnumSql,
   testRun,
   updateTemplate,
@@ -52,7 +53,8 @@ export default function TaskEditor({
   const [enumSqlTesting, setEnumSqlTesting] = useState<string | null>(null); // 正在测试 enum_sql 的变量
   const [enumSample, setEnumSample] = useState<Record<string, { values: string[]; truncated: boolean }>>({}); // 各变量 enum_sql 测试结果
   const [showSql, setShowSql] = useState(false);
-  const [activeKeys, setActiveKeys] = useState<string[]>([]); // 展开的变量卡(默认全部展开)
+  const [previewSqlText, setPreviewSqlText] = useState<string | null>(null); // SQL 预览浮窗内容
+  const [activeKeys, setActiveKeys] = useState<string[]>([]); // 展开的变量卡(默认全部收起)
   const [form] = Form.useForm();
   const sqlWatch = Form.useWatch("sql_text", form);
 
@@ -79,7 +81,7 @@ export default function TaskEditor({
           sql_text: v?.sql_text,
           params,
         });
-        setActiveKeys(params.map((p: any) => p.name)); // 默认全部展开
+        setActiveKeys([]); // 变量卡默认全部收起
       });
     } else {
       form.resetFields();
@@ -98,7 +100,7 @@ export default function TaskEditor({
       if (vars.join(",") === existing.map((p) => p?.name).join(",")) return;
       const byName = Object.fromEntries(existing.map((p) => [p?.name, p]));
       form.setFieldsValue({ params: vars.map((name) => byName[name] || { name, label: name }) });
-      setActiveKeys(vars); // 变量集变化时默认展开全部(含新增)
+      // 变量卡默认收起:卡头已展示 :名 + 单值/值列表 + 说明,要配再点开(不强制展开新增变量)
     }, 400);
     return () => clearTimeout(t);
   }, [sqlWatch, open]);
@@ -171,13 +173,33 @@ export default function TaskEditor({
         template_id: editingId ?? undefined, // 关联已存在任务时,试跑会在运行记录里留一条(标记为试跑)
       });
       hide();
-      setPreview(res);
+      setPreview(res); // 结果浮窗由 preview 是否有值驱动
       message.success(`试跑成功,返回 ${res.row_count} 行`);
     } catch (e: any) {
       hide();
       message.error(errMsg(e, "试跑失败"));
     } finally {
       setTesting(false);
+    }
+  };
+
+  // SQL 预览:代入当前测试值(含未填)渲染即将执行的 SQL,不连库、供 review。未填变量原样保留 :x
+  const doPreviewSql = async () => {
+    const v = form.getFieldsValue(true);
+    if (!v.sql_text) return message.warning("请先填写 SQL");
+    const params: any[] = v.params || [];
+    const defs: { name: string; kind: "single" | "list" }[] = [];
+    const values: any = {};
+    for (const p of params) {
+      const list = isListVar(v.sql_text, p.name);
+      defs.push({ name: p.name, kind: list ? "list" : "single" });
+      values[p.name] = normalizeTestValue(p.test_value, list); // 空值照传,后端跳过、保留占位符
+    }
+    try {
+      const res = await previewSql({ sql_text: v.sql_text, params: defs, values });
+      setPreviewSqlText(res.rendered_sql);
+    } catch (e: any) {
+      message.error(errMsg(e, "SQL 预览失败"));
     }
   };
 
@@ -293,6 +315,8 @@ export default function TaskEditor({
       styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       footer={[
         <Button key="cancel" onClick={onClose}>取消</Button>,
+        <Button key="preview" onClick={doPreviewSql}>SQL预览</Button>,
+        <Button key="test" loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>,
         <Button key="save" type="primary" loading={saving} onClick={save}>
           {editingId ? "保存" : "创建"}
         </Button>,
@@ -354,17 +378,19 @@ export default function TaskEditor({
           )}
         </Form.List>
 
-        <Divider orientation="left">
-          试跑预览 <Button size="small" type="primary" ghost loading={testing} style={{ marginLeft: 8 }} onClick={doTestRun}>
-            {testing ? "试跑中…" : "测试运行"}
-          </Button>
-        </Divider>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          用各变量配置的「测试值」试跑,返回样例行供自检。
-        </Typography.Text>
+      </Form>
+
+      {/* 试跑结果浮窗:底部「测试运行」成功后弹出 */}
+      <Modal
+        title="试跑结果"
+        open={!!preview}
+        onCancel={() => setPreview(null)}
+        width={820}
+        footer={[<Button key="ok" type="primary" onClick={() => setPreview(null)}>关闭</Button>]}
+      >
         {preview && (
           <>
-            <div style={{ margin: "8px 0 4px", color: "#52c41a" }}>
+            <div style={{ margin: "0 0 8px", color: "#52c41a" }}>
               ✓ 返回 {preview.row_count} 行 · {preview.columns.length} 列
               {preview.executed_sql && (
                 <Button type="link" size="small" onClick={() => setShowSql(true)}>查看执行SQL</Button>
@@ -373,7 +399,14 @@ export default function TaskEditor({
             <ResultPreviewTable columns={preview.columns} rows={preview.rows} pageSize={5} />
           </>
         )}
-      </Form>
+      </Modal>
+
+      {/* 只读 SQL 展示:SQL 预览(渲染即将执行,未填保留 :变量)与 查看执行SQL 各用一个 */}
+      <SqlModal
+        sql={previewSqlText}
+        title="SQL 预览(参数已代入,未填变量保留 :变量)"
+        onClose={() => setPreviewSqlText(null)}
+      />
       <SqlModal sql={showSql ? preview?.executed_sql || "" : null} onClose={() => setShowSql(false)} />
     </Modal>
   );

@@ -10,6 +10,8 @@ from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.template import (
     EnumSqlIn,
+    PreviewSqlIn,
+    PreviewSqlOut,
     PublishIn,
     TemplateCreateIn,
     TemplateDetailOut,
@@ -19,7 +21,7 @@ from app.schemas.template import (
     TestRunIn,
     ValueListOut,
 )
-from app.services import permission_service, template_service
+from app.services import params_service, permission_service, template_service
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
@@ -123,6 +125,12 @@ def archive(template_id: int, db: Session = Depends(get_db), user: User = Depend
 def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     """作者自检试跑:返回样例行;关联到已存在任务时同时落一条 source=test 的运行记录。"""
     return template_service.test_run(db, data, user)
+
+
+@router.post("/preview-sql", response_model=PreviewSqlOut)
+def preview_sql(data: PreviewSqlIn, _: User = Depends(require_admin)):
+    """SQL 预览:代入当前测试值渲染即将执行的 SQL(不连库执行),未填变量原样保留 :变量。"""
+    return {"rendered_sql": params_service.preview_sql(data.sql_text, data.params, data.values)}
 
 
 @router.post("/enum-sql", response_model=ValueListOut)

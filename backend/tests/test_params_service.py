@@ -86,3 +86,29 @@ def test_expand_passthrough_scalar():
 def test_render_sql_quotes_and_nulls():
     out = ps.render_sql("SELECT :a, :b, :c", {"a": "x'y", "b": 5, "c": None})
     assert "'x''y'" in out and " 5" in out and "NULL" in out
+
+
+def test_preview_sql_filled_matches_execution():
+    # 已填单值 + 值列表:与执行态一致(字符串带引号、IN 正确展开)
+    sql = "SELECT * FROM t WHERE dt = :dt AND uid IN (:ids)"
+    defs = _defs({"name": "dt", "kind": "single"}, {"name": "ids", "kind": "list"})
+    out = ps.preview_sql(sql, defs, {"dt": "2026-07-01", "ids": ["u1", "u2"]})
+    assert "dt = '2026-07-01'" in out
+    assert "uid IN ('u1', 'u2')" in out
+
+
+def test_preview_sql_unfilled_keeps_placeholder():
+    # 未填变量:原样保留 :变量,不报错(区别于 validate_and_bind)
+    sql = "SELECT * FROM t WHERE dt = :dt AND uid IN (:ids)"
+    defs = _defs({"name": "dt", "kind": "single"}, {"name": "ids", "kind": "list"})
+    out = ps.preview_sql(sql, defs, {})
+    assert out == sql  # 全未填 → 原样返回
+
+
+def test_preview_sql_partial_fill():
+    # 填一个、留一个空:已填代入、未填保留占位符
+    sql = "SELECT * FROM t WHERE dt = :dt AND uid IN (:ids)"
+    defs = _defs({"name": "dt", "kind": "single"}, {"name": "ids", "kind": "list"})
+    out = ps.preview_sql(sql, defs, {"dt": "2026-07-01", "ids": []})
+    assert "dt = '2026-07-01'" in out
+    assert "IN (:ids)" in out  # ids 未填,占位符保留

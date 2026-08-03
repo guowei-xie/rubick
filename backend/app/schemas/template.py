@@ -40,6 +40,18 @@ class TestRunIn(BaseModel):
     template_id: int | None = None
 
 
+class PreviewSqlIn(BaseModel):
+    """SQL 预览:只渲染不执行,代入当前填的测试值,未填变量原样保留 :x。"""
+
+    sql_text: str
+    params: list[ParamDef] = []
+    values: dict[str, Any] = {}
+
+
+class PreviewSqlOut(BaseModel):
+    rendered_sql: str
+
+
 class EnumSqlIn(BaseModel):
     """分析师在编辑器里测试「枚举值获取 SQL」。"""
 
