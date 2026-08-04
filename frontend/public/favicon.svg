@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 拉比克 Rubick 站点图标:品牌紫圆角方块 + 白色 R 字标,与登录页 Rubick 字标同源。
+       字形用描边路径绘制而非文本,避免依赖 Libre Franklin 字体是否可用。 -->
+  <defs>
+    <linearGradient id="rk-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6b5cf6" />
+      <stop offset="1" stop-color="#4133d6" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#rk-bg)" />
+  <g fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round">
+    <path d="M22 17.5V46.5" />
+    <path d="M22 17.5h10.5a7.5 7.5 0 0 1 0 15H22" />
+    <path d="M31 32.5 41.5 46.5" />
+  </g>
+</svg>
