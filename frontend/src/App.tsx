@@ -4,7 +4,6 @@ import { useAuth } from "./auth";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./pages/LoginPage";
 import TasksPage from "./pages/TasksPage";
-import RecyclePage from "./pages/RecyclePage";
 import DatasourcesPage from "./pages/admin/DatasourcesPage";
 import AuditPage from "./pages/admin/AuditPage";
 import UsersPage from "./pages/admin/UsersPage";
@@ -23,10 +22,6 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/auth/callback" element={<LoginPage />} />
       <Route path="/tasks" element={<Protected><TasksPage /></Protected>} />
-      <Route
-        path="/recycle"
-        element={<Protected roles={["admin", "developer"]}><RecyclePage /></Protected>}
-      />
       <Route
         path="/admin/users"
         element={<Protected roles={["admin"]}><UsersPage /></Protected>}

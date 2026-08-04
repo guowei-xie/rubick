@@ -58,6 +58,7 @@ export default function TaskEditor({
   const [preview, setPreview] = useState<any>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editStatus, setEditStatus] = useState<string | null>(null); // 编辑对象原状态,用于保存提示如实反映“已上线编辑即更新线上”
   const [enumSqlTesting, setEnumSqlTesting] = useState<string | null>(null); // 正在测试 enum_sql 的变量
   const [enumSample, setEnumSample] = useState<Record<string, ValueListOut>>({}); // 各变量 enum_sql 测试结果
   const [enumEnabled, setEnumEnabled] = useState<Record<string, boolean>>({}); // 作者是否已勾选「允许枚举 SQL」(仅控制编辑框展开)
@@ -75,6 +76,7 @@ export default function TaskEditor({
     setEnumEnabled({});
     if (editingId) {
       getTemplate(editingId).then((d) => {
+        setEditStatus(d.status ?? null);
         const v = d.latest_version || d.published_version;
         const params = (v?.params || []).map((p: any) => ({
           name: p.name,
@@ -99,6 +101,7 @@ export default function TaskEditor({
       form.resetFields();
       form.setFieldsValue({ params: [] });
       setActiveKeys([]);
+      setEditStatus(null);
     }
   }, [open, editingId]);
 
@@ -232,7 +235,14 @@ export default function TaskEditor({
     try {
       if (editingId) await updateTemplate(editingId, payload);
       else await createTemplate(payload);
-      message.success(editingId ? "已保存" : "已创建(待上线)");
+      // 如实提示:编辑已上线任务会自动更新线上版本;新建为草稿
+      message.success(
+        !editingId
+          ? "已创建(草稿)"
+          : editStatus === "published"
+            ? "已保存,线上版本已更新"
+            : "已保存"
+      );
       onSaved();
       onClose();
     } catch (e: any) {

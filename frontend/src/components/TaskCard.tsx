@@ -30,7 +30,10 @@ export default function TaskCard({
   const timeVal = r.last_run_at || r.updated_at || r.created_at;
   const timeLabel = r.last_run_at ? "最后运行" : r.updated_at ? "最后编辑" : "创建于";
 
+  const meta = TEMPLATE_STATUS[r.status];
+
   // ⋮ 菜单:运行记录(所有人)+ 管理项(仅 can_manage)
+  // 动作动词三分:已上线→下线、已下线→重新上线、草稿→上线
   const moreItems: any[] = [
     { key: "records", label: "运行记录", onClick: () => h.onRecords(r) },
   ];
@@ -40,7 +43,11 @@ export default function TaskCard({
       { key: "edit", label: "编辑", onClick: () => h.onEdit(r) },
       r.status === "published"
         ? { key: "archive", label: "下线", danger: true, onClick: () => h.onArchive(r) }
-        : { key: "publish", label: "上线", onClick: () => h.onPublish(r) }
+        : {
+            key: "publish",
+            label: r.status === "archived" ? "重新上线" : "上线",
+            onClick: () => h.onPublish(r),
+          }
     );
   }
 
@@ -48,7 +55,13 @@ export default function TaskCard({
     <div
       className={r.can_run ? "rk-lift" : undefined}
       onClick={() => r.can_run && h.onRun(r)}
-      title={r.can_run ? "点击填参取数" : "未上线或未授权,暂不可取数"}
+      title={
+        r.can_run
+          ? "点击填参取数"
+          : r.status !== "published"
+            ? "任务未上线,暂不可取数"
+            : "未授权,暂不可取数"
+      }
       style={{
         background: "#fff",
         border: "1px solid #edf0f7",
@@ -72,17 +85,30 @@ export default function TaskCard({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Tooltip title={TEMPLATE_STATUS[r.status]?.label ?? r.status}>
+          {/* 状态常显:色点 + 文字胶囊,一眼可读,不再依赖悬停 */}
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              padding: "2px 9px",
+              borderRadius: 10,
+              background: meta?.tint ?? "#f0f0f0",
+            }}
+          >
             <span
               style={{
-                width: 9,
-                height: 9,
+                width: 7,
+                height: 7,
                 borderRadius: "50%",
-                background: TEMPLATE_STATUS[r.status]?.dot ?? "#bfbfbf",
+                background: meta?.dot ?? "#bfbfbf",
                 display: "inline-block",
               }}
             />
-          </Tooltip>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)" }}>
+              {meta?.label ?? r.status}
+            </span>
+          </span>
           <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
             <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
           </Tooltip>
