@@ -4,6 +4,10 @@
   --ink: #1f1c2e;
   --ink-secondary: #6b6880;
   --brand: #4f3ff0;
+  /* SQL 等代码文本统一用这一份等宽栈:裸 monospace 各机器解析不一,而 SQL 高亮的
+     镜像层与 textarea 必须落到同一字体才能对齐(见 styles/sql-highlight.css) */
+  --rk-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   --card-shadow: 0 8px 20px -16px rgba(71, 82, 107, 0.4);
   --search-shadow: 0 2px 6px 0 rgba(136, 148, 171, 0.2),
     0 24px 20px -24px rgba(71, 82, 107, 0.1);

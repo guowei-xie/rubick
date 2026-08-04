@@ -14,33 +14,14 @@ import {
 } from "../api";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
+import SqlHighlightArea from "./SqlHighlightArea";
 import { PasteListButton } from "./ParamForm";
-
-/** 变量形态只判 值列表 / 单值:`字段 IN (:x)` / `NOT IN (:x)` → 值列表,其余 → 单值。
- *  与后端 params_service.detect_is_list 保持等价,改此正则需同步后端。 */
-function isListVar(sql: string, name: string): boolean {
-  if (!name) return false;
-  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\bIN\\s*\\(\\s*:${esc}\\b`, "i").test(sql || "");
-}
+import { isListVar, parseVariables } from "../sqlParams";
 
 /** 把一行变量配置转成发给后端的最小 def(name + kind + value_type)。kind 由 SQL 判定,
  *  value_type 兜底文本。试跑 / SQL 预览共用,避免形状漂移。 */
 function toDef(sql: string, p: any): Pick<ParamDef, "name" | "kind" | "value_type"> {
   return { name: p.name, kind: isListVar(sql, p.name) ? "list" : "single", value_type: p.value_type || "text" };
-}
-
-/** 从 SQL 解析出去重的 :变量 名。 */
-function parseVariables(sql: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const m of sql.matchAll(/:([a-zA-Z_][a-zA-Z0-9_]*)/g)) {
-    if (!seen.has(m[1])) {
-      seen.add(m[1]);
-      out.push(m[1]);
-    }
-  }
-  return out;
 }
 
 export default function TaskEditor({
@@ -336,10 +317,12 @@ export default function TaskEditor({
                     测试
                   </Button>
                 </div>
+                {/* 刻意不用 SqlHighlightArea:枚举 SQL 由后端以空绑定执行(template_service.run_value_query),
+                    本就不接受 :变量,高亮反而会声称存在一个并不存在的变量 */}
                 <Form.Item {...f} name={[f.name, "enum_sql"]} noStyle>
                   <Input.TextArea
                     rows={2}
-                    style={{ fontFamily: "monospace" }}
+                    style={{ fontFamily: "var(--rk-mono)" }}
                     placeholder="SELECT DISTINCT user_id FROM dim_user ORDER BY 1"
                   />
                 </Form.Item>
@@ -400,10 +383,11 @@ export default function TaskEditor({
         <Form.Item
           name="sql_text"
           label="SQL"
-          tooltip="用 :变量 做占位符;写 字段 IN (:x) / NOT IN (:x) 的变量会让业务多选一组值,其余变量业务填单个值。所有变量运行时必填。"
+          tooltip="用 :变量 做占位符;写 字段 IN (:x) / NOT IN (:x) 的变量会让业务多选一组值,其余变量业务填单个值。所有变量运行时必填。注意 '%H:%i:%s' 这类字面量里的冒号也会被识别成变量,可改用 %T 等写法避开。"
           rules={[{ required: true }]}
+          extra="带底色的行为「参数影响行」,行内高亮的即 :变量 占位符"
         >
-          <Input.TextArea rows={7} style={{ fontFamily: "monospace" }} placeholder="SELECT ... WHERE dt = :dt AND uid IN (:uids)" />
+          <SqlHighlightArea rows={7} placeholder="SELECT ... WHERE dt = :dt AND uid IN (:uids)" />
         </Form.Item>
 
         <Divider orientation="left">变量配置</Divider>
@@ -457,10 +441,15 @@ export default function TaskEditor({
       {/* 只读 SQL 展示:SQL 预览(渲染即将执行,未填保留 :变量)与 查看执行SQL 各用一个 */}
       <SqlModal
         sql={previewSqlText}
+        sourceSql={sqlWatch}
         title="SQL 预览(参数已代入,未填变量保留 :变量)"
         onClose={() => setPreviewSqlText(null)}
       />
-      <SqlModal sql={showSql ? preview?.executed_sql || "" : null} onClose={() => setShowSql(false)} />
+      <SqlModal
+        sql={showSql ? preview?.executed_sql || "" : null}
+        sourceSql={sqlWatch}
+        onClose={() => setShowSql(false)}
+      />
     </Modal>
   );
 }

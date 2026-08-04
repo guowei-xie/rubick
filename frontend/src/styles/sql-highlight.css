@@ -1,0 +1,134 @@
+/* 「参数影响行」高亮:含 :变量 的行打底纹 + 左竖条,:变量 本身加药丸底色。
+   编辑器(textarea + 背景镜像层)与只读 SQL 视图共用同一套排版口径与配色。
+
+   编辑器一侧的做法:镜像层只画底色、不画字(color: transparent),正文仍由 textarea
+   自己渲染 —— 光标 / 选区 / 输入法候选窗全部原生不受影响,亚像素误差只会表现为底纹
+   轻微偏移,而不是重影文字。代价是编辑框里的药丸只有底色、不能改字色。
+
+   凡影响字形推进或折行的属性,镜像层与 textarea 必须逐条一致:统一在 .rk-sql 上声明
+   一次让两者继承,盒模型再各自显式声明。下面这组就是那份对齐契约,改任何一条都要
+   确认两层同时生效。 */
+
+.rk-sql,
+.rk-sql-view {
+  /* 底色由品牌色派生,沿用 global.css / login.css 已有的 color-mix 写法,品牌色改一处即可 */
+  --rk-param-line-bg: color-mix(in srgb, var(--brand) 7%, transparent);
+  --rk-param-line-bar: color-mix(in srgb, var(--brand) 32%, transparent);
+  --rk-param-tok-bg: color-mix(in srgb, var(--brand) 16%, transparent);
+
+  /* 对齐契约:字体族 + 折行规则。字号 / 行高各自声明(编辑器 14/22,只读视图 12/18) */
+  font-family: var(--rk-mono);
+  font-variant-ligatures: none; /* 连字影响度量,钉死 */
+  font-kerning: none;
+  tab-size: 4;
+  white-space: pre-wrap; /* 以下三条正是 Chrome 对 textarea 的 UA 规则,勿改 break-all */
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: none; /* Safari 可能从祖先继承到 hyphens: auto */
+}
+
+/* ---------- 编辑器:textarea + 镜像层 ---------- */
+
+.rk-sql {
+  position: relative;
+  display: block;
+  border-radius: 10px; /* = antd Input.borderRadius */
+  background: #fff; /* 纸面由容器提供,镜像层只负责底纹 */
+
+  --rk-sql-pad-y: 7px; /* = antd token paddingBlock(controlHeight 38 / fontSize 14) */
+  --rk-sql-pad-x: 11px; /* = antd token paddingInline */
+  --rk-sql-line-h: 22px; /* = 14px × antd lineHeight 1.5714,取整像素值供空行 min-height 用 */
+
+  font-size: 14px;
+  line-height: var(--rk-sql-line-h);
+}
+
+/* 两级类名 (0,2,1) 压过 antd 运行时注入的 .ant-input (0,2,0):antd 5 是 CSS-in-JS,
+   <style> 在打包 CSS 之后插入,同权重会赢,不能靠源码顺序。因此也不需要 !important。 */
+.rk-sql textarea.rk-sql__input,
+.rk-sql textarea.rk-sql__input:hover,
+.rk-sql textarea.rk-sql__input:focus {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: var(--rk-sql-pad-y) var(--rk-sql-pad-x);
+  box-sizing: border-box;
+  background: transparent; /* 让镜像层的底色透上来 */
+  font: inherit;
+  line-height: inherit;
+  tab-size: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
+  hyphens: inherit;
+  overflow-y: auto;
+}
+
+.rk-sql__mirror {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  margin: 0;
+  padding: var(--rk-sql-pad-y) var(--rk-sql-pad-x);
+  /* 滚动条出现会吃掉 textarea 的可用宽度、改变折行点,镜像补等宽右内边距。
+     宽度由 JS 实时量出写进 --rk-sql-gutter(见 SqlHighlightArea.syncMetrics)。 */
+  padding-right: calc(var(--rk-sql-pad-x) + var(--rk-sql-gutter, 0px));
+  border: 1px solid transparent; /* 与 textarea 同宽的边框,保证内容盒对齐 */
+  border-radius: inherit;
+  box-sizing: border-box;
+  color: transparent; /* 只画底色,不画字 */
+  overflow: hidden;
+  overflow-anchor: none; /* 关掉滚动锚定,防 UA 在上方内容变化时偷改 scrollTop */
+  pointer-events: none; /* 鼠标一律穿透给 textarea */
+  user-select: none;
+}
+
+/* ---------- 只读视图容器(SqlModal) ---------- */
+/* 用 <div> 而非 <pre>(底纹需要块级子元素,而 <pre> 只接受 phrasing content),因此等宽
+   字体等原本白嫖 <pre> UA 默认值的属性由上面的共享块显式提供。其余视觉值与改造前的内联
+   样式逐条一致,保证未传 sourceSql 的调用点外观不变。 */
+.rk-sql-view {
+  --rk-sql-pad-x: 16px;
+  --rk-sql-line-h: 18px;
+
+  margin: 0;
+  padding: 16px var(--rk-sql-pad-x);
+  background: #f6f8fa;
+  border: 1px solid #eef0f7;
+  border-radius: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 12px;
+  line-height: var(--rk-sql-line-h);
+}
+
+/* ---------- 行与 token(两处共用同一套类名) ---------- */
+
+.rk-sql-line {
+  display: block;
+  min-height: var(--rk-sql-line-h); /* 空行恰好占一行高(空 div 内容高为 0) */
+  /* 底色出血到内边距边缘:负外边距 + 等量内边距,内容盒宽度净变化为 0,折行点不动 */
+  margin-inline: calc(var(--rk-sql-pad-x) * -1);
+  padding-inline: var(--rk-sql-pad-x);
+  border-radius: 3px;
+}
+
+.rk-sql-line.is-param {
+  background: var(--rk-param-line-bg);
+  box-shadow: inset 2px 0 0 var(--rk-param-line-bar); /* 左竖条,不只靠色差区分 */
+}
+
+/* 药丸只给纵向 padding:行内盒的纵向 padding 不参与布局,横向 padding 会挪折行点 */
+.rk-sql-tok {
+  padding: 1px 0;
+  border-radius: 4px;
+  background: var(--rk-param-tok-bg);
+}
+
+/* 只读视图没有覆盖层,token 可以直接上色加粗;镜像层不能(会露出重影) */
+.rk-sql-view .rk-sql-tok {
+  color: var(--brand);
+  font-weight: 600;
+}

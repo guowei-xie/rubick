@@ -93,6 +93,9 @@ def render_sql(sql: str, bound: dict[str, Any]) -> str:
     """把绑定参数代入 SQL,生成「最终发给数据库」的可读 SQL(仅供查阅,不用于执行)。
 
     字符串加单引号(转义内部单引号),数字原样,None → NULL。与执行时参数化绑定的结果一致。
+
+    行数不变是对外契约:前端 sqlParams.affectedLines 靠「代入前后行号 1:1」来标注参数影响行。
+    这里是逐个占位符的单行正则替换,不要引入换行(expand_list_params 同理)。
     """
     def _lit(v: Any) -> str:
         if v is None:
