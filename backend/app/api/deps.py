@@ -41,6 +41,12 @@ def require_manager(user: User = Depends(get_current_user)) -> User:
 
 
 def client_ip(request: Request) -> str | None:
+    """取真实客户端 IP(优先 X-Forwarded-For 首跳)。
+
+    也可直接当依赖用:`ip: str | None = Depends(client_ip)` —— 这样路由只声明它真正需要的
+    那一个字符串,不必把整个 Request 传进来。注意签名必须保持 `Request`(不能是
+    `Request | None`),否则 FastAPI 在注册路由时就会报 Invalid args for response field。
+    """
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
         return fwd.split(",")[0].strip()

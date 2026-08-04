@@ -34,6 +34,19 @@ def _ensure_column(table: str, column: str, coltype: str) -> None:
     print(f"[migrate] {table}: 新增列 {column}")
 
 
+def _ensure_index(table: str, name: str, columns: str) -> None:
+    """若索引不存在则 CREATE INDEX(MySQL 无 IF NOT EXISTS,靠自省判断)。幂等。
+
+    注意:线上大表建索引是 online DDL,放部署窗口执行。
+    """
+    if name in {i["name"] for i in sa_inspect(engine).get_indexes(table)}:
+        print(f"[migrate] 索引 {name} 已存在,跳过")
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+    print(f"[migrate] {table}: 新增索引 {name}")
+
+
 def _drop_column(table_obj, column: str) -> None:
     """幂等删除列,与 _ensure_column 对称,方言感知。
 
@@ -236,6 +249,10 @@ def main() -> None:
     _ensure_column(tbl("sql_templates"), "timeout_seconds", "INTEGER")
     # 增量列:通知所属任务 id,支持点击深链(免前端再查 job)
     _ensure_column(tbl("notifications"), "template_id", "BIGINT")
+    # 增量列:审计资源名称快照,任务改名/数据源删除后日志仍可读
+    _ensure_column(tbl("audit_logs"), "resource_name", "VARCHAR(200)")
+    # 增量索引:审计按时间范围检索 + 分页 COUNT(全库写入量最大的表,无索引会全表扫)
+    _ensure_index(tbl("audit_logs"), f"ix_{tbl('audit_logs')}_created_at", "created_at")
 
     # 存量敏感字段明文 → 密文(P0-2)
     reencrypt_secrets()

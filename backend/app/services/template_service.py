@@ -143,13 +143,15 @@ def _mark_published(tmpl: SqlTemplate, version: TemplateVersion, publisher: User
     tmpl.status = STATUS_PUBLISHED
 
 
-def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -> None:
-    """发布最新版本(accepted_by/accepted_note 作发布留痕)。"""
+def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -> TemplateVersion:
+    """发布最新版本(accepted_by/accepted_note 作发布留痕)。返回被发布的版本,
+    免得调用方为了拿 version_no 再查一次。"""
     version = latest_version(db, tmpl.id)
     if version is None:
         raise RubicError("模板没有可发布的版本")
     _mark_published(tmpl, version, publisher, note)
     db.commit()
+    return version
 
 
 def archive(db: Session, tmpl: SqlTemplate) -> None:

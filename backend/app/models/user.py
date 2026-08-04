@@ -2,11 +2,11 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import BigInteger, DateTime, String
+from sqlalchemy import DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, tbl
-from app.core.db_types import EncryptedText
+from app.core.db_types import BigIntPk, EncryptedText
 from app.models.mixins import TimestampMixin
 
 # 平台角色:三种。管理员可建/改/发布任意项目并互相可见,且独揽治理(用户角色赋权/数据源/审计);
@@ -19,7 +19,7 @@ ROLE_DEVELOPER = "developer"  # 开发者:近似管理员,不含 用户角色赋
 class User(Base, TimestampMixin):
     __tablename__ = tbl("users")
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     feishu_open_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     union_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128))

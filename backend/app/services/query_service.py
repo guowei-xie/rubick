@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.core.sql_gateway import validate_readonly
+from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED, ACTION_SUBMIT_QUERY
 from app.models.datasource import DataSource
 from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE
 from app.models.query_job import JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS, QueryJob
@@ -69,7 +70,7 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
     db.refresh(job)
 
     audit_service.log(
-        db, user=user, action="submit_query", resource_type=RESOURCE_TEMPLATE,
+        db, user=user, action=ACTION_SUBMIT_QUERY, resource_type=RESOURCE_TEMPLATE,
         resource_id=tmpl.id, detail={"job_id": job.id, "params": values}, ip=ip,
     )
 
@@ -119,7 +120,7 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             db.commit()
 
             audit_service.log(
-                db, user=user, action="run_query", resource_type=RESOURCE_TEMPLATE,
+                db, user=user, action=ACTION_RUN_QUERY, resource_type=RESOURCE_TEMPLATE,
                 resource_id=tmpl.id,
                 detail={"template_version_id": version.id, "datasource": ds.name,
                         "params": job.params, "row_count": res.row_count,
@@ -131,7 +132,7 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             job.error = str(e)[:2000]
             db.commit()
             audit_service.log(
-                db, user=user, action="run_query_failed", resource_type=RESOURCE_TEMPLATE,
+                db, user=user, action=ACTION_RUN_QUERY_FAILED, resource_type=RESOURCE_TEMPLATE,
                 resource_id=tmpl.id,
                 detail={"error": str(e)[:500], "params": job.params,
                         "executed_sql": (job.executed_sql or "")[:20000]},

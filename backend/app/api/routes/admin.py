@@ -5,11 +5,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import client_ip, require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
+from app.models.audit import ACTION_USER_ROLE_CHANGE, RESOURCE_USER
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import UserOut
+from app.services import audit_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -38,14 +40,27 @@ def set_role(
     user_id: int,
     data: RoleIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
+    ip: str | None = Depends(client_ip),
 ):
     if data.role not in _ROLES:
         raise RubicError(f"非法角色:{data.role}")
     user = db.get(User, user_id)
     if user is None:
         raise NotFoundError("用户不存在")
+    old_role = user.role  # 必须在赋值之前取
     user.role = data.role
     db.commit()
     db.refresh(user)
+    # 角色没变也照记:管理员执行过一次提权操作这件事本身就该留痕
+    audit_service.log(
+        db, user=admin, action=ACTION_USER_ROLE_CHANGE,
+        resource_type=RESOURCE_USER, resource_id=user_id, resource_name=user.name,
+        detail={
+            "role": {"from": old_role, "to": data.role},
+            "target_user_name": user.name,
+            "target_user_email": user.email,
+        },
+        ip=ip,
+    )
     return user

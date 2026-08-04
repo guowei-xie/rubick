@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Card, Input, message, Select, Table } from "antd";
 import { errMsg, listUsers, setUserRole } from "../../api";
 import StatusTag, { ROLE } from "../../components/StatusTag";
+import { dash, fmtTime } from "../../format";
 
 const ROLE_OPTS = Object.entries(ROLE).map(([value, { label }]) => ({ value, label }));
 
@@ -31,12 +32,12 @@ export default function UsersPage() {
   const columns = [
     { title: "ID", dataIndex: "id", width: 70 },
     { title: "姓名", dataIndex: "name", width: 180, ellipsis: true },
-    { title: "邮箱", dataIndex: "email", width: 220, ellipsis: true, render: (e: string) => e || "-" },
+    { title: "邮箱", dataIndex: "email", width: 220, ellipsis: true, render: dash },
     {
       title: "最近登录",
       dataIndex: "last_login_at",
       width: 160,
-      render: (t: string) => (t ? t.replace("T", " ").slice(0, 19) : "-"),
+      render: (t: string) => fmtTime(t),
     },
     {
       title: "当前角色",

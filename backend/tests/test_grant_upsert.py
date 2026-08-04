@@ -22,7 +22,7 @@ def test_grant_resolves_subject_by_open_id(db):
     # 授权时传 open_id(+ 最新资料),应解析到既有用户、不新建、并顺带合并资料
     out = grant_route(
         GrantIn(subject_open_id="ou_shell", subject_name="新名", resource_id="55"),
-        db, admin,
+        db, admin, ip=None,
     )
     assert out and all(p.subject_id == "2050" for p in out)
     # 未新增用户行,且资料被合并更新
@@ -33,7 +33,7 @@ def test_grant_resolves_subject_by_open_id(db):
     assert {p.action for p in perms} == {"view", "run", "download"}
 
     # 幂等:再次授权同一人不重复授权行
-    grant_route(GrantIn(subject_open_id="ou_shell", resource_id="55"), db, admin)
+    grant_route(GrantIn(subject_open_id="ou_shell", resource_id="55"), db, admin, ip=None)
     assert len(db.scalars(select(Permission).where(Permission.subject_id == "2050")).all()) == 3
 
 
@@ -46,6 +46,6 @@ def test_grant_still_accepts_known_subject_id(db):
 
     out = grant_route(
         GrantIn(subject_id=str(grantee.id), resource_id="66", actions=["view"]),
-        db, admin,
+        db, admin, ip=None,
     )
     assert out and out[0].subject_id == "2003"

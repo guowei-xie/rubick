@@ -1,10 +1,15 @@
 """自定义 SQLAlchemy 列类型。"""
 from __future__ import annotations
 
-from sqlalchemy import Text
+from sqlalchemy import BigInteger, Integer, Text
 from sqlalchemy.types import TypeDecorator
 
 from app.core import crypto
+
+# 自增大整型主键。MySQL 用 BIGINT AUTO_INCREMENT;SQLite 不把 BIGINT 当 rowid 别名,
+# 主键自增会失效(插入报 NOT NULL),故在 SQLite 侧退化成 INTEGER。
+# 所有 BigInteger 主键统一用这个,避免出现「有的表能自增、有的不能」的两套约定。
+BigIntPk = BigInteger().with_variant(Integer, "sqlite")
 
 
 class EncryptedText(TypeDecorator):

@@ -5,8 +5,9 @@ import {
   UserOutlined,
 } from "@ant-design/icons";
 import { TEMPLATE_STATUS } from "./StatusTag";
+import { fmtTime } from "../format";
 
-const fmt = (t: string) => (t ? t.replace("T", " ").slice(0, 16) : "-");
+const fmt = (t: string) => fmtTime(t, false);
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export type TaskCardHandlers = {

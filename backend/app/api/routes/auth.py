@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.schemas.auth import FeishuCallbackIn, MockLoginIn, TokenOut
 from app.schemas.common import UserOut
+from app.models.audit import ACTION_LOGIN
 from app.services import audit_service, auth_service, feishu_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -29,14 +30,14 @@ def auth_config():
 @router.post("/mock-login", response_model=TokenOut)
 def mock_login(data: MockLoginIn, request: Request, db: Session = Depends(get_db)):
     token, user = auth_service.mock_login(db, data.feishu_open_id)
-    audit_service.log(db, user=user, action="login", detail={"mode": "mock"}, ip=client_ip(request))
+    audit_service.log(db, user=user, action=ACTION_LOGIN, detail={"mode": "mock"}, ip=client_ip(request))
     return TokenOut(access_token=token, user=UserOut.model_validate(user))
 
 
 @router.post("/feishu/callback", response_model=TokenOut)
 def feishu_callback(data: FeishuCallbackIn, request: Request, db: Session = Depends(get_db)):
     token, user = auth_service.login_with_code(db, data.code)
-    audit_service.log(db, user=user, action="login", detail={"mode": "feishu"}, ip=client_ip(request))
+    audit_service.log(db, user=user, action=ACTION_LOGIN, detail={"mode": "feishu"}, ip=client_ip(request))
     return TokenOut(access_token=token, user=UserOut.model_validate(user))
 
 

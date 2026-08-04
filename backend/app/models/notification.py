@@ -11,13 +11,14 @@ from sqlalchemy import BigInteger, Boolean, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, tbl
+from app.core.db_types import BigIntPk
 from app.models.mixins import TimestampMixin
 
 
 class Notification(Base, TimestampMixin):
     __tablename__ = tbl("notifications")
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     title: Mapped[str] = mapped_column(String(200))
     body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

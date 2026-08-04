@@ -121,8 +121,32 @@ export const lookupUsers = (q?: string) =>
   http.get("/lookup/users", { params: { q } }).then((r) => r.data);
 
 // ---- audit ----
+export interface AuditLogRow {
+  id: number;
+  user_id: number | null;
+  user_name: string | null;
+  action: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  resource_name: string | null;
+  detail: any;
+  ip: string | null;
+  created_at: string;
+}
+/** 服务端分页信封 */
+export interface AuditLogPage {
+  total: number;
+  items: AuditLogRow[];
+}
+/** 动作码/资源类型的中文标签,由后端 models.audit 单一维护,前端不再重列一份 */
+export interface AuditMeta {
+  actions: { code: string; label: string; group: string }[];
+  resource_types: { code: string; label: string }[];
+}
+
+export const getAuditMeta = () => http.get("/audit/meta").then((r) => r.data as AuditMeta);
 export const listAuditLogs = (params: any = {}) =>
-  http.get("/audit/logs", { params }).then((r) => r.data);
+  http.get("/audit/logs", { params }).then((r) => r.data as AuditLogPage);
 export const exportAuditLogs = (params: any = {}) =>
   http.get("/audit/logs/export", { params, responseType: "blob" }).then((r) => r.data as Blob);
 

@@ -3,10 +3,18 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_manager
+from app.api.deps import client_ip, get_current_user, require_manager
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError
-from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
+from app.models.audit import (
+    ACTION_TASK_ARCHIVE,
+    ACTION_TASK_CREATE,
+    ACTION_TASK_PUBLISH,
+    ACTION_TASK_RESTORE,
+    ACTION_TASK_UPDATE,
+)
+from app.models.permission import RESOURCE_TEMPLATE
+from app.models.template import STATUS_ARCHIVED, STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.template import (
     EnumSqlIn,
@@ -21,9 +29,25 @@ from app.schemas.template import (
     TestRunIn,
     ValueListOut,
 )
-from app.services import params_service, permission_service, template_service
+from app.services import audit_service, params_service, permission_service, template_service
 
 router = APIRouter(prefix="/templates", tags=["templates"])
+
+# 进审计 detail 的任务元信息字段(SQL 单独记,不混在 diff 里)
+_TMPL_AUDIT_FIELDS = ("name", "description", "tags", "datasource_id", "timeout_seconds", "status")
+
+# 审计里 SQL 原文的截断长度,与 query_service 记录 executed_sql 的口径一致
+_SQL_CAP = 20000
+
+
+def _audit(
+    db: Session, user: User, ip: str | None, tmpl: SqlTemplate, action: str, detail: dict
+) -> None:
+    """任务类审计的固定部分集中一处:资源恒为该任务(id + 名称快照)。"""
+    audit_service.log(
+        db, user=user, action=action, resource_type=RESOURCE_TEMPLATE,
+        resource_id=tmpl.id, resource_name=tmpl.name, detail=detail, ip=ip,
+    )
 
 
 def _load(db: Session, template_id: int) -> SqlTemplate:
@@ -61,9 +85,21 @@ def list_templates(
 
 @router.post("", response_model=TemplateOut)
 def create_template(
-    data: TemplateCreateIn, db: Session = Depends(get_db), user: User = Depends(require_manager)
+    data: TemplateCreateIn, db: Session = Depends(get_db),
+    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
 ):
-    return template_service.create_template(db, user, data)
+    tmpl = template_service.create_template(db, user, data)
+    _audit(
+        db, user, ip, tmpl, ACTION_TASK_CREATE,
+        {
+            **audit_service.snapshot(tmpl, _TMPL_AUDIT_FIELDS),
+            "datasource_name": tmpl.datasource_name,
+            "version_no": 1,
+            "sql_text": (data.sql_text or "")[:_SQL_CAP],
+            "param_names": [p.name for p in (data.params or [])],
+        },
+    )
+    return tmpl
 
 
 @router.get("/{template_id}", response_model=TemplateDetailOut)
@@ -93,10 +129,29 @@ def update_template(
     data: TemplateUpdateIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_manager),
+    ip: str | None = Depends(client_ip),
 ):
     tmpl = _load(db, template_id)
     _require_author_or_manager(tmpl, user)
-    return template_service.add_version(db, user, tmpl, data)
+    # 快照必须早于 add_version:SQLAlchemy 就地改对象,提交后再读拿到的是新值
+    before = audit_service.snapshot(tmpl, _TMPL_AUDIT_FIELDS)
+    prev = template_service.latest_version(db, tmpl.id)
+    before_sql = prev.sql_text if prev else ""
+
+    version = template_service.add_version(db, user, tmpl, data)
+
+    _audit(
+        db, user, ip, tmpl, ACTION_TASK_UPDATE,
+        {
+            "version_no": version.version_no,
+            "changes": audit_service.diff(before, audit_service.snapshot(tmpl, _TMPL_AUDIT_FIELDS)),
+            "sql_changed": version.sql_text != before_sql,
+            "sql_text": (version.sql_text or "")[:_SQL_CAP],
+            # 编辑已上线任务时,新版本会自动接替上线(见 template_service.add_version)
+            "auto_republished": before["status"] == STATUS_PUBLISHED,
+        },
+    )
+    return version
 
 
 @router.post("/{template_id}/publish")
@@ -105,19 +160,44 @@ def publish(
     data: PublishIn,
     db: Session = Depends(get_db),
     user: User = Depends(require_manager),
+    ip: str | None = Depends(client_ip),
 ):
     """发布最新版本。"""
     tmpl = _load(db, template_id)
     _require_author_or_manager(tmpl, user)
-    template_service.publish(db, tmpl, user, data.note)
+    before_status = tmpl.status  # 必须在 publish 之前取
+    version = template_service.publish(db, tmpl, user, data.note)
+    # 从回收站(已下线)重新上线单独记一个动作码:这在业务上是「恢复」,
+    # 与首次上线不是同一件事,前端回收站也是独立入口
+    _audit(
+        db, user, ip, tmpl,
+        ACTION_TASK_RESTORE if before_status == STATUS_ARCHIVED else ACTION_TASK_PUBLISH,
+        {
+            "from_status": before_status,
+            "to_status": tmpl.status,
+            "published_version_id": tmpl.published_version_id,
+            "version_no": version.version_no,
+            "note": data.note,
+        },
+    )
     return {"status": tmpl.status, "published_version_id": tmpl.published_version_id}
 
 
 @router.post("/{template_id}/archive")
-def archive(template_id: int, db: Session = Depends(get_db), user: User = Depends(require_manager)):
+def archive(
+    template_id: int, db: Session = Depends(get_db),
+    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
+):
     tmpl = _load(db, template_id)
     _require_author_or_manager(tmpl, user)
+    before_status = tmpl.status
+    before_version_id = tmpl.published_version_id  # archive 会清空,先存
     template_service.archive(db, tmpl)
+    # name 不重复进 detail:resource_name 列已经记了,且那一列才是列表页读的
+    _audit(
+        db, user, ip, tmpl, ACTION_TASK_ARCHIVE,
+        {"from_status": before_status, "unpublished_version_id": before_version_id},
+    )
     return {"status": tmpl.status}
 
 
