@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Segmented, Select, Space, Tag, Typography } from "antd";
 import {
   createTemplate,
+  EnumSample,
   errMsg,
   getTemplate,
   listDatasources,
@@ -10,7 +11,6 @@ import {
   runEnumSql,
   testRun,
   updateTemplate,
-  ValueListOut,
 } from "../api";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
@@ -41,7 +41,8 @@ export default function TaskEditor({
   const [saving, setSaving] = useState(false);
   const [editStatus, setEditStatus] = useState<string | null>(null); // 编辑对象原状态,用于保存提示如实反映“已上线编辑即更新线上”
   const [enumSqlTesting, setEnumSqlTesting] = useState<string | null>(null); // 正在测试 enum_sql 的变量
-  const [enumSample, setEnumSample] = useState<Record<string, ValueListOut>>({}); // 各变量 enum_sql 测试结果
+  // 各变量 enum_sql 测试结果(带测试时用的 SQL);保存时随任务落库,成为业务侧共享候选
+  const [enumSample, setEnumSample] = useState<Record<string, EnumSample>>({});
   const [enumEnabled, setEnumEnabled] = useState<Record<string, boolean>>({}); // 作者是否已勾选「允许枚举 SQL」(仅控制编辑框展开)
   const [showSql, setShowSql] = useState(false);
   const [previewSqlText, setPreviewSqlText] = useState<string | null>(null); // SQL 预览浮窗内容
@@ -110,11 +111,14 @@ export default function TaskEditor({
     setEnumSqlTesting(varName);
     try {
       const res = await runEnumSql({ datasource_id, sql });
-      setEnumSample((s) => ({ ...s, [varName]: res }));
+      // 连测试时用的 SQL 一起记:保存时后端要校验它与最终落库的 enum_sql 一致才采纳
+      setEnumSample((s) => ({ ...s, [varName]: { ...res, source_sql: sql } }));
       // 落库这次测试的获取耗时,业务填参侧作参考展示
       form.setFieldValue(["params", fieldIndex, "enum_sql_duration_ms"], res.duration_ms);
       const took = res.duration_ms != null ? `,耗时 ${res.duration_ms} ms` : "";
-      message.success(`取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""}${took},可作为测试值/业务候选`);
+      message.success(
+        `取到 ${res.values.length} 个候选值${res.truncated ? "(已截断)" : ""}${took},保存后即成为业务侧共享候选`
+      );
     } catch (e: any) {
       message.error(errMsg(e, "枚举 SQL 测试失败"));
     } finally {
@@ -128,8 +132,19 @@ export default function TaskEditor({
   const collect = async () => {
     const v = await form.validateFields();
     const sql = v.sql_text || "";
+    // 随任务落库的候选值:只带「已勾选枚举 且 测试时的 SQL 与当前 SQL 逐字相同」的样本。
+    // 测完又改了 SQL 就别带了(后端也会再校验一次,这里只是不做无用的传输)。
+    const enum_samples: Record<string, EnumSample> = {};
+    for (const p of v.params || []) {
+      const s = enumSample[p?.name];
+      if (!s) continue;
+      if (!(isListVar(sql, p.name) && isEnumOn(p))) continue;
+      if (s.source_sql !== (p.enum_sql || "")) continue;
+      enum_samples[p.name] = s;
+    }
     return {
       ...v,
+      enum_samples,
       // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
       params: (v.params || []).map((p: any) => {
         const list = isListVar(sql, p.name);
@@ -329,7 +344,8 @@ export default function TaskEditor({
                 {sample && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#52c41a" }}>
                     ✓ 取到 {sample.values.length} 个候选值{sample.truncated ? "(已截断)" : ""}
-                    {sample.duration_ms != null ? ` · 获取耗时 ${sample.duration_ms} ms` : ""},可用于上方测试值选择
+                    {sample.duration_ms != null ? ` · 获取耗时 ${sample.duration_ms} ms` : ""}
+                    ,可用于上方测试值选择;保存后将作为业务侧共享候选项
                   </div>
                 )}
               </div>

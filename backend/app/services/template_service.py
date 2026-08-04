@@ -22,7 +22,7 @@ from app.models.template import (
 )
 from app.models.user import User
 from app.schemas.common import ParamDef
-from app.services import params_service, result_service
+from app.services import enum_cache_service, params_service, result_service
 
 
 def _next_version_no(db: Session, template_id: int) -> int:
@@ -49,6 +49,22 @@ def _normalize_params(sql: str, params: list[ParamDef] | list[dict]) -> list[dic
                 d[name] = ParamDef.model_fields[name].get_default(call_default_factory=True)
         out.append(d)
     return out
+
+
+def _sync_enum_cache(db: Session, tmpl: SqlTemplate, version, data, author: User) -> None:
+    """版本落库后把共享枚举候选值对齐到新 params —— 与 _normalize_params 同一个持久化边界。
+
+    放在这里(而非各个路由)是为了让「params 被重写 ⇒ 候选值跟着对齐」由写入本身保证:
+    以后新增任何写版本的入口(克隆任务、回滚版本、批量修数脚本)都不会漏掉这一步。
+    """
+    enum_cache_service.sync_params(
+        db,
+        template_id=tmpl.id,
+        datasource_id=tmpl.datasource_id,
+        params=version.params,
+        samples=getattr(data, "enum_samples", None),
+        user_id=author.id,
+    )
 
 
 def create_template(db: Session, author: User, data) -> SqlTemplate:
@@ -79,6 +95,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         author_id=author.id,
     )
     db.add(version)
+    _sync_enum_cache(db, tmpl, version, data, author)
     db.commit()
     db.refresh(tmpl)
     return tmpl
@@ -124,6 +141,7 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     if was_published:
         _mark_published(tmpl, version, author, "编辑保存自动上线")
 
+    _sync_enum_cache(db, tmpl, version, data, author)
     db.commit()
     db.refresh(version)
     return version
@@ -230,41 +248,4 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
         "truncated": result.truncated,
         "row_count": result.row_count,
         "executed_sql": executed_sql,
-    }
-
-
-# 「枚举值获取 SQL」一次最多返回的候选数
-_ENUM_SQL_CAP = 1000
-
-
-def run_value_query(db: Session, datasource_id: int, sql: str) -> dict:
-    """跑一段作者写的「枚举值获取 SQL」,取结果第一列的去重值,给业务填参做候选。"""
-    ds = db.get(DataSource, datasource_id)
-    if ds is None:
-        raise NotFoundError("数据源不存在")
-    if not (sql or "").strip():
-        raise RubicError("未配置枚举值获取 SQL")
-    validate_readonly(sql, ds.engine)
-    connector = get_connector(ds)
-    try:
-        result = connector.execute(
-            sql, {}, timeout_seconds=settings.QUERY_TIMEOUT_SECONDS, max_rows=_ENUM_SQL_CAP
-        )
-    except RubicError:
-        raise
-    except Exception as e:  # noqa: BLE001
-        raise RubicError(f"获取枚举值失败:{str(e)[:400]}") from e
-    values: list[str] = []
-    seen: set[str] = set()
-    for row in result.rows:
-        if not row or row[0] is None:
-            continue
-        s = str(row[0])
-        if s not in seen:
-            seen.add(s)
-            values.append(s)
-    return {
-        "values": values,
-        "truncated": result.truncated,
-        "duration_ms": result.meta.get("duration_ms"),
     }

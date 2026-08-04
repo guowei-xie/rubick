@@ -1,9 +1,42 @@
 from __future__ import annotations
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
 from app.schemas.common import ParamDef
+
+
+class ValueListOut(BaseModel):
+    values: list[str]
+    truncated: bool = False
+    duration_ms: int | None = None  # 获取枚举耗时(毫秒),作者测试时捕获,供前端参考
+
+
+class EnumSampleIn(ValueListOut):
+    """作者在编辑器里测出来的一批候选值,随任务保存落库、成为业务侧共享候选。
+
+    source_sql 是「测这批值时用的那段 SQL」:作者可能测完又改了 enum_sql 才保存,
+    后端只在它与真正落库的 enum_sql 一致时才采纳(见 enum_cache_service.sync_params)。
+    """
+
+    values: list[str] = []  # 收窄:作者可能没测过,允许缺省为空
+    source_sql: str = ""
+
+
+class SharedEnumValuesOut(ValueListOut):
+    """业务侧读到的共享候选值。字段是 ValueListOut 的严格超集。"""
+
+    cached: bool = False  # 是否有可用的共享候选(过期视为无)
+    stale: bool = False  # 作者改了 enum_sql / 数据源,旧候选已作废,需要重新获取
+    reused: bool = False  # 刚刚有人更新过,本次直接复用,没有真跑 SQL
+    updated_at: datetime | None = None
+    updated_by: int | None = None
+    updated_by_name: str | None = None
+
+
+class EnumRefreshIn(BaseModel):
+    variable: str
 
 
 class TemplateCreateIn(BaseModel):
@@ -14,6 +47,9 @@ class TemplateCreateIn(BaseModel):
     sql_text: str
     params: list[ParamDef] = []
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
+    # 作者测出来的候选值,按变量名归集。**缺省 ≠ 清空**:编辑器每次开窗都清空测试结果,
+    # 所以「只改任务名、没重测」发来的就是空 dict,此时必须保留已有的共享候选。
+    enum_samples: dict[str, EnumSampleIn] = {}
 
 
 class TemplateUpdateIn(BaseModel):
@@ -27,6 +63,8 @@ class TemplateUpdateIn(BaseModel):
     sql_text: str | None = None
     params: list[ParamDef] | None = None
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
+    # 同 TemplateCreateIn.enum_samples:缺省/空 dict 表示「本次没有新测的候选」,不是「清空」
+    enum_samples: dict[str, EnumSampleIn] | None = None
 
 
 class TestRunIn(BaseModel):
@@ -62,12 +100,6 @@ class EnumSqlIn(BaseModel):
 
     datasource_id: int
     sql: str
-
-
-class ValueListOut(BaseModel):
-    values: list[str]
-    truncated: bool = False
-    duration_ms: int | None = None  # 获取枚举耗时(毫秒),作者测试时捕获,供前端参考
 
 
 class PublishIn(BaseModel):

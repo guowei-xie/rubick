@@ -44,6 +44,10 @@ AUDITED: dict[str, frozenset[str]] = {
         {A.ACTION_TASK_PUBLISH, A.ACTION_TASK_RESTORE}
     ),
     "POST /api/templates/{template_id}/archive": frozenset({A.ACTION_TASK_ARCHIVE}),
+    # 业务用户手动更新共享枚举候选值:会改动该任务所有人看到的候选,值本身不进 detail
+    "POST /api/tasks/{template_id}/enum-values/refresh": frozenset(
+        {A.ACTION_TASK_ENUM_REFRESH}
+    ),
     "POST /api/permissions": frozenset({A.ACTION_PERMISSION_GRANT}),
     "DELETE /api/permissions/{perm_id}": frozenset({A.ACTION_PERMISSION_REVOKE}),
     "POST /api/admin/users/{user_id}/role": frozenset({A.ACTION_USER_ROLE_CHANGE}),

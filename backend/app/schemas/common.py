@@ -30,6 +30,20 @@ class ParamDef(BaseModel):
     # 仅对 list 有意义的字段;single 落库时统一清回默认值(见 template_service._normalize_params)
     LIST_ONLY_FIELDS: ClassVar[tuple[str, ...]] = ("enum_sql", "allow_bulk_input", "enum_sql_duration_ms")
 
+    @property
+    def has_enum_candidates(self) -> bool:
+        """该变量是否「有共享候选值可言」—— 判定口径的单一事实来源。
+
+        必须同时看 kind 和 enum_sql:作者把 IN (:x) 改成 = :x 时 _normalize_params 会清掉
+        enum_sql,但变量名还在,只看名字会留下一份永远读不到的候选。
+        """
+        return self.kind == "list" and bool(self.enum_sql)
+
+    @staticmethod
+    def dict_has_enum_candidates(p: dict) -> bool:
+        """同 has_enum_candidates,但直接判已落库的 params dict(避免为了判一下而重建模型)。"""
+        return p.get("kind") == "list" and bool(p.get("enum_sql"))
+
     @model_validator(mode="before")
     @classmethod
     def _from_legacy(cls, data):

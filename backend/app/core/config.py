@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # Hive 批处理查询默认超时(秒),默认 1 小时——Hive 多为长耗时批处理,不套用上面的即时默认。
     HIVE_QUERY_TIMEOUT_SECONDS: int = 3600
     MAX_RESULT_ROWS: int = 100_000
+    # 「枚举值获取 SQL」一次最多返回的候选数(超出截断,业务侧仍可手输未列出的值)
+    ENUM_VALUE_CAP: int = 1000
+    # 业务侧「更新枚举值」的复用窗口(秒):窗口内重复点击直接复用最新结果,不再查库
+    ENUM_REFRESH_MIN_INTERVAL_SECONDS: int = 30
 
     # ---- 异步取数(独立 DB 轮询 worker,无需 Redis/Celery)----
     # true=在请求内同步执行(无需 worker,便于本地开发);false=交给 worker 后台执行

@@ -48,6 +48,22 @@ export interface ValueListOut {
   duration_ms?: number;
 }
 
+// 作者在编辑器测出来的一批候选值,随任务保存落库、成为业务侧共享候选。
+// source_sql = 测这批值时用的那段 SQL:后端只在它与最终落库的 enum_sql 一致时才采纳。
+export interface EnumSample extends ValueListOut {
+  source_sql: string;
+}
+
+// 业务侧读到的共享候选值(ValueListOut 的严格超集)
+export interface SharedEnumValues extends ValueListOut {
+  cached: boolean; // 是否有可用的共享候选
+  stale: boolean; // 作者改了 enum_sql / 数据源,旧候选已作废
+  reused?: boolean; // 刚有人更新过,本次直接复用,没真跑 SQL
+  updated_at?: string;
+  updated_by?: number;
+  updated_by_name?: string;
+}
+
 export interface User {
   id: number;
   name: string;
@@ -79,9 +95,16 @@ export const previewSql = (data: { sql_text: string; params: any[]; values: any 
 // 作者测试「枚举值获取 SQL」
 export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
   http.post("/templates/enum-sql", data).then((r) => r.data as ValueListOut);
-// 业务填参:跑某变量已配置的 enum_sql 取候选值
+// 业务填参:读某变量的共享候选值(纯读缓存,不跑 SQL,打开抽屉即可用)
 export const taskEnumValues = (templateId: number, variable: string) =>
-  http.get(`/tasks/${templateId}/enum-values`, { params: { variable } }).then((r) => r.data as ValueListOut);
+  http
+    .get(`/tasks/${templateId}/enum-values`, { params: { variable } })
+    .then((r) => r.data as SharedEnumValues);
+// 业务填参:手动更新共享候选值(真跑一次 enum_sql,结果对该任务所有人生效)
+export const refreshTaskEnumValues = (templateId: number, variable: string) =>
+  http
+    .post(`/tasks/${templateId}/enum-values/refresh`, { variable })
+    .then((r) => r.data as SharedEnumValues);
 
 // ---- tasks(统一任务列表)----
 export const listTasks = () => http.get("/tasks").then((r) => r.data);

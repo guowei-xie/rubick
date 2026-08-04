@@ -29,6 +29,8 @@ ACTION_TASK_UPDATE = "task_update"
 ACTION_TASK_PUBLISH = "task_publish"
 ACTION_TASK_ARCHIVE = "task_archive"
 ACTION_TASK_RESTORE = "task_restore"
+# 业务用户手动更新某个值列表变量的共享候选值(会改动该任务所有人看到的候选)
+ACTION_TASK_ENUM_REFRESH = "task_enum_refresh"
 
 # 任务授权
 ACTION_PERMISSION_GRANT = "permission_grant"
@@ -64,6 +66,7 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_PUBLISH: ("任务上线", GROUP_TASK),
     ACTION_TASK_ARCHIVE: ("任务下线(进回收站)", GROUP_TASK),
     ACTION_TASK_RESTORE: ("任务从回收站恢复", GROUP_TASK),
+    ACTION_TASK_ENUM_REFRESH: ("更新枚举候选值", GROUP_TASK),
     ACTION_PERMISSION_GRANT: ("授予任务权限", GROUP_PERMISSION),
     ACTION_PERMISSION_REVOKE: ("撤销任务权限", GROUP_PERMISSION),
     ACTION_USER_ROLE_CHANGE: ("修改平台角色", GROUP_ADMIN),

@@ -29,7 +29,13 @@ from app.schemas.template import (
     TestRunIn,
     ValueListOut,
 )
-from app.services import audit_service, params_service, permission_service, template_service
+from app.services import (
+    audit_service,
+    enum_cache_service,
+    params_service,
+    permission_service,
+    template_service,
+)
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
@@ -91,6 +97,7 @@ def create_template(
     data: TemplateCreateIn, db: Session = Depends(get_db),
     user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
 ):
+    # 作者测出来的候选值随版本一并落库(见 template_service._sync_enum_cache)
     tmpl = template_service.create_template(db, user, data)
     _audit(
         db, user, ip, tmpl, ACTION_TASK_CREATE,
@@ -141,6 +148,7 @@ def update_template(
     prev = template_service.latest_version(db, tmpl.id)
     before_sql = prev.sql_text if prev else ""
 
+    # 共享枚举候选值的播种与剪枝跟着版本写入走(见 template_service._sync_enum_cache)
     version = template_service.add_version(db, user, tmpl, data)
 
     _audit(
@@ -219,4 +227,4 @@ def preview_sql(data: PreviewSqlIn, _: User = Depends(require_manager)):
 @router.post("/enum-sql", response_model=ValueListOut)
 def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_manager)):
     """作者测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
-    return template_service.run_value_query(db, data.datasource_id, data.sql)
+    return enum_cache_service.run_value_query(db, data.datasource_id, data.sql)

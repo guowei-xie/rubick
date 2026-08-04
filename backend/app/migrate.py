@@ -289,7 +289,9 @@ def _migrate_params_v3() -> None:
 
 def main() -> None:
     print("[migrate] create_all on", engine.url)
-    Base.metadata.create_all(bind=engine)  # 建缺失的表(如新表)
+    # 建缺失的表(如新表)。共享枚举候选值表 template_enum_values 就是靠这一步建出来的,
+    # 它没有增量列,不需要下面的 _ensure_column。
+    Base.metadata.create_all(bind=engine)
 
     # 增量列:按任务的查询超时(P0-3)
     _ensure_column(tbl("sql_templates"), "timeout_seconds", "INTEGER")
