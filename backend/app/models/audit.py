@@ -96,7 +96,7 @@ def action_label(code: str) -> str:
 
 class AuditLog(Base, TimestampMixin):
     """一次可审计动作:谁、何时、干了什么、命中哪个资源。应用层仅追加写(不更新不删除);
-    DB 层未强制不可篡改(见 PRD「实现现状」)。"""
+    DB 层未强制不可篡改。"""
 
     __tablename__ = tbl("audit_logs")
     # 管理端按时间范围检索 + 分页 COUNT 都打在 created_at 上;这是全库写入量最大的表,

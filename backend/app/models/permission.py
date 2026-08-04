@@ -1,7 +1,7 @@
 """授权记录:主体 × 资源 × 动作。
 
 当前支持主体 = user;资源 = template;动作 = view/run/download。
-用户组/RBAC 角色主体与脱敏为后续扩展(见 PRD「实现现状」),尚未实现。
+用户组/RBAC 角色主体与脱敏为后续扩展,尚未实现。
 """
 from __future__ import annotations
 from typing import Optional
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
-# 主体类型(当前仅个人用户;用户组/角色见 PRD「实现现状」,未实现)
+# 主体类型(当前仅个人用户;用户组/角色未实现)
 SUBJECT_USER = "user"
 
 # 资源类型
