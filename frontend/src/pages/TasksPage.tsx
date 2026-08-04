@@ -96,7 +96,8 @@ export default function TasksPage() {
       onOk: () => publishTemplate(row.id, "任务列表上线").then(load),
     });
 
-  // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感);再叠加状态筛选;下线任务排最后
+  // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感);再叠加状态筛选。
+  // 下线(archived)任务不在本页展示,统一收进「回收站」。
   const q = (sp.get("q") ?? "").trim().toLowerCase();
   const filtered = useMemo(() => {
     const matchQ = (t: any) => {
@@ -105,16 +106,16 @@ export default function TasksPage() {
       if ((t.author_name || "").toLowerCase().includes(q)) return true;
       return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
     };
-    return tasks
-      .filter((t) => matchQ(t) && (!statusFilter || t.status === statusFilter))
-      .slice()
-      // 下线(archived)默认排到最后,其余保持后端顺序(id desc)
-      .sort((a, b) => (a.status === "archived" ? 1 : 0) - (b.status === "archived" ? 1 : 0));
+    return tasks.filter(
+      (t) => t.status !== "archived" && matchQ(t) && (!statusFilter || t.status === statusFilter)
+    );
   }, [tasks, q, statusFilter]);
 
   const summary = useMemo(() => {
-    const s = { published: 0, draft: 0, total: tasks.length };
+    const s = { published: 0, draft: 0, total: 0 };
     for (const t of tasks) {
+      if (t.status === "archived") continue; // 下线任务归入回收站,不计入本页统计
+      s.total++;
       if (t.status === "published") s.published++;
       else if (t.status === "draft") s.draft++;
     }

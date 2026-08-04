@@ -5,6 +5,7 @@ import {
   TeamOutlined,
   DatabaseOutlined,
   AuditOutlined,
+  DeleteOutlined,
   SearchOutlined,
   LogoutOutlined,
 } from "@ant-design/icons";
@@ -26,6 +27,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const items: NavItem[] = [
     { key: "/tasks", label: "任务列表", icon: <AppstoreOutlined /> },
   ];
+  // 管理者(管理员/开发者)可见回收站,收纳已下线任务
+  if (user?.role === "admin" || user?.role === "developer")
+    items.push({ key: "/recycle", label: "回收站", icon: <DeleteOutlined /> });
   if (user?.role === "admin")
     items.push(
       { key: "/admin/users", label: "用户管理", icon: <TeamOutlined /> },
