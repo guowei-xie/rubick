@@ -1,6 +1,11 @@
 import axios from "axios";
 
-export const http = axios.create({ baseURL: "/api" });
+/** 部署基路径(构建期 vite base 注入),末尾不带斜杠:根部署为 ""、子路径部署为 "/rubick"。 */
+export const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+/** 把后端返回的根相对路径(如 /api/jobs/1/file)补成含基路径的可直接跳转地址。 */
+export const withBase = (path: string) => `${BASE}${path}`;
+
+export const http = axios.create({ baseURL: withBase("/api") });
 
 /** 统一提取后端错误信息(后端错误体形如 {detail: "..."}),带兜底文案。 */
 export const errMsg = (e: any, fallback = "操作失败"): string =>
@@ -17,7 +22,7 @@ http.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem("rubic_token");
-      if (!location.pathname.startsWith("/login")) location.href = "/login";
+      if (!location.pathname.startsWith(withBase("/login"))) location.href = withBase("/login");
     }
     return Promise.reject(err);
   }

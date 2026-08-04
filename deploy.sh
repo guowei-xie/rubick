@@ -55,8 +55,13 @@ init_db() {
 }
 
 build_frontend() {
-  info "安装前端依赖并构建静态产物(frontend/dist)"
-  ( cd "$FRONTEND" && npm install --no-audit --no-fund && npm run build )
+  # 基路径来自 config.ini 的 APP_BASE_URL(后端 settings.BASE_PATH 派生):
+  # 独占域名为 "/",挂在网关子路径下则为 "/rubick/"。产物里的资源前缀、
+  # 前端路由 basename、/api 前缀都跟随它,与后端认定的对外地址保持一致。
+  local base_path
+  base_path="$(cd "$BACKEND" && read_cfg BASE_PATH)"
+  info "安装前端依赖并构建静态产物(frontend/dist,基路径 $base_path)"
+  ( cd "$FRONTEND" && npm install --no-audit --no-fund && VITE_BASE_PATH="$base_path" npm run build )
 }
 
 _alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }

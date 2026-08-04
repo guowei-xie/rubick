@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button, Drawer, message, Modal, Space, Table, Tag } from "antd";
-import { downloadJob, errMsg, previewJob, taskRunRecords } from "../api";
+import { downloadJob, errMsg, previewJob, taskRunRecords, withBase } from "../api";
 import StatusTag, { JOB_STATUS } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
@@ -32,7 +32,7 @@ export default function RunRecordsDrawer({
   const download = async (id: number) => {
     try {
       const dl = await downloadJob(id);
-      window.open(dl.url, "_blank");
+      window.open(withBase(dl.url), "_blank");
     } catch (e: any) {
       message.error(errMsg(e, "下载失败"));
     }

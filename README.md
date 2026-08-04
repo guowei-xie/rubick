@@ -45,8 +45,8 @@ cp backend/config.example.ini backend/config.ini
 
 - `DATABASE_URL`:线上 MySQL 连接串,如 `mysql+pymysql://用户:密码@主机:3306/库名`
 - `JWT_SECRET`:改成随机长字符串(如 `openssl rand -hex 32`)
-- `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)
-- `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;服务器部署填对外地址(如 `https://rubick.example.com`)。`FEISHU_REDIRECT_URI` 与 `FRONTEND_ORIGIN` 留空即自动跟随它
+- `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)。前面挂了 nginx 时设成 `127.0.0.1`,不要用 `0.0.0.0` 把端口直接暴露到公网
+- `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;独占域名填 `https://rubick.example.com`;挂在网关子路径下则填到子路径为止(如 `https://htba.example.com/rubick`)。`FEISHU_REDIRECT_URI`、`FRONTEND_ORIGIN` 与前端构建的基路径都自动跟随它
 - 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET`;飞书开发者后台的「重定向 URL」需与 `{APP_BASE_URL}/auth/callback` 逐字一致
 - 冷启动管理员:`BOOTSTRAP_ADMINS=你的飞书邮箱`(该账号首次登录自动成为管理员)
 
@@ -82,5 +82,34 @@ SPA 与 `/api`、`/health` 都由后端这一个端口提供,无需额外组件�
 ### 可选:nginx 反代
 
 单端口部署本身已可用;仅当需要 HTTPS 终止、自定义域名或与其它站点共用 80/443 时,
-才在后端前面加一层 nginx,把所有请求(含 `/api`)反代到 `BACKEND_HOST:BACKEND_PORT` 即可
-(此时前端仍由后端托管,无需单独让 nginx 托管 `frontend/dist`)。nginx 配置不在本文范围。
+才在后端前面加一层 nginx。前端仍由后端托管,nginx 只需把请求(含 `/api`)反代过去,
+**无需单独托管 `frontend/dist`**。此时把 `BACKEND_HOST` 改成 `127.0.0.1`,只留 nginx 对外。
+
+**独占域名**——整站反代到后端:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:18091;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+**挂在网关子路径下**(如 `https://htba.example.com/rubick/`)——`proxy_pass` 结尾带 `/`
+即剥掉路径前缀转发,后端路由无需任何改动:
+
+```nginx
+location = /rubick { return 301 /rubick/; }
+location /rubick/ {
+    proxy_pass http://127.0.0.1:18091/;   # 结尾的 / 不能省,它负责剥掉 /rubick 前缀
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    client_max_body_size 500m;            # 结果文件下载 / 批量参数上传
+    proxy_read_timeout 3600s;             # Hive 等长耗时取数
+}
+```
+
+子路径部署只需把 `APP_BASE_URL` 填成 `https://htba.example.com/rubick`:
+前端产物的资源前缀与路由 basename 由 `deploy.sh` 据此派生(见 `settings.BASE_PATH`),
+飞书回调地址同样自动跟随——记得去飞书开发者后台把新的
+`{APP_BASE_URL}/auth/callback` 加进「重定向 URL」白名单。

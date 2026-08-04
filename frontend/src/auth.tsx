@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { getMe, User } from "./api";
+import { getMe, User, withBase } from "./api";
 
 interface AuthCtx {
   user: User | null;
@@ -34,7 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = () => {
     localStorage.removeItem("rubic_token");
     setUser(null);
-    location.href = "/login";
+    location.href = withBase("/login");
   };
 
   return <Ctx.Provider value={{ user, loading, setToken, logout }}>{children}</Ctx.Provider>;

@@ -9,6 +9,7 @@ import configparser
 import os
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -86,11 +87,27 @@ class Settings(BaseSettings):
         """
         if not self.APP_BASE_URL:
             self.APP_BASE_URL = f"http://localhost:{self.BACKEND_PORT}"
+        # 去掉结尾斜杠,避免拼出 .../rubick//auth/callback 这类双斜杠地址
+        self.APP_BASE_URL = self.APP_BASE_URL.rstrip("/")
         if not self.FEISHU_REDIRECT_URI:
             self.FEISHU_REDIRECT_URI = f"{self.APP_BASE_URL}/auth/callback"
         if not self.FRONTEND_ORIGIN:
-            self.FRONTEND_ORIGIN = self.APP_BASE_URL
+            # Origin 只有 scheme://host[:port],不含路径——APP_BASE_URL 带子路径时要截掉,
+            # 否则 CORS 白名单永远匹配不上浏览器发来的 Origin 头。
+            u = urlparse(self.APP_BASE_URL)
+            self.FRONTEND_ORIGIN = f"{u.scheme}://{u.netloc}" if u.netloc else self.APP_BASE_URL
         return self
+
+    @property
+    def BASE_PATH(self) -> str:
+        """前端部署基路径,从 APP_BASE_URL 的 path 部分取,形如 "/" 或 "/rubick/"。
+
+        独占域名/端口时为 "/";挂在网关子路径下(nginx `location /rubick/` 剥前缀转发)
+        时为 "/rubick/"。构建期由 deploy.sh 作为 VITE_BASE_PATH 传给 vite,
+        使静态资源前缀、路由 basename、/api 前缀与后端认定的对外地址始终一致。
+        """
+        path = urlparse(self.APP_BASE_URL).path.strip("/")
+        return f"/{path}/" if path else "/"
 
     @property
     def result_dir_path(self) -> Path:

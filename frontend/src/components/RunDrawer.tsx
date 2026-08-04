@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button, Drawer, Form, message, Space, Typography } from "antd";
-import { downloadJob, errMsg, getJob, getTemplate, ParamDef, previewJob, runQuery } from "../api";
+import { downloadJob, errMsg, getJob, getTemplate, ParamDef, previewJob, runQuery, withBase } from "../api";
 import { ParamField } from "./ParamForm";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
@@ -91,7 +91,7 @@ export default function RunDrawer({
     setDownloading(true);
     try {
       const dl = await downloadJob(job.id);
-      window.open(dl.url, "_blank");
+      window.open(withBase(dl.url), "_blank");
       message.success("已开始下载");
       close();
     } catch (e: any) {
