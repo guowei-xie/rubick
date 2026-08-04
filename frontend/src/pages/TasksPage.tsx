@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Badge, Button, Card, Empty, Modal, Space, Tooltip } from "antd";
+import { Button, Card, Empty, Modal, Space, Tooltip } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { archiveTemplate, listTasks, publishTemplate } from "../api";
 import { useAuth } from "../auth";
@@ -187,15 +187,13 @@ export default function TasksPage() {
         canCreate && (
           <Space size={8}>
             <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
-              <Badge count={showRecycle ? 0 : summary.archived} size="small" overflowCount={99}>
-                <Button
-                  shape="circle"
-                  icon={<DeleteOutlined />}
-                  type={showRecycle ? "primary" : "default"}
-                  onClick={toggleRecycle}
-                  aria-label="回收站"
-                />
-              </Badge>
+              <Button
+                shape="circle"
+                icon={<DeleteOutlined />}
+                type={showRecycle ? "primary" : "default"}
+                onClick={toggleRecycle}
+                aria-label="回收站"
+              />
             </Tooltip>
             {!showRecycle && (
               <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditorId(null)}>
