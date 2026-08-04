@@ -64,6 +64,21 @@ async def rubic_error_handler(request: Request, exc: RubicError):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
 
 
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    """未预期异常兜底:记完整堆栈,并返回带 detail 的 JSON。
+
+    Starlette 默认回纯文本 "Internal Server Error"(响应体没有 detail),前端只能显示
+    「操作失败」这类兜底文案,线上等于什么线索都没有。这里给出异常首行(如
+    「(1364, "Field 'modes' doesn't have a default value")」),排查有据可依。
+    """
+    log.exception("未处理异常:%s %s", request.method, request.url.path)
+    summary = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    detail = f"服务器内部错误({type(exc).__name__}):{summary}"[:500] if summary else \
+        f"服务器内部错误({type(exc).__name__}),详见服务端日志"
+    return JSONResponse(status_code=500, content={"detail": detail})
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

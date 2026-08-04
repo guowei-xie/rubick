@@ -86,6 +86,52 @@ def _drop_column(table_obj, column: str) -> None:
         print(f"[migrate] {table}: 重建表以移除列 {column}(SQLite)")
 
 
+def _retired_columns() -> list[tuple]:
+    """已从模型退役、需要在存量库里一并清掉的列:[(Table, 列名)]。
+
+    **删模型列时必须在这里登记。** 死列若是 NOT NULL 又无默认值,会让该表的所有
+    INSERT 在 MySQL 严格模式下直接失败(1364 Field 'x' doesn't have a default value),
+    而错误落在写入端、与业务代码无关,极难从现象倒推。
+    """
+    from app.models.query_job import QueryJob
+
+    return [
+        # d4d4961 取消「变量正/反选」后 modes 成为死列,当时漏了迁移:
+        # 线上 rubick_query_jobs.modes 残留为 json NOT NULL,自 8/3 起阻断了全部取数入队。
+        (QueryJob.__table__, "modes"),
+    ]
+
+
+def _drop_retired_columns() -> None:
+    """幂等清理 _retired_columns() 登记的死列。"""
+    for table_obj, column in _retired_columns():
+        _drop_column(table_obj, column)
+
+
+def _assert_no_blocking_orphan_columns() -> None:
+    """体检:库里存在、模型已无,且 NOT NULL 无默认值的列会阻断该表所有写入,直接报错。
+
+    宁可在部署窗口的迁移里失败(有人看着、信息明确),也不要放到运行期变成
+    一句「服务器内部错误」——modes 列就是这么让「运行任务」静默瘫了一整天。
+    """
+    insp = sa_inspect(engine)
+    blocking: list[str] = []
+    for table in Base.metadata.tables.values():
+        if not insp.has_table(table.name):
+            continue
+        model_columns = {c.name for c in table.columns}
+        for col in insp.get_columns(table.name):
+            if col["name"] not in model_columns and not col["nullable"] and col["default"] is None:
+                blocking.append(f"{table.name}.{col['name']}")
+    if blocking:
+        raise RuntimeError(
+            "以下列已从模型退役但库中残留,且 NOT NULL 无默认值,会阻断该表所有 INSERT:"
+            + "、".join(blocking)
+            + "。请在 app/migrate.py 的 _retired_columns() 里登记后重跑迁移。"
+        )
+    print("[migrate] 死列体检通过:无阻断写入的残留列")
+
+
 def _drop_table(name: str) -> None:
     """幂等删除表。"""
     if sa_inspect(engine).has_table(name):
@@ -260,6 +306,10 @@ def main() -> None:
     # 取消部门级授权:清部门权限行 + 删部门 schema(表/列)(幂等)
     _purge_department_permissions()
     _drop_department_schema()
+
+    # 清理已退役的死列,并体检是否还有会阻断写入的残留列(幂等)
+    _drop_retired_columns()
+    _assert_no_blocking_orphan_columns()
 
     # 发布流简化 + 参数定义迁移(幂等)
     _migrate_pending_accept()
