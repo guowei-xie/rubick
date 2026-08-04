@@ -35,7 +35,9 @@ export default function GrantModal({
     lookupUsers(q).then((rows: any[]) =>
       setOptions(
         rows.map((r) => ({
-          value: String(r.id),
+          // 统一用 open_id 作为选中值:搜索命中者此时尚未落库,授权时才按 open_id 建行
+          value: r.open_id,
+          raw: r, // 保留候选资料,授权时随 open_id 一并回传
           // 供 showSearch 兜底过滤 & 选中后回填文本用
           title: [r.name, r.email].filter(Boolean).join(" "),
           label: (
@@ -71,10 +73,15 @@ export default function GrantModal({
 
   const add = async () => {
     if (!subjectId) return message.warning("请选择授权对象");
+    const picked = options.find((o) => o.value === subjectId)?.raw;
     try {
       await grantPermission({
         subject_type: "user",
-        subject_id: subjectId,
+        // 按 open_id 授权:服务端在此刻才把该用户落库(壳用户不再于搜索时生成)
+        subject_open_id: subjectId,
+        subject_name: picked?.name,
+        subject_email: picked?.email,
+        subject_avatar: picked?.avatar,
         resource_type: "template",
         resource_id: String(templateId),
         actions,

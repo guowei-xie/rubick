@@ -17,6 +17,7 @@ from app.models.permission import (
 )  # noqa: F401
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User
+from app.services import user_service
 
 
 def is_manager(user: User) -> bool:
@@ -149,12 +150,22 @@ def grant(
     db: Session,
     *,
     subject_type: str,
-    subject_id: str,
     resource_type: str,
     resource_id: str,
     actions: list[str],
     granted_by: int | None,
+    subject_id: str | None = None,
+    subject_open_id: str | None = None,
+    subject_profile: dict | None = None,
 ) -> list[Permission]:
+    # 主体解析集中在服务层(单一事务归属):传 open_id 时在此(而非搜索时)按 open_id upsert
+    # 用户、拿其 id 作主体;否则用已知的 subject_id。
+    if subject_open_id:
+        profile = {"open_id": subject_open_id, **{k: v for k, v in (subject_profile or {}).items() if v}}
+        subject = user_service.upsert_user(db, profile)
+        db.flush()  # 拿到自增 id;与下方授权同一事务提交
+        subject_id = str(subject.id)
+
     created: list[Permission] = []
     for action in actions:
         exists = db.scalar(

@@ -61,10 +61,13 @@ def grant(data: GrantIn, db: Session = Depends(get_db), user: User = Depends(req
         raise PermissionDeniedError("仅支持对模板授权")
     if not permission_service.owns_template(db, user, data.resource_id):
         raise PermissionDeniedError("只能对自己的模板授权")
+    # 主体解析(open_id → 授权时落库 vs 已知 subject_id)交给服务层,路由只做转发。
     return permission_service.grant(
         db,
         subject_type=data.subject_type,
         subject_id=data.subject_id,
+        subject_open_id=data.subject_open_id,
+        subject_profile={"name": data.subject_name, "email": data.subject_email, "avatar": data.subject_avatar},
         resource_type=data.resource_type,
         resource_id=data.resource_id,
         actions=data.actions,
