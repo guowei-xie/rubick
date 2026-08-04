@@ -1,4 +1,4 @@
-"""SQL 模板与版本。SQL 全程只存在平台元数据库,不进 Git。"""
+"""SQL 模板与版本 —— 产品 UI 里称「任务」。SQL 全程只存在平台元数据库,不进 Git。"""
 from __future__ import annotations
 from typing import Optional
 from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
@@ -7,14 +7,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
 
-# 模板生命周期:草稿 → 已发布 →(可下线)
+# 生命周期(UI 措辞):草稿 → 已上线 →(下线后进「回收站」,可重新上线)
 STATUS_DRAFT = "draft"
 STATUS_PUBLISHED = "published"
 STATUS_ARCHIVED = "archived"
 
 
 class SqlTemplate(Base, TimestampMixin):
-    """模板主体:一条取数需求对应的可复用 SQL,含元信息与当前状态。"""
+    """任务主体:一条取数需求对应的可复用 SQL,含元信息与当前状态。"""
 
     __tablename__ = tbl("sql_templates")
 
@@ -35,7 +35,7 @@ class SqlTemplate(Base, TimestampMixin):
     # 该任务的查询超时(秒);None=按数据源引擎默认(Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # 指向当前"已发布"的版本;未发布时为 None
+    # 指向当前"已上线"的版本;未上线(草稿/已下线)时为 None
     published_version_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey(tbl("template_versions.id"), use_alter=True, name=tbl("fk_published_version")),
         nullable=True,
@@ -65,7 +65,7 @@ class SqlTemplate(Base, TimestampMixin):
 
 
 class TemplateVersion(Base, TimestampMixin):
-    """模板的一个不可变版本:SQL 原文快照 + 参数定义 + 发布留痕。"""
+    """任务的一个不可变版本:SQL 原文快照 + 参数定义 + 上线留痕。"""
 
     __tablename__ = tbl("template_versions")
 
@@ -73,13 +73,15 @@ class TemplateVersion(Base, TimestampMixin):
     template_id: Mapped[int] = mapped_column(
         ForeignKey(tbl("sql_templates.id")), index=True
     )
-    version_no: Mapped[int] = mapped_column(Integer)  # 模板内自增
+    version_no: Mapped[int] = mapped_column(Integer)  # 任务内自增
     sql_text: Mapped[str] = mapped_column(Text)
-    # 参数定义:[{name, kind(single|list), label, test_value, enum_sql, allow_bulk_input}]
+    # 参数定义,形状见 schemas.common.ParamDef:
+    # [{name, kind(single|list), value_type(text|number), label, test_value,
+    #   enum_sql, allow_bulk_input, enum_sql_duration_ms}](后三者仅 list 有意义)
     params: Mapped[list] = mapped_column(JSON, default=list)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 
-    # 发布留痕(历史数据含验收记录)
+    # 上线留痕:谁上线的 + 备注(字段名沿用早期「验收」语义,当前无验收卡点)
     accepted_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     accepted_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

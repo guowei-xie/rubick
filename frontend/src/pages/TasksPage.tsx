@@ -139,7 +139,7 @@ export default function TasksPage() {
     return s;
   }, [tasks]);
 
-  // 顶部筛选片:已上线/待上线读共享状态色(tint),「总数」清除筛选
+  // 顶部筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选
   const statChips: { key: string | null; label: string; n: number; tint: string }[] = [
     { key: "published", label: "已上线", n: summary.published, tint: TEMPLATE_STATUS.published.tint! },
     { key: "draft", label: "草稿", n: summary.draft, tint: TEMPLATE_STATUS.draft.tint! },

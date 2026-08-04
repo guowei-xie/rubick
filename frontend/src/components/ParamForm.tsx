@@ -62,7 +62,7 @@ export function PasteListButton({ onAdd }: { onAdd: (vals: string[]) => void }) 
   );
 }
 
-/** 值列表多选控件:自由输入 / 获取枚举值 / 上传粘贴。筛选方向(IN 包含 / NOT IN 排除)由模板 SQL 决定。 */
+/** 值列表多选控件:自由输入 / 获取枚举值 / 上传粘贴。筛选方向(IN 包含 / NOT IN 排除)由任务 SQL 决定。 */
 function ListField({
   pd,
   templateId,
@@ -85,7 +85,7 @@ function ListField({
     onChange?.(merged);
   };
 
-  // 获取候选值供勾选(跑分析师配的 enum_sql)
+  // 获取候选值供勾选(跑作者配的 enum_sql)
   const fetchEnum = async () => {
     if (!templateId) return;
     setLoading(true);

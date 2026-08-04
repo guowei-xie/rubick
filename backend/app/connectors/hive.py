@@ -1,9 +1,12 @@
-"""Hive 连接器(接口就绪,连接实现留待接入真实 HiveServer2)。
+"""Hive 连接器:直连 HiveServer2(Thrift),用 pyhive 提交与参数化绑定。
 
-设计:直连 HiveServer2(Thrift),用 pyhive。参数化用 pyhive 的 paramstyle。
-Phase 1 依赖未安装时,实例化即抛清晰错误,不影响 MySQL 主链路。
-接入时:pip install "pyhive[hive]" thrift,并按需处理 Kerberos/LDAP 认证
-(见 PRD 开放项——Hive 认证方式)。
+依赖(pyhive / thrift / thrift_sasl / pure-sasl)已在 requirements.txt 里;
+若运行环境缺失,实例化即抛清晰错误,不影响 MySQL 主链路。
+
+认证:`auth` 取自数据源的 extra(数据源页面可选 NONE / LDAP / NOSASL / CUSTOM / KERBEROS)。
+LDAP / CUSTOM 会带上密码。**KERBEROS 需要额外的 kerberos/gssapi 依赖,当前未安装、未验证。**
+
+超时:Hive 没有语句级超时,故异步提交后轮询状态,到点主动 cursor.cancel()(见 _await_completion)。
 """
 from __future__ import annotations
 
@@ -37,8 +40,8 @@ class HiveConnector(DataSourceConnector):
             from pyhive import hive  # noqa: F401
         except ImportError as e:  # pragma: no cover - 依赖未装
             raise RuntimeError(
-                "Hive 连接器需要 pyhive:pip install 'pyhive[hive]' thrift。"
-                "Phase 1 骨架默认未安装。"
+                "Hive 连接器需要 pyhive,当前运行环境未装。"
+                "请按 backend/requirements.txt 重装依赖(pip install -r requirements.txt)。"
             ) from e
         self._hive = hive
 

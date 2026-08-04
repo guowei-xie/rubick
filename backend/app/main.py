@@ -29,7 +29,7 @@ log = get_logger("rubick.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时按 BOOTSTRAP_ADMINS 对已同步用户提权(配置文件加超管,无需对方先登录)
+    # 启动时按 BOOTSTRAP_ADMINS 对库内已有用户提权(配置文件加超管,无需对方再登录一次)
     from app.core.database import SessionLocal
     from app.services import auth_service
 

@@ -17,7 +17,8 @@ class TemplateCreateIn(BaseModel):
 
 
 class TemplateUpdateIn(BaseModel):
-    """更新会生成新版本(草稿)。"""
+    """更新会生成一个新版本。原任务已上线时新版本自动接替上线(见
+    template_service.add_version);草稿/已下线则维持原状态。"""
 
     name: str | None = None
     description: str | None = None
@@ -29,7 +30,11 @@ class TemplateUpdateIn(BaseModel):
 
 
 class TestRunIn(BaseModel):
-    """商分自检试跑:直接给 SQL + 参数,不落库结果,返回样例行。"""
+    """作者自检试跑:直接给 SQL + 参数,返回样例行。
+
+    带 template_id(试跑已保存的任务)时会落一条 source=test 的运行记录并存结果文件,
+    以便在「运行记录」里预览/导出;不带则只返回样例行、不留痕。两种情况都不发通知。
+    """
 
     datasource_id: int
     sql_text: str
@@ -53,7 +58,7 @@ class PreviewSqlOut(BaseModel):
 
 
 class EnumSqlIn(BaseModel):
-    """分析师在编辑器里测试「枚举值获取 SQL」。"""
+    """作者在任务编辑器里测试「枚举值获取 SQL」。"""
 
     datasource_id: int
     sql: str

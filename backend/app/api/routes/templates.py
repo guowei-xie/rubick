@@ -53,13 +53,13 @@ def _audit(
 def _load(db: Session, template_id: int) -> SqlTemplate:
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
-        raise NotFoundError("模板不存在")
+        raise NotFoundError("任务不存在")
     return tmpl
 
 
 def _require_author_or_manager(tmpl: SqlTemplate, user: User) -> None:
     if not permission_service.is_template_owner(user, tmpl):
-        raise PermissionDeniedError("只有作者或管理者可操作该模板")
+        raise PermissionDeniedError("只有作者或管理者可操作该任务")
 
 
 @router.get("", response_model=list[TemplateOut])
@@ -68,7 +68,10 @@ def list_templates(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """默认:业务用户看到有权限的已发布模板。mine=true:商分看自己维护的全部模板。"""
+    """默认:业务用户看到有权限的已上线任务。mine=true:作者看自己维护的全部任务(含草稿/已下线)。
+
+    注:前端任务列表走 /tasks(带能力标记);本端点保留给按作者维度取原始模板行的用法。
+    """
     stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
     if mine:
         stmt = stmt.where(SqlTemplate.author_id == user.id)
@@ -107,11 +110,11 @@ def get_template(template_id: int, db: Session = Depends(get_db), user: User = D
     tmpl = _load(db, template_id)
     is_owner = permission_service.is_template_owner(user, tmpl)
     if not is_owner:
-        # 业务用户:必须有 view 权限且已发布
+        # 业务用户:必须有 view 权限且任务已上线
         if tmpl.status != STATUS_PUBLISHED or not permission_service.can(
             db, user, "view", "template", template_id
         ):
-            raise PermissionDeniedError("无权查看该模板")
+            raise PermissionDeniedError("无权查看该任务")
 
     detail = TemplateDetailOut.model_validate(tmpl)
     if tmpl.published_version_id:
@@ -162,7 +165,7 @@ def publish(
     user: User = Depends(require_manager),
     ip: str | None = Depends(client_ip),
 ):
-    """发布最新版本。"""
+    """上线最新版本(UI 里的「上线 / 重新上线」)。"""
     tmpl = _load(db, template_id)
     _require_author_or_manager(tmpl, user)
     before_status = tmpl.status  # 必须在 publish 之前取
@@ -215,5 +218,5 @@ def preview_sql(data: PreviewSqlIn, _: User = Depends(require_manager)):
 
 @router.post("/enum-sql", response_model=ValueListOut)
 def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_manager)):
-    """分析师测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
+    """作者测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
     return template_service.run_value_query(db, data.datasource_id, data.sql)

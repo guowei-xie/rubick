@@ -6,8 +6,9 @@
   - 4 个用户:admin/analyst(管理员)、dev(开发者)、viewer(普通用户)
   - 演示业务库 rubic_demo.orders(与平台元数据库同一 MySQL 实例,不同 database)
   - 一个 MySQL 数据源指向 rubic_demo
-  - 一条已发布模板"按日期查订单",授权给 viewer 个人
-之后即可用 viewer 登录 → 跑模板 → 下载 → 在审计里看到记录。
+  - 一条已上线任务"按日期查订单",授权给 viewer 个人
+之后即可用 viewer 登录 → 跑任务 → 下载 → 在审计里看到记录。
+(mock 登录需要 config.ini 里 MOCK_AUTH = true,默认关闭)
 """
 from __future__ import annotations
 

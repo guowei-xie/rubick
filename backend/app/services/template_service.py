@@ -1,4 +1,7 @@
-"""SQL 模板的编写、版本、发布、试跑。"""
+"""取数任务(SQL 模板)的编写、版本、上线/下线、试跑。
+
+术语:产品 UI 里的「任务」= 这里的 SqlTemplate;「上线 / 下线」= publish / archive。
+"""
 from __future__ import annotations
 
 from sqlalchemy import func, select
@@ -84,7 +87,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
 def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateVersion:
     """更新模板 = 生成新版本。编辑不改变上线状态:
     - 原本已上线(published)→ 新版本自动接替上线,保持对业务可运行;
-    - 原本待上线(draft)/已下线 → 维持原状态,由列表「上线」操作再晋升。
+    - 原本草稿(draft)/已下线 → 维持原状态,由列表「上线」操作再晋升。
     """
     was_published = tmpl.status == STATUS_PUBLISHED
     latest = latest_version(db, tmpl.id)
@@ -117,7 +120,7 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     db.flush()
 
     # 已上线任务被编辑:新版本自动接替上线,状态与可运行性不变;
-    # 待上线(draft)/已下线则维持原状态,由列表「上线」操作再晋升。
+    # 草稿(draft)/已下线则维持原状态,由列表「上线」操作再晋升。
     if was_published:
         _mark_published(tmpl, version, author, "编辑保存自动上线")
 
@@ -144,11 +147,11 @@ def _mark_published(tmpl: SqlTemplate, version: TemplateVersion, publisher: User
 
 
 def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -> TemplateVersion:
-    """发布最新版本(accepted_by/accepted_note 作发布留痕)。返回被发布的版本,
+    """上线最新版本(accepted_by/accepted_note 作上线留痕)。返回被上线的版本,
     免得调用方为了拿 version_no 再查一次。"""
     version = latest_version(db, tmpl.id)
     if version is None:
-        raise RubicError("模板没有可发布的版本")
+        raise RubicError("该任务还没有可上线的版本")
     _mark_published(tmpl, version, publisher, note)
     db.commit()
     return version
@@ -235,7 +238,7 @@ _ENUM_SQL_CAP = 1000
 
 
 def run_value_query(db: Session, datasource_id: int, sql: str) -> dict:
-    """跑一段分析师写的「枚举值获取 SQL」,取结果第一列的去重值,给业务填参做候选。"""
+    """跑一段作者写的「枚举值获取 SQL」,取结果第一列的去重值,给业务填参做候选。"""
     ds = db.get(DataSource, datasource_id)
     if ds is None:
         raise NotFoundError("数据源不存在")

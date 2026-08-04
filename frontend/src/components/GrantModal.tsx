@@ -9,8 +9,15 @@ import {
 } from "../api";
 
 const ALL_ACTIONS = ["view", "run", "download"];
+// 动作码 → 中文标签(与后端 permissions 的 action 取值一一对应)
+const ACTION_LABEL: Record<string, string> = {
+  view: "查看",
+  run: "运行",
+  download: "下载",
+};
 
-/** 给某个模板授权:列出现有授权 + 添加(按用户)+ 撤销。商分只能开自己的模板;管理员任意。 */
+/** 给某个任务授权:列出现有授权 + 添加(按用户)+ 撤销。
+ *  作者只能开自己建的任务;管理员/开发者任意。 */
 export default function GrantModal({
   templateId,
   templateName,
@@ -127,7 +134,10 @@ export default function GrantModal({
     },
     {
       title: "拥有权限",
-      render: (_: any, r: any) => r.actions.map((a: string) => <Tag key={a} color="green">{a}</Tag>),
+      render: (_: any, r: any) =>
+        r.actions.map((a: string) => (
+          <Tag key={a} color="green">{ACTION_LABEL[a] ?? a}</Tag>
+        )),
     },
     {
       title: "操作",
@@ -142,7 +152,7 @@ export default function GrantModal({
 
   return (
     <Modal
-      title={`授权模板:${templateName || ""}`}
+      title={`授权任务:${templateName || ""}`}
       open={open}
       onCancel={onClose}
       footer={<Button onClick={onClose}>关闭</Button>}
@@ -162,7 +172,7 @@ export default function GrantModal({
             notFoundContent="没搜到?可能不在可见范围"
           />
           <Checkbox.Group
-            options={ALL_ACTIONS.map((a) => ({ label: a, value: a }))}
+            options={ALL_ACTIONS.map((a) => ({ label: ACTION_LABEL[a] ?? a, value: a }))}
             value={actions}
             onChange={(v) => setActions(v as string[])}
           />

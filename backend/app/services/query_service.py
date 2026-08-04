@@ -46,11 +46,11 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
     """前置校验后入队。返回 queued 任务(RUN_INLINE 模式下返回时可能已完成)。"""
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
-        raise NotFoundError("模板不存在")
+        raise NotFoundError("任务不存在")
     if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
-        raise RubicError("模板未发布,不可运行")
+        raise RubicError("任务未上线,不可运行")
     if not permission_service.can(db, user, ACTION_RUN, RESOURCE_TEMPLATE, template_id):
-        raise PermissionDeniedError("无权运行该模板")
+        raise PermissionDeniedError("无权运行该任务")
 
     version = db.get(TemplateVersion, tmpl.published_version_id)
     # 请求内先做参数校验与安全网关,把可预见的错误即时反馈给用户
@@ -145,7 +145,8 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
 
 
 def can_view_job_result(db: Session, user: User, job: QueryJob) -> bool:
-    """能查看/下载某次运行结果:发起人本人、管理员,或该项目的作者(可看本项目全部运行)。"""
+    """能查看/下载某次运行结果:发起人本人、管理者(管理员/开发者),或该任务的作者
+    (作者可看自己任务下的全部运行)。"""
     if permission_service.can_access_job(user, job):
         return True
     return permission_service.is_template_owner(user, db.get(SqlTemplate, job.template_id))
@@ -153,15 +154,15 @@ def can_view_job_result(db: Session, user: User, job: QueryJob) -> bool:
 
 def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:
     if not can_view_job_result(db, user, job):
-        raise PermissionDeniedError("无权下载该任务结果")
+        raise PermissionDeniedError("无权下载该次运行结果")
     if job.status != JOB_SUCCESS or not job.result_object_key:
-        raise RubicError("任务无可下载结果")
+        raise RubicError("该次运行无可下载结果")
     if job.result_expired or not result_service.exists(job.result_object_key):
         raise RubicError(
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
         )
-    # 返回带签名 token 的根相对 URL,浏览器新标签页可直接下载(不需 Authorization 头);
-    # 前端 /api 由 dev 代理或生产 nginx 反代到后端。
+    # 返回带签名 token 的根相对 URL,浏览器新标签页可直接下载(不需 Authorization 头)。
+    # 单端口部署下 /api 与 SPA 同源;本地 split dev 模式由 vite 代理到后端。
     from app.core.security import create_download_token
 
     token = create_download_token(job.id)

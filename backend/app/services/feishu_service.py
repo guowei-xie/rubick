@@ -119,7 +119,7 @@ def refresh_user_token(refresh_token: str) -> dict:
 
 def valid_user_token(db: Session, user) -> str | None:
     """拿到该用户当前可用的 user_access_token;过期则用 refresh_token 刷新并落库。
-    没有 token 或刷新失败返回 None(调用方回退本地目录)。"""
+    没有 token 或刷新失败返回 None —— 此时授权选人搜不出候选(无本地目录兜底,见 routes/lookup.py)。"""
     if not user.feishu_token:
         return None
     now = datetime.utcnow()
@@ -139,7 +139,7 @@ def valid_user_token(db: Session, user) -> str | None:
 
 
 def search_users(query: str, user_access_token: str) -> list[dict]:
-    """按登录用户可见范围搜通讯录。返回 [{open_id, name, avatar}]。
+    """按登录用户可见范围搜通讯录。返回 [{open_id, name, email, avatar, employee_id}]。
     /search/v1/user 常只回 open_id + avatar,姓名/邮箱用 tenant token 批量补齐。"""
     resp = _client.get(
         f"{_BASE}/search/v1/user",

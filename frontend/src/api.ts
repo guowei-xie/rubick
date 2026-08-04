@@ -71,7 +71,7 @@ export const testRun = (data: any) => http.post("/templates/test-run", data).the
 // SQL 预览:代入当前测试值渲染即将执行的 SQL(不执行),未填变量原样保留 :变量
 export const previewSql = (data: { sql_text: string; params: any[]; values: any }) =>
   http.post("/templates/preview-sql", data).then((r) => r.data as { rendered_sql: string });
-// 分析师测试「枚举值获取 SQL」
+// 作者测试「枚举值获取 SQL」
 export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
   http.post("/templates/enum-sql", data).then((r) => r.data as ValueListOut);
 // 业务填参:跑某变量已配置的 enum_sql 取候选值

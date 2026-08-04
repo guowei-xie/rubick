@@ -5,7 +5,7 @@ import StatusTag, { JOB_STATUS } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 
-/** 项目运行记录:谁、何时、参数、状态、结果预览/导出。管理员/作者看全部,其他人看自己。 */
+/** 任务的运行记录:谁、何时、参数、状态、结果预览/导出。管理者(管理员/开发者)与作者看全部,其他人看自己。 */
 export default function RunRecordsDrawer({
   task,
   open,

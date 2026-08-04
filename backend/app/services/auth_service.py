@@ -32,8 +32,8 @@ def _maybe_promote(user: User, allow: set[str]) -> bool:
 def apply_bootstrap_admins(db: Session) -> int:
     """启动时把已存在用户过一遍提权规则(与登录同一条 _maybe_promote)。
 
-    让「配置文件加超管」在生产中可靠且即时:目标用户已在库中(如通讯录已同步)时,
-    改配置重启即提权,无需其先登录。返回本次新提权人数。幂等。
+    让「配置文件加超管」在生产中可靠且即时:目标用户已在库中(此前登录过,或被授权时落过库)时,
+    改配置重启即提权,无需其再登录一次。返回本次新提权人数。幂等。
     """
     allow = _bootstrap_admins()
     if not allow:

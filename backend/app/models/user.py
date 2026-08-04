@@ -1,4 +1,5 @@
-"""用户。首次飞书扫码登录时按需创建(JIT);授权选人时实时搜通讯录命中者也会 upsert 成壳用户。"""
+"""用户。两个入口按需创建(JIT):① 首次飞书扫码登录;② 授权选人时被**真正授权**的通讯录成员
+(按 open_id upsert)。搜通讯录本身不落库,避免搜索即制造壳用户 —— 见 routes/lookup.py。"""
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
@@ -9,10 +10,10 @@ from app.core.database import Base, tbl
 from app.core.db_types import BigIntPk, EncryptedText
 from app.models.mixins import TimestampMixin
 
-# 平台角色:三种。管理员可建/改/发布任意项目并互相可见,且独揽治理(用户角色赋权/数据源/审计);
+# 平台角色:三种。管理员可建/改/上线任意任务并互相可见,且独揽治理(用户角色赋权/数据源/审计);
 # 开发者近似管理员但不含这三块治理;普通用户只填参取数。
 ROLE_USER = "user"          # 普通用户(业务使用者)
-ROLE_ADMIN = "admin"        # 管理员(含原商分职责)
+ROLE_ADMIN = "admin"        # 管理员(含 SQL 编写与上线职责)
 ROLE_DEVELOPER = "developer"  # 开发者:近似管理员,不含 用户角色赋权/数据源管理/审计
 
 

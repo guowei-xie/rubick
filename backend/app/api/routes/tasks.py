@@ -1,4 +1,4 @@
-"""统一「任务列表」:项目(模板)+ 按角色收窄 + 能力标记,以及项目的运行记录。"""
+"""统一「任务列表」:任务(SqlTemplate)+ 按角色收窄 + 能力标记,以及任务的运行记录。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 @router.get("", response_model=list[TaskOut])
 def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """管理者(管理员/开发者)看全部(彼此可见可编辑);普通用户只看被授权的已发布。"""
+    """管理者(管理员/开发者)看全部(彼此可见可编辑);普通用户只看被授权的已上线任务。"""
     stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
     if permission_service.is_manager(user):
         rows = list(db.scalars(stmt))
@@ -70,7 +70,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
 def task_run_records(
     template_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """项目运行记录。管理员/作者看全部;其他人只看自己跑过的。"""
+    """任务的运行记录。管理者(管理员/开发者)与作者看全部;其他人只看自己跑过的。"""
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
         raise NotFoundError("任务不存在")
@@ -90,7 +90,7 @@ def task_enum_values(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """业务填参时「获取枚举值」:跑该变量在已发布版本里配置的 enum_sql,返回候选值。"""
+    """业务填参时「获取枚举值」:跑该变量在已上线版本里配置的 enum_sql,返回候选值。"""
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
         raise NotFoundError("任务不存在")
@@ -101,7 +101,7 @@ def task_enum_values(
         raise PermissionDeniedError("无权访问该任务")
     ver = db.get(TemplateVersion, tmpl.published_version_id) if tmpl.published_version_id else None
     if ver is None:
-        raise NotFoundError("任务未发布")
+        raise NotFoundError("任务未上线")
     pdef = next((p for p in (ver.params or []) if p.get("name") == variable), None)
     if pdef is None:
         raise NotFoundError("变量不存在")

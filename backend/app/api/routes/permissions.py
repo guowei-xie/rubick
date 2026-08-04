@@ -54,7 +54,7 @@ def list_permissions(
         stmt = stmt.where(Permission.resource_type == resource_type)
     if resource_id:
         stmt = stmt.where(Permission.resource_id == resource_id)
-    # 普通用户只能看自己作为作者的模板授权;管理者(管理员/开发者)看全部
+    # 普通用户只能看自己作为作者的任务授权;管理者(管理员/开发者)看全部
     if not permission_service.is_manager(user):
         owned = [str(i) for i in permission_service.owned_template_ids(db, user)]
         if not owned:
@@ -70,11 +70,12 @@ def grant(
     data: GrantIn, db: Session = Depends(get_db),
     user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
 ):
-    # 商分只能对自己发布/维护的模板授权(主体仅 user 由 GrantIn.subject_type=Literal 在入参层保证)
+    # 作者只能对自己维护的任务授权;管理者(管理员/开发者)任意
+    # (主体仅 user 由 GrantIn.subject_type=Literal 在入参层保证)
     if data.resource_type != "template":
-        raise PermissionDeniedError("仅支持对模板授权")
+        raise PermissionDeniedError("仅支持对任务授权")
     if not permission_service.owns_template(db, user, data.resource_id):
-        raise PermissionDeniedError("只能对自己的模板授权")
+        raise PermissionDeniedError("只能对自己的任务授权")
     # 主体解析(open_id → 授权时落库 vs 已知 subject_id)交给服务层,路由只做转发。
     created = permission_service.grant(
         db,
@@ -119,7 +120,7 @@ def revoke(
     p = db.get(Permission, perm_id)
     if p:
         if p.resource_type == "template" and not permission_service.owns_template(db, user, p.resource_id):
-            raise PermissionDeniedError("只能撤销自己模板的授权")
+            raise PermissionDeniedError("只能撤销自己任务的授权")
         # delete+commit 之后属性就读不到了,必须先快照
         before = audit_service.snapshot(
             p, ("subject_type", "subject_id", "resource_type", "resource_id", "action")

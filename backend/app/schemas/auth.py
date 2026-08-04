@@ -5,7 +5,8 @@ from app.schemas.common import UserOut
 
 
 class MockLoginIn(BaseModel):
-    """开发用:直接以某个已同步用户身份登录。"""
+    """开发用:以指定 open_id 直接登录,库里没有该用户则按需创建。
+    仅 MOCK_AUTH=true 时可用(默认关闭)。"""
 
     feishu_open_id: str
 

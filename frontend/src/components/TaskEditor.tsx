@@ -120,7 +120,7 @@ export default function TaskEditor({
     return () => clearTimeout(t);
   }, [sqlWatch, open]);
 
-  // 分析师测试该变量的「枚举值获取 SQL」是否能跑、返回多少候选
+  // 作者测试该变量的「枚举值获取 SQL」是否能跑、返回多少候选
   const testEnumSql = async (fieldIndex: number, varName: string) => {
     const datasource_id = form.getFieldValue("datasource_id");
     const sql = form.getFieldValue(["params", fieldIndex, "enum_sql"]);
