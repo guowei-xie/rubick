@@ -33,6 +33,10 @@
 > **需要完整操作说明**(登录、权限、参数填写、运行记录与通知、管理员页面、口径限制、FAQ)请看用户手册:
 > [docs/user-manual.md](./docs/user-manual.md) ·
 > [飞书在线版](https://wrpnn3mat2.feishu.cn/docx/ZlYBdS3fGoBosXx5btpcWs8yn8Y)
+>
+> **建任务的同学**(开发者角色)另有一份手册:变量设计、枚举候选值、SQL 安全网关、版本与上线、
+> 排障速查与上线前自检清单 —— [docs/developer-manual.md](./docs/developer-manual.md) ·
+> [飞书在线版](https://wrpnn3mat2.feishu.cn/docx/SGh0dCub5oRBLpxkiq0cB0X3nrd)
 
 ## 技术栈
 
