@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Empty, Modal, Space, Tooltip } from "antd";
+import { Button, Card, Checkbox, Empty, Modal, Space, Tooltip } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { archiveTemplate, listTasks, publishTemplate } from "../api";
 import { useAuth } from "../auth";
@@ -46,7 +46,8 @@ function StatChip({
 
 export default function TasksPage() {
   const { user } = useAuth();
-  const canCreate = user?.role === "admin" || user?.role === "developer";
+  // 管理者 = 管理员 / 开发者(与后端 permission_service.is_manager 同一口径):建任务、回收站、只看我的
+  const isManager = user?.role === "admin" || user?.role === "developer";
 
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,6 +71,13 @@ export default function TasksPage() {
       sp.set("recycle", "1");
       sp.delete("status");
     }
+    setSp(sp, { replace: true });
+  };
+  // 只看我的(?mine=1):isManager 兜底 —— 普通用户看到的本来就只是授权给自己的任务,手改 URL 也不生效
+  const mineOnly = isManager && sp.get("mine") === "1";
+  const toggleMine = () => {
+    if (mineOnly) sp.delete("mine");
+    else sp.set("mine", "1");
     setSp(sp, { replace: true });
   };
 
@@ -111,6 +119,11 @@ export default function TasksPage() {
   // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感)。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
   const q = (sp.get("q") ?? "").trim().toLowerCase();
+  // 「只看我的」先于状态筛选与统计生效:顶部计数与卡片同源,勾选后数字不会自相矛盾
+  const scoped = useMemo(
+    () => (mineOnly ? tasks.filter((t) => t.author_id === user?.id) : tasks),
+    [tasks, mineOnly, user?.id]
+  );
   const filtered = useMemo(() => {
     const matchQ = (t: any) => {
       if (!q) return true;
@@ -118,16 +131,16 @@ export default function TasksPage() {
       if ((t.author_name || "").toLowerCase().includes(q)) return true;
       return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
     };
-    return tasks.filter((t) =>
+    return scoped.filter((t) =>
       showRecycle
         ? t.status === "archived" && matchQ(t)
         : t.status !== "archived" && matchQ(t) && (!statusFilter || t.status === statusFilter)
     );
-  }, [tasks, q, statusFilter, showRecycle]);
+  }, [scoped, q, statusFilter, showRecycle]);
 
   const summary = useMemo(() => {
     const s = { published: 0, draft: 0, archived: 0, total: 0 };
-    for (const t of tasks) {
+    for (const t of scoped) {
       if (t.status === "archived") {
         s.archived++; // 下线任务只进回收站,不计入本页统计
         continue;
@@ -137,7 +150,7 @@ export default function TasksPage() {
       else if (t.status === "draft") s.draft++;
     }
     return s;
-  }, [tasks]);
+  }, [scoped]);
 
   // 顶部筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选
   const statChips: { key: string | null; label: string; n: number; tint: string }[] = [
@@ -145,6 +158,15 @@ export default function TasksPage() {
     { key: "draft", label: "草稿", n: summary.draft, tint: TEMPLATE_STATUS.draft.tint! },
     { key: null, label: "总数", n: summary.total, tint: "#eef0f7" },
   ];
+
+  // 空态文案:搜索无结果优先,其次区分「只看我的」与回收站
+  const emptyText = q
+    ? `没有匹配「${sp.get("q")}」的任务`
+    : mineOnly
+      ? `${showRecycle ? "回收站里" : ""}没有你创建的任务`
+      : showRecycle
+        ? "回收站为空"
+        : "暂无任务";
 
   const handlers: TaskCardHandlers = {
     onRun: setRunTarget,
@@ -181,10 +203,19 @@ export default function TasksPage() {
               ))}
             </Space>
           )}
+          {isManager && (
+            <Checkbox
+              checked={mineOnly}
+              onChange={toggleMine}
+              style={{ fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" }}
+            >
+              只看我的
+            </Checkbox>
+          )}
         </Space>
       }
       extra={
-        canCreate && (
+        isManager && (
           <Space size={8}>
             <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
               <Button
@@ -205,16 +236,7 @@ export default function TasksPage() {
       }
     >
       {filtered.length === 0 ? (
-        <Empty
-          style={{ padding: "48px 0" }}
-          description={
-            q
-              ? `没有匹配「${sp.get("q")}」的任务`
-              : showRecycle
-                ? "回收站为空"
-                : "暂无任务"
-          }
-        />
+        <Empty style={{ padding: "48px 0" }} description={emptyText} />
       ) : (
         <div
           style={{
