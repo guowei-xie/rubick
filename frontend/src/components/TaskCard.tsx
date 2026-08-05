@@ -146,6 +146,25 @@ export default function TaskCard({
         >
           {r.name}
         </div>
+        {/* 任务说明:浅一层的次级信息,列表页扫一眼就知道这任务干什么;
+            无说明的任务不占位,长说明 2 行截断、悬停看全文 */}
+        {r.description && (
+          <div
+            title={r.description}
+            style={{
+              fontSize: 13,
+              color: "var(--ink-secondary)",
+              lineHeight: "20px",
+              marginBottom: 10,
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            {r.description}
+          </div>
+        )}
         {r.datasource_name && (
           <span
             style={{
