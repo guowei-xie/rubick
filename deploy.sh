@@ -9,7 +9,12 @@
 #   ./deploy.sh restart   重启
 #   ./deploy.sh status    查看运行状态
 #
-# 进程用 nohup 后台运行,PID 写入 backend/run/*.pid,日志写入 backend/logs/*.log。
+# 进程管理有两种模式,脚本自动识别:
+#   systemd 托管(线上):存在 rubick-api.service / rubick-worker.service 时,
+#     start/stop/restart/status 一律走 systemctl(开机自启 + 崩溃自愈由 systemd 负责)。
+#     部署 unit 见 deploy/systemd/README.md。
+#   nohup 前台机(本地/无 systemd):后台运行,PID 写入 backend/run/*.pid。
+# 两种模式日志都写 backend/logs/*.log。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,8 +26,19 @@ RUN_DIR="$BACKEND/run"
 LOG_DIR="$BACKEND/logs"
 API_PID="$RUN_DIR/api.pid"
 WORKER_PID="$RUN_DIR/worker.pid"
+API_UNIT="rubick-api.service"
+WORKER_UNIT="rubick-worker.service"
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
+
+# 非 root 时用 sudo 调 systemctl(线上以 root 跑,SUDO 为空)
+SUDO=""
+if [ "$(id -u)" != 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+
+# 本机是否已安装本项目的 systemd unit —— 决定进程管理走 systemctl 还是 nohup
+systemd_managed() {
+  command -v systemctl >/dev/null 2>&1 && systemctl cat "$API_UNIT" >/dev/null 2>&1
+}
 
 info() { echo -e "\033[36m[deploy]\033[0m $*"; }
 warn() { echo -e "\033[33m[deploy]\033[0m $*"; }
@@ -68,6 +84,13 @@ _alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 start() {
   ensure_config
+  if systemd_managed; then
+    info "systemd 托管:启动 $API_UNIT / $WORKER_UNIT"
+    $SUDO systemctl start "$API_UNIT" "$WORKER_UNIT"
+    sleep 1
+    status
+    return
+  fi
   local host port
   host="$(cd "$BACKEND" && read_cfg BACKEND_HOST)"
   port="$(cd "$BACKEND" && read_cfg BACKEND_PORT)"
@@ -96,6 +119,12 @@ start() {
 }
 
 stop() {
+  if systemd_managed; then
+    info "systemd 托管:停止 $API_UNIT / $WORKER_UNIT"
+    # 交给 systemd 停,绝不 pkill —— 否则 Restart=always 会立刻把进程拉回来
+    $SUDO systemctl stop "$API_UNIT" "$WORKER_UNIT"
+    return
+  fi
   for pidf in "$API_PID" "$WORKER_PID"; do
     if _alive "$pidf"; then
       local pid; pid="$(cat "$pidf")"
@@ -113,7 +142,18 @@ stop() {
   fi
 }
 
+unit_state() { # 输出形如 "active (enabled)"
+  echo "$($SUDO systemctl is-active "$1" 2>/dev/null || true) ($($SUDO systemctl is-enabled "$1" 2>/dev/null || true))"
+}
+
 status() {
+  if systemd_managed; then
+    echo "  API   : $(unit_state "$API_UNIT")  [systemd $API_UNIT]"
+    echo "  worker: $(unit_state "$WORKER_UNIT")  [systemd $WORKER_UNIT]"
+    echo "  日志  : $LOG_DIR/api.log  |  $LOG_DIR/worker.log"
+    echo "  详情  : systemctl status $API_UNIT"
+    return
+  fi
   if _alive "$API_PID"; then echo "  API   : 运行中 (pid $(cat "$API_PID"))"; else echo "  API   : 未运行"; fi
   if _alive "$WORKER_PID"; then echo "  worker: 运行中 (pid $(cat "$WORKER_PID"))"; else echo "  worker: 未运行"; fi
   echo "  日志  : $LOG_DIR/api.log  |  $LOG_DIR/worker.log"

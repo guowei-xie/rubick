@@ -1,0 +1,20 @@
+[Unit]
+Description=Rubick 取数 worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/rubick/backend
+ExecStart=/opt/rubick/backend/.venv/bin/python -m app.worker
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=LANG=C.UTF-8
+StandardOutput=append:/opt/rubick/backend/logs/worker.log
+StandardError=append:/opt/rubick/backend/logs/worker.log
+
+[Install]
+WantedBy=multi-user.target

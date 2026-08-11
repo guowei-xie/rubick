@@ -1,0 +1,10 @@
+/opt/rubick/backend/logs/api.log /opt/rubick/backend/logs/worker.log {
+    daily
+    rotate 14
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

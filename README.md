@@ -103,12 +103,27 @@ cp backend/config.example.ini backend/config.ini
 ./deploy.sh update     # 滚动更新:git pull → 装依赖 → 建表 → 重建前端 → 重启
 ```
 
-### 5. 访问应用
+### 5. 开机自启(长期运行的机器建议开)
+
+装上 `deploy/systemd/` 里的两个 unit,即可让 API 与 worker **随机器启动自动恢复、崩溃自动拉起**:
+
+```bash
+sudo install -m 644 deploy/systemd/rubick-api.service    /etc/systemd/system/
+sudo install -m 644 deploy/systemd/rubick-worker.service /etc/systemd/system/
+sudo install -m 644 deploy/systemd/rubick.logrotate      /etc/logrotate.d/rubick
+sudo systemctl daemon-reload
+sudo systemctl enable --now rubick-api.service rubick-worker.service
+```
+
+装好后上面那些 `./deploy.sh` 命令**自动改走 systemctl**(不再 nohup),用法不变；细节与注意事项
+(端口需与 `config.ini` 同步、日志轮转)见 [deploy/systemd/README.md](deploy/systemd/README.md)。
+
+### 6. 访问应用
 
 `./deploy.sh init` 后,直接访问 `APP_BASE_URL`(默认 `http://localhost:BACKEND_PORT`)即可——
 SPA 与 `/api`、`/health` 都由后端这一个端口提供,无需额外组件。
 
-### 6. 挂到域名 / 子路径下
+### 7. 挂到域名 / 子路径下
 
 单端口部署本身已可用。若前面挂了反向代理(HTTPS 终止、自定义域名、与其它站点共用 80/443),
 前端仍由后端托管,代理只需把请求(含 `/api`)整体转发到后端端口,**无需单独托管 `frontend/dist`**;

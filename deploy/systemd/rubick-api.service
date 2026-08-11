@@ -1,0 +1,23 @@
+[Unit]
+Description=Rubick API (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/rubick/backend
+# 监听地址/端口的唯一来源是 backend/config.ini(BACKEND_HOST/BACKEND_PORT);
+# 若在 config.ini 改了端口,这里必须同步改并 daemon-reload。
+ExecStart=/opt/rubick/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18091
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=LANG=C.UTF-8
+# 日志沿用原路径(不再每次重启被截断),轮转见 /etc/logrotate.d/rubick
+StandardOutput=append:/opt/rubick/backend/logs/api.log
+StandardError=append:/opt/rubick/backend/logs/api.log
+
+[Install]
+WantedBy=multi-user.target
