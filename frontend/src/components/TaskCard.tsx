@@ -11,6 +11,23 @@ import { fmtTime } from "../format";
 const fmt = (t: string) => fmtTime(t, false);
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+// 数据源 / 团队两个小标签共用:flex 子项 + minWidth:0,两个都长时按内容比例收缩、
+// 各自省略号截断并排一行;只有一个时它能占满整行不被无谓截断。
+const chipStyle: React.CSSProperties = {
+  flex: "0 1 auto",
+  minWidth: 0,
+  maxWidth: "100%",
+  fontSize: 12,
+  fontWeight: 500,
+  color: "var(--ink-secondary)",
+  background: "var(--app-bg)",
+  borderRadius: 6,
+  padding: "2px 8px",
+  overflow: "hidden",
+  whiteSpace: "nowrap",
+  textOverflow: "ellipsis",
+};
+
 export type TaskCardHandlers = {
   onRun: (r: any) => void;
   onEdit: (r: any) => void;
@@ -87,30 +104,23 @@ export default function TaskCard({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* 状态常显:色点 + 文字胶囊,一眼可读,不再依赖悬停 */}
+          {/* 状态只用颜色表达(绿=已上线、黄=草稿、红=已下线),不再占文字位置。
+              语义由悬停 title 兜底;title 挂在色点自身上,会盖住卡片外层那句
+              「点击填参取数」,两者不会同时弹出(换成 Tooltip 则会叠加)。
+              aria-label 是给读屏的:颜色不能是唯一的信息载体。 */}
           <span
+            role="img"
+            title={meta?.label ?? r.status}
+            aria-label={`状态:${meta?.label ?? r.status}`}
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "2px 9px",
-              borderRadius: 10,
-              background: meta?.tint ?? "#f0f0f0",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: meta?.dot ?? "#bfbfbf",
+              display: "inline-block",
+              flexShrink: 0,
             }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: meta?.dot ?? "#bfbfbf",
-                display: "inline-block",
-              }}
-            />
-            <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)" }}>
-              {meta?.label ?? r.status}
-            </span>
-          </span>
+          />
           <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
             <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
           </Tooltip>
@@ -153,8 +163,10 @@ export default function TaskCard({
         </span>
       </div>
 
-      {/* 卡身:任务名 + 极简 engine 小标签 */}
-      <div style={{ flex: 1 }}>
+      {/* 卡身:任务名 + 极简 engine 小标签。flex 列 + 标签行 marginTop:auto ⇒
+          标签始终贴在卡身底部,描述有无、一行两行都不会让标签行上下漂移,
+          同一行相邻卡片的标签落在同一水平线上。 */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <div
           style={{
             fontSize: 16,
@@ -180,7 +192,6 @@ export default function TaskCard({
               fontSize: 13,
               color: "var(--ink-secondary)",
               lineHeight: "20px",
-              marginBottom: 10,
               display: "-webkit-box",
               WebkitLineClamp: 2,
               WebkitBoxOrient: "vertical",
@@ -190,49 +201,28 @@ export default function TaskCard({
             {r.description}
           </div>
         )}
-        {r.datasource_name && (
-          <span
+        {(r.datasource_name || r.team_name) && (
+          <div
             style={{
-              display: "inline-block",
-              maxWidth: "100%",
-              fontSize: 12,
-              fontWeight: 500,
-              color: "var(--ink-secondary)",
-              background: "var(--app-bg)",
-              borderRadius: 6,
-              padding: "2px 8px",
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
-              verticalAlign: "bottom",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginTop: "auto",
+              paddingTop: 10,
             }}
-            title={r.datasource_name}
           >
-            {r.datasource_name}
-          </span>
-        )}
-        {/* 团队标签:跨团队互不可见之后,平台管理员(看全部)与多团队开发者都需要一眼分辨归属 */}
-        {r.team_name && (
-          <span
-            style={{
-              display: "inline-block",
-              maxWidth: "100%",
-              marginLeft: 6,
-              fontSize: 12,
-              fontWeight: 500,
-              color: "var(--ink-secondary)",
-              background: "var(--app-bg)",
-              borderRadius: 6,
-              padding: "2px 8px",
-              overflow: "hidden",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
-              verticalAlign: "bottom",
-            }}
-            title={`所属团队:${r.team_name}`}
-          >
-            {r.team_name}
-          </span>
+            {r.datasource_name && (
+              <span style={chipStyle} title={r.datasource_name}>
+                {r.datasource_name}
+              </span>
+            )}
+            {/* 团队标签:跨团队互不可见之后,平台管理员(看全部)与多团队开发者都需要一眼分辨归属 */}
+            {r.team_name && (
+              <span style={chipStyle} title={`所属团队:${r.team_name}`}>
+                {r.team_name}
+              </span>
+            )}
+          </div>
         )}
       </div>
 
