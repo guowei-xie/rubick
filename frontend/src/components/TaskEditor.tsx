@@ -447,9 +447,18 @@ export default function TaskEditor({
     >
       <Form form={form} layout="vertical">
         <Divider orientation="left" style={{ marginTop: 0 }}>基本信息</Divider>
-        <Space style={{ width: "100%" }} size="large" wrap>
-          <Form.Item name="name" label="任务名称" rules={[{ required: true }]}>
-            <Input style={{ width: 300 }} />
+        {/* align="start":Space 水平方向默认 align:center,带 extra 说明的字段更高,
+            会把同排没有说明的字段压成垂直居中 ⇒ 标签与控件错行。顶对齐后各字段控件同线。
+            各 Form.Item 再固定成控件宽度:说明文字在列宽内折行,而不是把字段撑宽、
+            导致提示出现/消失时旁边字段横向抽动。 */}
+        <Space style={{ width: "100%" }} size="large" wrap align="start">
+          <Form.Item
+            name="name"
+            label="任务名称"
+            rules={[{ required: true }]}
+            style={{ width: 300 }}
+          >
+            <Input />
           </Form.Item>
           {/* 团队放在数据源**之前**:团队决定用哪套库账号,账号决定这个数据源跑不跑得动 */}
           <Form.Item
@@ -468,9 +477,9 @@ export default function TaskEditor({
                 </span>
               ) : undefined
             }
+            style={{ width: 240 }}
           >
             <Select
-              style={{ width: 240 }}
               // 编辑已有任务时只有平台管理员能改(转移团队是跨组织的治理动作)
               disabled={!!editingId && !isPlatformAdmin(user)}
               placeholder={teamOptions.length ? "选择团队" : "你还不属于任何团队"}
@@ -483,9 +492,9 @@ export default function TaskEditor({
             label="数据源"
             rules={[{ required: true }]}
             extra={credHint}
+            style={{ width: 240 }}
           >
             <Select
-              style={{ width: 240 }}
               options={datasources.map((d) => ({ value: d.id, label: `${d.name} (${d.engine})` }))}
             />
           </Form.Item>
@@ -493,8 +502,9 @@ export default function TaskEditor({
             name="timeout_seconds"
             label="查询超时(秒)"
             tooltip="留空按引擎默认:Hive 3600s(长批处理),MySQL 120s。超时会自动终止查询。"
+            style={{ width: 140 }}
           >
-            <InputNumber style={{ width: 140 }} min={1} placeholder="默认" />
+            <InputNumber style={{ width: "100%" }} min={1} placeholder="默认" />
           </Form.Item>
         </Space>
         <Form.Item name="description" label="任务说明">
