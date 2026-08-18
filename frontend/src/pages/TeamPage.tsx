@@ -27,7 +27,7 @@ import StatusTag, { ROLE, TEAM_ROLE } from "../components/StatusTag";
 import TeamCandidateSelect from "../components/TeamCandidateSelect";
 import TeamCredentialsPanel from "../components/TeamCredentialsPanel";
 import TeamTaskEditorsPanel from "../components/TeamTaskEditorsPanel";
-import { fmtTime } from "../format";
+import { dash, fmtTime } from "../format";
 
 /**
  * 团队页 —— 团队管理员的主战场,普通成员只读。
@@ -178,6 +178,13 @@ function MembersTab({
           {m.user_id === user?.id && <Tag>我</Tag>}
         </Space>
       ),
+    },
+    {
+      // 同名同事只靠姓名区分不开,而「在这个团队」= 「能读这个团队的数据」
+      title: "邮箱",
+      dataIndex: "email",
+      ellipsis: true,
+      render: dash,
     },
     {
       title: "平台角色",

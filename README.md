@@ -89,7 +89,8 @@ cp backend/config.example.ini backend/config.ini
 - `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)。前面挂了反向代理时设成 `127.0.0.1`,不要用 `0.0.0.0` 把端口直接暴露到公网
 - `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;独占域名填 `https://rubick.example.com`;挂在网关子路径下则填到子路径为止(如 `https://htba.example.com/rubick`)。`FEISHU_REDIRECT_URI`、`FRONTEND_ORIGIN` 与前端构建的基路径都自动跟随它
 - 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET`;飞书开发者后台的「重定向 URL」需与 `{APP_BASE_URL}/auth/callback` 逐字一致
-- 冷启动管理员:`BOOTSTRAP_ADMINS=你的飞书邮箱`(该账号首次登录自动成为管理员)
+- 冷启动管理员:`BOOTSTRAP_ADMINS=你的飞书 open_id`(该账号首次登录自动成为管理员;服务启动时也会对库中已有用户提权一次)。也支持填邮箱,但**推荐 open_id** —— 它是用户表的 upsert 主键、伪造不了,而邮箱是从通讯录补齐进来的普通字段
+- 首次上线后(或刚给飞书应用开通邮箱权限后)跑一次 `python -m app.backfill_user_emails --apply`,给存量用户补齐邮箱;新用户在登录/被授权时会自动补,无需再跑
 
 > `MOCK_AUTH` 默认**关闭**(生产安全默认)。本地暂无飞书凭证、想先跑起来时,才临时改成 `true`
 > 用 mock 登录;它信任前端传入的 open_id、不校验凭证,生产务必保持 `false`。

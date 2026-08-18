@@ -20,6 +20,10 @@ from app.models.user import User
 # 绝不允许进入审计 detail 的字段名。
 # 注意 DataSource.password 是 EncryptedText —— 读属性即拿到**明文**,而 detail 是
 # 未加密的 JSON 列且会被导出成 CSV,因此必须在此拦死。
+# email 经评估**刻意不列入**:这里的语义是「凭证」(能换取访问权的东西),而邮箱是标识符,
+# 且审计的价值全在归因 —— user_name 就明文存在专用列里,抹掉邮箱却留着姓名自相矛盾。
+# 另外 _redact 写的是 *** 且不可逆,列入等于永久丢信息(不是加密保护)。隐私的抓手在导出侧
+# (导出本身已被 ACTION_EXPORT_AUDIT 记录、页面仅管理员可达)与将来的保留期策略。
 _SECRET_FIELDS = frozenset(
     {"password", "passwd", "secret", "token", "feishu_token", "feishu_refresh_token"}
 )

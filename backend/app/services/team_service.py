@@ -20,6 +20,7 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.team import Team, TeamMember
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_DEVELOPER, User, is_platform_admin
+from app.services import user_service
 
 
 # ---------------------------------------------------------------- 事实查询
@@ -123,7 +124,7 @@ def members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
     rows = db.execute(
         select(
             TeamMember.team_id,
-            User.id, User.name, User.avatar, User.role,
+            User.id, User.name, User.avatar, User.email, User.role,
             TeamMember.is_team_admin, TeamMember.created_at,
         )
         .join(TeamMember, TeamMember.user_id == User.id)
@@ -132,10 +133,12 @@ def members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
         .order_by(TeamMember.team_id, TeamMember.is_team_admin.desc(), User.id)
     ).all()
     out: dict[int, list[dict]] = {tid: [] for tid in ids}
-    for team_id, uid, name, avatar, role, is_admin, joined in rows:
+    for team_id, uid, name, avatar, email, role, is_admin, joined in rows:
         out[team_id].append(
             {
-                "user_id": uid, "name": name, "avatar": avatar, "role": role,
+                # 带邮箱:同名同事在成员表里区分不开,而「谁在这个团队」等于「谁能读这些数据」,
+                # 认错人的代价是一次误授权
+                "user_id": uid, "name": name, "avatar": avatar, "email": email, "role": role,
                 "is_team_admin": bool(is_admin), "joined_at": joined,
             }
         )
@@ -160,6 +163,11 @@ def candidates(db: Session, team_id: int, q: str | None = None) -> list[dict]:
 
     刻意不走飞书通讯录(那是给业务授权选人的):团队成员必须已经是平台上的开发者,
     否则「只能添加开发者」这条规则会变成「先造个壳用户再改角色」。
+
+    邮箱权限开通后,「按邮箱把没登录过的同事反查成 open_id 再加进来」技术上可行
+    (contact/v3/users/batch_get_id),但**刻意不做**:加入团队 = 交出该团队取数账号的
+    全部数据权限,一条终点没有身份/意愿证明的授权路径不该存在。正解是让对方扫码登录一次、
+    由管理员设为开发者 —— 前端空态文案已经这么引导了。
     """
     joined = select(TeamMember.user_id).where(TeamMember.team_id == team_id)
     stmt = select(User.id, User.name, User.avatar, User.email).where(
@@ -168,9 +176,9 @@ def candidates(db: Session, team_id: int, q: str | None = None) -> list[dict]:
         User.last_login_at.is_not(None),
         User.id.not_in(joined),
     )
-    if q:
-        like = f"%{q.strip()}%"
-        stmt = stmt.where(User.name.like(like) | User.email.like(like))
+    cond = user_service.name_or_email_like(q)  # 与管理端用户列表共用同一条检索规则
+    if cond is not None:
+        stmt = stmt.where(cond)
     return [
         {"user_id": uid, "name": name, "avatar": avatar, "email": email}
         for uid, name, avatar, email in db.execute(stmt.order_by(User.id).limit(50)).all()

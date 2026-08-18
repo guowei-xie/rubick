@@ -35,6 +35,13 @@ class User(Base, TimestampMixin):
     feishu_open_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     union_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
+    # 三个来源,合并规则一律「空值不覆盖」(user_service.upsert_user):
+    #   ① 登录:OAuth user_info(需 OAUTH_SCOPES 里有 contact:user.email:readonly)
+    #   ② 授权落库 / 登录兜底:飞书通讯录(tenant token,唯一可信来源)
+    #   ③ 存量补齐:app/backfill_user_emails.py
+    # **刻意不加 unique、不加索引**:两处检索都是 LIKE '%q%'(前导通配符用不上 B-tree 索引),
+    # 而 users 表只有个位数行;加 unique 更有害 —— upsert 主键是 open_id,唯一约束换不来任何
+    # 保证,却给回填引入新的崩溃模式(同一人双账号 / 离职邮箱复用 → IntegrityError)。
     email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     avatar: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     role: Mapped[str] = mapped_column(String(32), default=ROLE_USER, nullable=False)

@@ -66,7 +66,7 @@ export default function UsersPage() {
       style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}
       extra={
         <Input.Search
-          placeholder="搜姓名"
+          placeholder="搜姓名/邮箱"
           allowClear
           style={{ width: 200 }}
           onSearch={load}

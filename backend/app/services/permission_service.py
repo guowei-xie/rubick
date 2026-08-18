@@ -375,8 +375,13 @@ def grant(
     # 主体解析集中在服务层(单一事务归属):传 open_id 时在此(而非搜索时)按 open_id upsert
     # 用户、拿其 id 作主体;否则用已知的 subject_id。
     if subject_open_id:
-        profile = {"open_id": subject_open_id, **{k: v for k, v in (subject_profile or {}).items() if v}}
-        subject = user_service.upsert_user(db, profile)
+        # 客户端传来的资料只取「展示用」这两项(正向白名单:塞别的进来也进不了库)。
+        # **email 绝不采信客户端**:它是 BOOTSTRAP_ADMINS 的匹配键,可写就是一条提权路径
+        # (见 schemas/permission.py),只能由通讯录写 —— 与登录走同一条 sync 路径。
+        display = {k: v for k in ("name", "avatar") if (v := (subject_profile or {}).get(k))}
+        subject = user_service.upsert_user(db, {"open_id": subject_open_id, **display})
+        if not subject.email:  # 已有可信邮箱就不必再打一次飞书
+            user_service.sync_profiles_from_feishu([subject])
         db.flush()  # 拿到自增 id;与下方授权同一事务提交
         subject_id = str(subject.id)
 

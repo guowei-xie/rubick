@@ -86,8 +86,8 @@ export default function GrantModal({
         subject_type: "user",
         // 按 open_id 授权:服务端在此刻才把该用户落库(壳用户不再于搜索时生成)
         subject_open_id: subjectId,
+        // 不回传邮箱:服务端会自己从飞书通讯录取(客户端可写 email 是一条提权路径)
         subject_name: picked?.name,
-        subject_email: picked?.email,
         subject_avatar: picked?.avatar,
         resource_type: "template",
         resource_id: String(templateId),

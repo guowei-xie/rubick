@@ -149,6 +149,7 @@ export interface TeamMember {
   user_id: number;
   name: string;
   avatar?: string | null;
+  email?: string | null;
   role: string;
   is_team_admin: boolean;
   joined_at?: string | null;

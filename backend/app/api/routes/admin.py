@@ -11,7 +11,7 @@ from app.core.exceptions import NotFoundError, RubicError
 from app.models.audit import ACTION_USER_ROLE_CHANGE, RESOURCE_USER
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import UserOut
-from app.services import audit_service
+from app.services import audit_service, user_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -30,8 +30,11 @@ def list_users(
 ):
     # 只展示登录过的用户(扫码进来才会出现);未登录的通讯录成员不显示
     stmt = select(User).where(User.last_login_at.is_not(None)).order_by(User.last_login_at.desc())
-    if q:
-        stmt = stmt.where(User.name.like(f"%{q}%"))
+    # 姓名或邮箱:列表本来就显示邮箱列,只按姓名搜是明显的不一致。
+    # 条件与团队候选人列表共用一份(user_service.name_or_email_like)
+    cond = user_service.name_or_email_like(q)
+    if cond is not None:
+        stmt = stmt.where(cond)
     return list(db.scalars(stmt))
 
 

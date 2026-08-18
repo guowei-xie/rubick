@@ -21,6 +21,7 @@ class TeamMemberOut(BaseModel):
     user_id: int
     name: str
     avatar: str | None = None
+    email: str | None = None
     role: str
     is_team_admin: bool = False
     joined_at: datetime | None = None

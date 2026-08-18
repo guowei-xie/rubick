@@ -9,8 +9,11 @@ class GrantIn(BaseModel):
     # 由服务端在「真正授权」这一刻才按 open_id 落库(壳用户不再在搜索时生成,避免用户表膨胀)。
     subject_id: str | None = None
     subject_open_id: str | None = None
+    # 姓名/头像只用于展示,客户端传值可作兜底。
+    # **刻意没有 subject_email**:email 是 BOOTSTRAP_ADMINS 的匹配键(见 auth_service._maybe_promote),
+    # 允许客户端写入 users.email 等于给任何开发者开一条提权路径 —— 把小号的 email 填成名单里那个
+    # 邮箱,下次重启该小号即管理员。邮箱一律由服务端从飞书通讯录取,见 permission_service.grant。
     subject_name: str | None = None
-    subject_email: str | None = None
     subject_avatar: str | None = None
     resource_type: str = "template"
     resource_id: str

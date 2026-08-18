@@ -96,7 +96,8 @@ def grant(
         subject_type=data.subject_type,
         subject_id=data.subject_id,
         subject_open_id=data.subject_open_id,
-        subject_profile={"name": data.subject_name, "email": data.subject_email, "avatar": data.subject_avatar},
+        # 只转发展示资料;邮箱由服务层从飞书通讯录取(客户端传的 email 不可信,见 GrantIn)
+        subject_profile={"name": data.subject_name, "avatar": data.subject_avatar},
         resource_type=data.resource_type,
         resource_id=data.resource_id,
         actions=data.actions,

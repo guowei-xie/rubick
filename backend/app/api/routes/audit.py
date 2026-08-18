@@ -112,16 +112,26 @@ def export_logs(
             select(AuditLog).where(*conds).order_by(AuditLog.id.desc()).limit(min(limit, 200000))
         )
     )
+    # 邮箱按 user_id 现查现拼,**不在 audit_logs 上加快照列**:audit_logs 是全库写入量最大的
+    # 表,为一个可推导字段加一列 VARCHAR(255) 不划算;用户表是个位数,一次 IN 查询可忽略。
+    # 代价是它是「当前值」而非写入时快照(user_name 是快照),故列名里必须写明,否则看审计的人会误判。
+    emails = dict(
+        db.execute(
+            select(User.id, User.email).where(
+                User.id.in_({r.user_id for r in rows if r.user_id is not None})
+            )
+        ).all()
+    )
     result = QueryResult(
         columns=[
-            "id", "时间", "用户ID", "用户名", "动作", "动作(中文)",
+            "id", "时间", "用户ID", "用户名", "用户邮箱(当前)", "动作", "动作(中文)",
             "资源类型", "资源ID", "资源名称", "IP", "详情",
         ],
         rows=[
             (
                 r.id,
                 r.created_at.isoformat(sep=" "),
-                r.user_id, r.user_name, r.action, action_label(r.action),
+                r.user_id, r.user_name, emails.get(r.user_id), r.action, action_label(r.action),
                 r.resource_type, r.resource_id, r.resource_name, r.ip,
                 json.dumps(r.detail or {}, ensure_ascii=False),
             )

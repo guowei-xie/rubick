@@ -38,8 +38,13 @@ def apply_bootstrap_admins(db: Session) -> int:
     allow = _bootstrap_admins()
     if not allow:
         return 0
+    pending = list(db.scalars(select(User).where(User.role != ROLE_ADMIN)))
+    # 名单里有邮箱形式的条目时,先把缺邮箱的人补一次 —— 一次批量请求,且仅在配了邮箱时才打。
+    # 不补的话「配置写邮箱 + 重启」对从未登录过的人永远不生效,与 README 的承诺不符。
+    if any("@" in x for x in allow):
+        user_service.sync_profiles_from_feishu([u for u in pending if not u.email])
     promoted = 0
-    for user in db.scalars(select(User).where(User.role != ROLE_ADMIN)).all():
+    for user in pending:
         if _maybe_promote(user, allow):
             promoted += 1
     if promoted:
@@ -50,6 +55,14 @@ def apply_bootstrap_admins(db: Session) -> int:
 def _upsert_user(db: Session, profile: dict) -> User:
     user = user_service.upsert_user(db, profile)
 
+    # 邮箱兜底:登录返回的 profile 不一定带 email(取决于 OAUTH_SCOPES 里有没有
+    # contact:user.email:readonly),用通讯录补一次。失败静默,不影响登录。
+    if not user.email:
+        user_service.sync_profiles_from_feishu([user])
+
+    # ⚠️ 顺序:提权按邮箱匹配 BOOTSTRAP_ADMINS,必须在上面补完邮箱之后 ——
+    # 否则「配置里写邮箱」对首次登录的人永远不生效(且失败完全静默)。
+    # tests/test_user_email.py::test_login_promotes_by_email_via_backfill 锁住这个顺序。
     _maybe_promote(user, _bootstrap_admins())  # 引导管理员:命中名单自动提升
 
     user.last_login_at = datetime.now(timezone.utc)  # 标记已登录 → 才会出现在用户管理
