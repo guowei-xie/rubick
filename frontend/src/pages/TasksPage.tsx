@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Checkbox, Empty, Modal, Space, Tooltip } from "antd";
+import { Button, Card, Checkbox, Empty, Modal, Select, Space, Tooltip } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { archiveTemplate, listTasks, publishTemplate } from "../api";
-import { useAuth } from "../auth";
+import { hasTeam, isManager as isManagerRole, isPlatformAdmin, useAuth } from "../auth";
 import TaskEditor from "../components/TaskEditor";
 import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
@@ -44,10 +44,33 @@ function StatChip({
   );
 }
 
+/** 空态文案。早返回而不是层层三元:每加一个筛选项就多一层缩进,读的人得数括号。 */
+function emptyTextFor({
+  rawQ,
+  noTeamYet,
+  teamFilter,
+  mineOnly,
+  showRecycle,
+}: {
+  rawQ: string | null;
+  noTeamYet: boolean;
+  teamFilter: string | null;
+  mineOnly: boolean;
+  showRecycle: boolean;
+}): string {
+  if (rawQ?.trim()) return `没有匹配「${rawQ}」的任务`;
+  if (noTeamYet) return "你还不属于任何团队 —— 请联系平台管理员把你加入团队后才能新建任务";
+  if (teamFilter) return "该团队下暂无任务";
+  if (mineOnly) return `${showRecycle ? "回收站里" : ""}没有你创建的任务`;
+  return showRecycle ? "回收站为空" : "暂无任务";
+}
+
 export default function TasksPage() {
   const { user } = useAuth();
-  // 管理者 = 管理员 / 开发者(与后端 permission_service.is_manager 同一口径):建任务、回收站、只看我的
-  const isManager = user?.role === "admin" || user?.role === "developer";
+  // 管理者 = 管理员 / 开发者(与后端 permission_service.can_author 同一口径):
+  // 能进编辑器、看回收站、用「只看我的」。注意它**不**回答「能不能动某个任务」——
+  // 那一律读服务端算好的 task.can_manage,前端不自己算团队规则。
+  const isManager = isManagerRole(user);
 
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,6 +101,14 @@ export default function TasksPage() {
   const toggleMine = () => {
     if (mineOnly) sp.delete("mine");
     else sp.set("mine", "1");
+    setSp(sp, { replace: true });
+  };
+  // 团队筛选(?team=<id>):与 ?q= / ?status= / ?recycle= / ?mine= 同一套约定,纯客户端过滤。
+  // 服务端已按团队收窄过一遍,这里只是在「我看得到的那些」里再挑一个团队看。
+  const teamFilter = sp.get("team");
+  const setTeamFilter = (v: string | null) => {
+    if (v) sp.set("team", v);
+    else sp.delete("team");
     setSp(sp, { replace: true });
   };
 
@@ -119,16 +150,27 @@ export default function TasksPage() {
   // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感)。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
   const q = (sp.get("q") ?? "").trim().toLowerCase();
-  // 「只看我的」先于状态筛选与统计生效:顶部计数与卡片同源,勾选后数字不会自相矛盾
-  const scoped = useMemo(
-    () => (mineOnly ? tasks.filter((t) => t.author_id === user?.id) : tasks),
-    [tasks, mineOnly, user?.id]
-  );
+  // 「团队筛选」与「只看我的」都先于状态筛选与统计生效:顶部计数与卡片同源,
+  // 筛选后数字不会自相矛盾(这是既有约定,新增的团队筛选必须并进同一层)
+  const scoped = useMemo(() => {
+    let rows = tasks;
+    if (teamFilter) rows = rows.filter((t) => String(t.team_id) === teamFilter);
+    if (mineOnly) rows = rows.filter((t) => t.author_id === user?.id);
+    return rows;
+  }, [tasks, teamFilter, mineOnly, user?.id]);
+
+  // 团队下拉只在「看得到的任务跨越多个团队」时才出现 —— 单团队开发者不该被无意义的下拉打扰
+  const teamChoices = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const t of tasks) if (t.team_id) m.set(t.team_id, t.team_name || `团队#${t.team_id}`);
+    return [...m].map(([value, label]) => ({ value: String(value), label }));
+  }, [tasks]);
   const filtered = useMemo(() => {
     const matchQ = (t: any) => {
       if (!q) return true;
       if ((t.name || "").toLowerCase().includes(q)) return true;
       if ((t.author_name || "").toLowerCase().includes(q)) return true;
+      if ((t.team_name || "").toLowerCase().includes(q)) return true;
       return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
     };
     return scoped.filter((t) =>
@@ -159,14 +201,17 @@ export default function TasksPage() {
     { key: null, label: "总数", n: summary.total, tint: "#eef0f7" },
   ];
 
-  // 空态文案:搜索无结果优先,其次区分「只看我的」与回收站
-  const emptyText = q
-    ? `没有匹配「${sp.get("q")}」的任务`
-    : mineOnly
-      ? `${showRecycle ? "回收站里" : ""}没有你创建的任务`
-      : showRecycle
-        ? "回收站为空"
-        : "暂无任务";
+  // 「开发者但没有团队」= 建不了任务。平台管理员不受团队约束(后端
+  // require_can_create_in_team 对他放行、编辑器也会列出全部团队),故不算在内 ——
+  // 否则一个不入队的管理员会看到灰按钮和一句不适用的提示。
+  const noTeamYet = isManager && !isPlatformAdmin(user) && !hasTeam(user);
+  const emptyText = emptyTextFor({
+    rawQ: sp.get("q"),
+    noTeamYet,
+    teamFilter,
+    mineOnly,
+    showRecycle,
+  });
 
   const handlers: TaskCardHandlers = {
     onRun: setRunTarget,
@@ -203,6 +248,19 @@ export default function TasksPage() {
               ))}
             </Space>
           )}
+          {/* 团队下拉只在看得到的任务跨越多个团队时出现:单团队开发者不需要它 */}
+          {isManager && teamChoices.length > 1 && (
+            <Select
+              variant="borderless"
+              allowClear
+              size="small"
+              placeholder="全部团队"
+              style={{ minWidth: 130, fontWeight: 400 }}
+              value={teamFilter ?? undefined}
+              onChange={(v) => setTeamFilter(v ?? null)}
+              options={teamChoices}
+            />
+          )}
           {isManager && (
             <Checkbox
               checked={mineOnly}
@@ -227,9 +285,23 @@ export default function TasksPage() {
               />
             </Tooltip>
             {!showRecycle && (
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditorId(null)}>
-                新建任务
-              </Button>
+              // 需求 4 的 UI 兑现:没有团队就建不了任务(后端 require_can_create_in_team 也会拦)
+              <Tooltip
+                title={
+                  noTeamYet
+                    ? "你还不属于任何团队,请联系平台管理员把你加入团队后再建任务"
+                    : undefined
+                }
+              >
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  disabled={noTeamYet}
+                  onClick={() => setEditorId(null)}
+                >
+                  新建任务
+                </Button>
+              </Tooltip>
             )}
           </Space>
         )

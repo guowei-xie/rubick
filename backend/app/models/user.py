@@ -14,7 +14,18 @@ from app.models.mixins import TimestampMixin
 # 开发者近似管理员但不含这三块治理;普通用户只填参取数。
 ROLE_USER = "user"          # 普通用户(业务使用者)
 ROLE_ADMIN = "admin"        # 管理员(含 SQL 编写与上线职责)
-ROLE_DEVELOPER = "developer"  # 开发者:近似管理员,不含 用户角色赋权/数据源管理/审计
+ROLE_DEVELOPER = "developer"  # 开发者:只在自己所属团队内取值(见 services/permission_service)
+
+
+def is_platform_admin(user: "User") -> bool:
+    """平台管理员:不受团队约束,可见且可编辑所有团队的所有任务。
+
+    **唯一的「全通」来源**。放在角色常量旁边(而不是 permission_service)是因为它只是一条
+    对 role 的判断,不依赖任何服务层 —— 搁在上层会逼着 team_service / credential_service
+    为这一个谓词做延迟导入,把真实的依赖图藏起来。permission_service 会转出它,
+    「全通判定只表述一次」的口径不变。
+    """
+    return user.role == ROLE_ADMIN
 
 
 class User(Base, TimestampMixin):

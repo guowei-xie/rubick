@@ -59,6 +59,14 @@ class ParamDef(BaseModel):
         return data
 
 
+class MyTeamOut(BaseModel):
+    """我所属的一个团队(带「我在其中是不是团队管理员」)。"""
+
+    id: int
+    name: str
+    is_team_admin: bool = False
+
+
 class UserOut(BaseModel):
     id: int
     name: str
@@ -66,6 +74,11 @@ class UserOut(BaseModel):
     avatar: str | None = None
     role: str
     last_login_at: datetime | None = None
+    # 我所属的团队。放在 /auth/me 里,前端**所有**团队门禁(导航、新建任务按钮、
+    # 编辑器的团队下拉)就都不必额外发请求。
+    # 刻意**不**把「团队账号就绪没」也塞进来:那会让每次刷页都扫一遍凭证表,
+    # 而只有任务编辑器需要它 —— 走 GET /credentials/my-teams。
+    teams: list[MyTeamOut] = []
 
     class Config:
         from_attributes = True

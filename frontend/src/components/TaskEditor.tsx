@@ -2,20 +2,26 @@ import { useEffect, useState } from "react";
 import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Segmented, Select, Space, Tag, Typography } from "antd";
 import {
   createTemplate,
+  TeamCredentialStatus,
   EnumSample,
   errMsg,
   getTemplate,
   listDatasources,
+  listTeams,
+  myTeamCredentials,
   ParamDef,
   previewSql,
   runEnumSql,
   testRun,
+  transferTaskTeam,
   updateTemplate,
+  withBase,
 } from "../api";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import SqlHighlightArea from "./SqlHighlightArea";
 import { PasteListButton } from "./ParamForm";
+import { isPlatformAdmin, isTeamAdminOf, myTeams, useAuth } from "../auth";
 import { isListVar, parseVariables } from "../sqlParams";
 
 /** 把一行变量配置转成发给后端的最小 def(name + kind + value_type)。kind 由 SQL 判定,
@@ -35,6 +41,7 @@ export default function TaskEditor({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { user } = useAuth();
   const [datasources, setDatasources] = useState<any[]>([]);
   const [preview, setPreview] = useState<any>(null);
   const [testing, setTesting] = useState(false);
@@ -47,12 +54,58 @@ export default function TaskEditor({
   const [showSql, setShowSql] = useState(false);
   const [previewSqlText, setPreviewSqlText] = useState<string | null>(null); // SQL 预览浮窗内容
   const [activeKeys, setActiveKeys] = useState<string[]>([]); // 展开的变量卡(默认全部收起)
+  // 我所在各团队 × 各数据源的账号就绪态:任务用**所属团队**的账号取数,
+  // 选完团队与数据源要当场告诉他配没配 —— 而不是等点上线才被卡点拦下。
+  // 这份数据**不含库用户名**(半机密,后端只对团队管理员返回),故 UI 也不展示账号名。
+  const [teamCredentials, setTeamCredentials] = useState<TeamCredentialStatus[]>([]);
+  // 编辑已有任务时进来的原团队。转移团队是独立的治理动作(独立端点 + 独立审计码 +
+  // 连带撤销原团队的编辑权),PUT /templates/{id} 刻意不接受 team_id —— 故保存时分开发。
+  const [originalTeamId, setOriginalTeamId] = useState<number | null>(null);
   const [form] = Form.useForm();
   const sqlWatch = Form.useWatch("sql_text", form);
+  const dsWatch = Form.useWatch("datasource_id", form);
+  const teamWatch = Form.useWatch("team_id", form);
+  const teamCred = teamCredentials.find(
+    (c) => c.team_id === teamWatch && c.datasource_id === dsWatch
+  );
+  // 平台管理员不受团队约束,可为任意团队建任务;开发者只能选自己所属的。
+  // 团队清单直接来自 /auth/me(user.teams),不额外请求;平台管理员另外拉一次全量。
+  const [allTeams, setAllTeams] = useState<{ id: number; name: string }[]>([]);
+  const teamOptions = (isPlatformAdmin(user) ? allTeams : myTeams(user)).map((t) => ({
+    value: t.id,
+    label: t.name,
+  }));
+  // 名字从下拉选项里取(而不是只从 user.teams):平台管理员选的团队他自己可能并不属于
+  const teamLabel = teamOptions.find((o) => o.value === teamWatch)?.label ?? teamCred?.team_name;
+  // 选完团队 + 数据源就当场提示账号就绪没 —— 别等点上线才被卡点拦下。
+  // 刻意不显示库用户名:它是半机密(Hive auth=NONE 下就是完整凭证),只在团队管理员的配置页可见。
+  const credHint =
+    !teamWatch || !teamCred ? undefined : !teamCred.verified ? (
+      <span style={{ color: "#d46b08" }}>
+        团队《{teamLabel}》
+        {teamCred.configured ? "在该数据源上的取数账号还没测通" : "还没配置该数据源的取数账号"}
+        ,任务将无法上线 ——{" "}
+        {isTeamAdminOf(user, teamWatch) ? (
+          <a
+            href={withBase(`/teams/${teamWatch}?tab=credentials`)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            去配置
+          </a>
+        ) : (
+          "请联系该团队的团队管理员"
+        )}
+      </span>
+    ) : (
+      <span style={{ color: "#8c8c8c" }}>取数将使用团队《{teamLabel}》的账号(已测通)</span>
+    );
 
   useEffect(() => {
     if (!open) return;
     listDatasources().then(setDatasources);
+    myTeamCredentials().then(setTeamCredentials);
+    if (isPlatformAdmin(user)) listTeams().then(setAllTeams);
     setPreview(null);
     setEnumSample({});
     setEnumEnabled({});
@@ -72,18 +125,23 @@ export default function TaskEditor({
         form.setFieldsValue({
           name: d.name,
           description: d.description,
+          team_id: d.team_id,
           datasource_id: d.datasource_id,
           timeout_seconds: d.timeout_seconds,
           sql_text: v?.sql_text,
           params,
         });
+        setOriginalTeamId(d.team_id ?? null);
         setActiveKeys([]); // 变量卡默认全部收起
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ params: [] });
+      const mine = myTeams(user);
+      // 只属于一个团队时(最常见)直接选上,省一次点击
+      form.setFieldsValue({ params: [], team_id: mine.length === 1 ? mine[0].id : undefined });
       setActiveKeys([]);
       setEditStatus(null);
+      setOriginalTeamId(null);
     }
   }, [open, editingId]);
 
@@ -104,13 +162,15 @@ export default function TaskEditor({
 
   // 作者测试该变量的「枚举值获取 SQL」是否能跑、返回多少候选
   const testEnumSql = async (fieldIndex: number, varName: string) => {
+    const team_id = form.getFieldValue("team_id");
     const datasource_id = form.getFieldValue("datasource_id");
     const sql = form.getFieldValue(["params", fieldIndex, "enum_sql"]);
+    if (!team_id) return message.warning("请先选择所属团队");
     if (!datasource_id) return message.warning("请先选择数据源");
     if (!sql) return message.warning("请先填写枚举值获取 SQL");
     setEnumSqlTesting(varName);
     try {
-      const res = await runEnumSql({ datasource_id, sql });
+      const res = await runEnumSql({ team_id, datasource_id, sql });
       // 连测试时用的 SQL 一起记:保存时后端要校验它与最终落库的 enum_sql 一致才采纳
       setEnumSample((s) => ({ ...s, [varName]: { ...res, source_sql: sql } }));
       // 落库这次测试的获取耗时,业务填参侧作参考展示
@@ -167,6 +227,7 @@ export default function TaskEditor({
   const doTestRun = async () => {
     // 试跑只需数据源 + SQL,不强制整表校验(否则任务名等没填会静默不跑)
     const v = form.getFieldsValue(true);
+    if (!v.team_id) return message.warning("请先选择所属团队");
     if (!v.datasource_id) return message.warning("请先选择数据源");
     if (!v.sql_text) return message.warning("请先填写 SQL");
     const params: any[] = v.params || [];
@@ -186,6 +247,7 @@ export default function TaskEditor({
     const hide = message.loading("试跑中,可能要数十秒…", 0);
     try {
       const res = await testRun({
+        team_id: v.team_id,
         datasource_id: v.datasource_id,
         sql_text: v.sql_text,
         params: defs,
@@ -229,8 +291,14 @@ export default function TaskEditor({
     if (!payload) return;
     setSaving(true);
     try {
-      if (editingId) await updateTemplate(editingId, payload);
-      else await createTemplate(payload);
+      if (editingId) {
+        await updateTemplate(editingId, payload);
+        // 平台管理员在编辑器里改了「所属团队」⇒ 走转移团队端点。
+        // 不这么做的话那个下拉是个静默无效的控件(后端会丢掉 team_id)。
+        if (originalTeamId != null && payload.team_id !== originalTeamId) {
+          await transferTaskTeam(editingId, payload.team_id);
+        }
+      } else await createTemplate(payload);
       // 如实提示:编辑已上线任务会自动更新线上版本;新建为草稿
       message.success(
         !editingId
@@ -364,6 +432,11 @@ export default function TaskEditor({
       width={880}
       styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
       footer={[
+        // 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
+        // 「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
+        <Typography.Text key="note" type="secondary" style={{ float: "left", fontSize: 12 }}>
+          试跑与业务正式取数使用同一套团队账号 —— 试跑通过即代表上线后能跑
+        </Typography.Text>,
         <Button key="cancel" onClick={onClose}>取消</Button>,
         <Button key="preview" onClick={doPreviewSql}>SQL预览</Button>,
         <Button key="test" loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>,
@@ -378,7 +451,39 @@ export default function TaskEditor({
           <Form.Item name="name" label="任务名称" rules={[{ required: true }]}>
             <Input style={{ width: 300 }} />
           </Form.Item>
-          <Form.Item name="datasource_id" label="数据源" rules={[{ required: true }]}>
+          {/* 团队放在数据源**之前**:团队决定用哪套库账号,账号决定这个数据源跑不跑得动 */}
+          <Form.Item
+            name="team_id"
+            label="所属团队"
+            rules={[{ required: true, message: "请选择所属团队" }]}
+            tooltip="团队决定这个任务谁看得见,以及取数用哪套数据库账号"
+            extra={
+              editingId && !isPlatformAdmin(user) ? (
+                <span style={{ color: "#8c8c8c" }}>
+                  任务所属团队不可自行更改,需要转移请联系平台管理员
+                </span>
+              ) : editingId ? (
+                <span style={{ color: "#d46b08" }}>
+                  转移团队会同时改变任务的可见范围与取数账号
+                </span>
+              ) : undefined
+            }
+          >
+            <Select
+              style={{ width: 240 }}
+              // 编辑已有任务时只有平台管理员能改(转移团队是跨组织的治理动作)
+              disabled={!!editingId && !isPlatformAdmin(user)}
+              placeholder={teamOptions.length ? "选择团队" : "你还不属于任何团队"}
+              options={teamOptions}
+              notFoundContent="你还不属于任何团队,请联系平台管理员"
+            />
+          </Form.Item>
+          <Form.Item
+            name="datasource_id"
+            label="数据源"
+            rules={[{ required: true }]}
+            extra={credHint}
+          >
             <Select
               style={{ width: 240 }}
               options={datasources.map((d) => ({ value: d.id, label: `${d.name} (${d.engine})` }))}

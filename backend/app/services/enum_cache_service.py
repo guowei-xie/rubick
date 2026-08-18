@@ -22,7 +22,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.connectors import get_connector
+from app.connectors import Credential, get_connector
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, RubicError
 from app.core.sql_gateway import validate_readonly
@@ -31,6 +31,7 @@ from app.models.template import SqlTemplate, TemplateEnumValues
 from app.models.user import User
 from app.schemas.common import ParamDef
 from app.schemas.template import EnumSampleIn, SharedEnumValuesOut, ValueListOut
+from app.services import credential_service
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +39,17 @@ log = logging.getLogger(__name__)
 _MAX_SAMPLE_CHARS = 1_000_000
 
 
-def run_value_query(db: Session, datasource_id: int, sql: str) -> ValueListOut:
+def run_value_query(
+    db: Session, datasource_id: int, sql: str, credential: Credential
+) -> ValueListOut:
     """跑一段作者写的「枚举值获取 SQL」,取结果第一列的去重值,给业务填参做候选。
 
     注:超时用全局 QUERY_TIMEOUT_SECONDS,不套用任务级 timeout_seconds 也不套 Hive 的
     长超时 —— 这是个用户点了按钮就在等的前台请求,不能让它占着请求线程跑一小时。
+
+    credential 由调用方解析后传入且必填(本函数只管跑一列值,不替谁决定用哪个身份,
+    也不给一个「忘了传就用公共账号」的缺省值)。**用谁的账号**这条规则住在
+    services/credential_service —— 这里不复述,免得两处漂移。
     """
     ds = db.get(DataSource, datasource_id)
     if ds is None:
@@ -50,7 +57,7 @@ def run_value_query(db: Session, datasource_id: int, sql: str) -> ValueListOut:
     if not (sql or "").strip():
         raise RubicError("未配置枚举值获取 SQL")
     validate_readonly(sql, ds.engine)
-    connector = get_connector(ds)
+    connector = get_connector(ds, credential)
     try:
         result = connector.execute(
             sql, {}, timeout_seconds=settings.QUERY_TIMEOUT_SECONDS,
@@ -59,7 +66,11 @@ def run_value_query(db: Session, datasource_id: int, sql: str) -> ValueListOut:
     except RubicError:
         raise
     except Exception as e:  # noqa: BLE001
-        raise RubicError(f"获取枚举值失败:{str(e)[:400]}") from e
+        # 与 query_service / template_service 同一口径:面向用户的文案要抹掉团队库账号名。
+        # 业务用户点「更新枚举值」也会走到这里,而他根本不属于这个团队。
+        raise RubicError(
+            f"获取枚举值失败:{credential_service.redact(str(e), credential)[:400]}"
+        ) from e
     values: list[str] = []
     seen: set[str] = set()
     for row in result.rows:
@@ -136,9 +147,13 @@ def refresh(db: Session, tmpl: SqlTemplate, pdef: dict, user: User) -> SharedEnu
     ):
         return _out(db, row, reused=True)
 
+    # 跑的是任务自带的 enum_sql,数据边界应与运行该任务一致 ⇒ 用**任务所属团队**的账号,
+    # 而不是点按钮那位业务用户的(他根本不是团队成员,也没有库账号)
+    credential = credential_service.for_template(db, tmpl)
     saved = upsert(
         db, template_id=tmpl.id, variable=variable, datasource_id=tmpl.datasource_id,
-        enum_sql=enum_sql, result=run_value_query(db, tmpl.datasource_id, enum_sql),
+        enum_sql=enum_sql,
+        result=run_value_query(db, tmpl.datasource_id, enum_sql, credential),
         user_id=user.id, row=row,
     )
     db.commit()

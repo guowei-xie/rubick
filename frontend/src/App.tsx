@@ -1,9 +1,13 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Spin } from "antd";
-import { useAuth } from "./auth";
+import { MANAGER_ROLES, useAuth } from "./auth";
 import AppLayout from "./components/AppLayout";
 import LoginPage from "./pages/LoginPage";
 import TasksPage from "./pages/TasksPage";
+import MyTeamsPage from "./pages/MyTeamsPage";
+import TeamPage from "./pages/TeamPage";
+import AdminCredentialsPage from "./pages/admin/CredentialsPage";
+import AdminTeamsPage from "./pages/admin/TeamsPage";
 import DatasourcesPage from "./pages/admin/DatasourcesPage";
 import AuditPage from "./pages/admin/AuditPage";
 import UsersPage from "./pages/admin/UsersPage";
@@ -22,6 +26,32 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/auth/callback" element={<LoginPage />} />
       <Route path="/tasks" element={<Protected><TasksPage /></Protected>} />
+      {/* 团队:只有会建任务的角色才需要(普通用户不入团队,他们拿的是任务级授权)。
+          页面内还会再按「是不是本团队成员/团队管理员」收窄可见与可写。 */}
+      <Route
+        path="/teams"
+        element={
+          <Protected roles={[...MANAGER_ROLES]}>
+            <MyTeamsPage />
+          </Protected>
+        }
+      />
+      <Route
+        path="/teams/:teamId"
+        element={
+          <Protected roles={[...MANAGER_ROLES]}>
+            <TeamPage />
+          </Protected>
+        }
+      />
+      <Route
+        path="/admin/teams"
+        element={<Protected roles={["admin"]}><AdminTeamsPage /></Protected>}
+      />
+      <Route
+        path="/admin/credentials"
+        element={<Protected roles={["admin"]}><AdminCredentialsPage /></Protected>}
+      />
       <Route
         path="/admin/users"
         element={<Protected roles={["admin"]}><UsersPage /></Protected>}

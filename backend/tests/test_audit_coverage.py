@@ -50,10 +50,40 @@ AUDITED: dict[str, frozenset[str]] = {
     ),
     "POST /api/permissions": frozenset({A.ACTION_PERMISSION_GRANT}),
     "DELETE /api/permissions/{perm_id}": frozenset({A.ACTION_PERMISSION_REVOKE}),
+    # 指定任务的编辑权:团队内点对点授权,与业务侧 view/run/download 分开记
+    "POST /api/tasks/{template_id}/editors": frozenset({A.ACTION_TASK_EDIT_GRANT}),
+    "DELETE /api/tasks/{template_id}/editors/{user_id}": frozenset(
+        {A.ACTION_TASK_EDIT_REVOKE}
+    ),
+    # 转移任务所属团队:同时改变可见范围与取数身份,治理上是大事
+    "PUT /api/tasks/{template_id}/team": frozenset({A.ACTION_TASK_TEAM_TRANSFER}),
     "POST /api/admin/users/{user_id}/role": frozenset({A.ACTION_USER_ROLE_CHANGE}),
     "POST /api/datasources": frozenset({A.ACTION_DATASOURCE_CREATE}),
     "PUT /api/datasources/{ds_id}": frozenset({A.ACTION_DATASOURCE_UPDATE}),
     "DELETE /api/datasources/{ds_id}": frozenset({A.ACTION_DATASOURCE_DELETE}),
+    # 团队治理:成员变更等于一次数据授权(团队账号是共享的),必须留痕
+    "POST /api/teams": frozenset({A.ACTION_TEAM_CREATE}),
+    "PUT /api/teams/{team_id}": frozenset({A.ACTION_TEAM_UPDATE}),
+    "DELETE /api/teams/{team_id}": frozenset({A.ACTION_TEAM_DELETE}),
+    "POST /api/teams/{team_id}/members": frozenset({A.ACTION_TEAM_MEMBER_ADD}),
+    "DELETE /api/teams/{team_id}/members/{user_id}": frozenset(
+        {A.ACTION_TEAM_MEMBER_REMOVE}
+    ),
+    "POST /api/teams/{team_id}/members/{user_id}/admin": frozenset(
+        {A.ACTION_TEAM_ADMIN_GRANT}
+    ),
+    "DELETE /api/teams/{team_id}/members/{user_id}/admin": frozenset(
+        {A.ACTION_TEAM_ADMIN_REVOKE}
+    ),
+    # 团队取数账号:凭证决定该团队能取到哪些数据,增改删与连通性测试全部留痕。
+    # 测试也审计(不豁免):它是上线卡点的凭据,「一直测不通」本身就是要能查的事实。
+    "PUT /api/credentials/teams/{team_id}/{ds_id}": frozenset({A.ACTION_CREDENTIAL_UPSERT}),
+    "POST /api/credentials/teams/{team_id}/{ds_id}/test": frozenset(
+        {A.ACTION_CREDENTIAL_VERIFY}
+    ),
+    "DELETE /api/credentials/teams/{team_id}/{ds_id}": frozenset(
+        {A.ACTION_CREDENTIAL_DELETE}
+    ),
 }
 
 # 免审计的写接口 → 必须写明豁免理由(空理由视为未表态)
@@ -152,19 +182,27 @@ def ds(db):
     return d
 
 
-def _make_task(db, admin, ds, name="审计用任务") -> SqlTemplate:
+@pytest.fixture
+def team(db, ds, team_factory, team_credential):
+    """任务必属团队;上线卡点要求团队账号已测通,故一并备好。"""
+    t = team_factory("audit-team", [])
+    team_credential(t, ds, username="audit_team_acct")
+    return t
+
+
+def _make_task(db, admin, ds, team, name="审计用任务") -> SqlTemplate:
     return create_template(
         TemplateCreateIn(
-            name=name, description="d", tags=[], datasource_id=ds.id,
+            name=name, description="d", tags=[], team_id=team.id, datasource_id=ds.id,
             sql_text="SELECT 1", params=[],
         ),
         db, admin, ip=None,
     )
 
 
-def test_task_create_is_audited(db, admin, ds):
+def test_task_create_is_audited(db, admin, ds, team):
     since = _max_audit_id(db)
-    tmpl = _make_task(db, admin, ds, name="新建审计任务")
+    tmpl = _make_task(db, admin, ds, team, name="新建审计任务")
     row = _one_new_row(db, since)
     assert row.action == A.ACTION_TASK_CREATE
     assert row.resource_type == A.RESOURCE_TEMPLATE and row.resource_id == str(tmpl.id)
@@ -174,8 +212,8 @@ def test_task_create_is_audited(db, admin, ds):
     assert row.detail["sql_text"] == "SELECT 1"
 
 
-def test_task_update_records_before_and_after(db, admin, ds):
-    tmpl = _make_task(db, admin, ds, name="改名前")
+def test_task_update_records_before_and_after(db, admin, ds, team):
+    tmpl = _make_task(db, admin, ds, team, name="改名前")
     since = _max_audit_id(db)
     update_template(
         tmpl.id,
@@ -189,8 +227,8 @@ def test_task_update_records_before_and_after(db, admin, ds):
     assert row.detail["version_no"] == 2
 
 
-def test_publish_then_archive_then_restore_are_distinct_actions(db, admin, ds):
-    tmpl = _make_task(db, admin, ds, name="生命周期任务")
+def test_publish_then_archive_then_restore_are_distinct_actions(db, admin, ds, team):
+    tmpl = _make_task(db, admin, ds, team, name="生命周期任务")
 
     since = _max_audit_id(db)
     publish(tmpl.id, PublishIn(note="首次上线"), db, admin, ip=None)
@@ -213,8 +251,8 @@ def test_publish_then_archive_then_restore_are_distinct_actions(db, admin, ds):
     assert row.detail["from_status"] == STATUS_ARCHIVED
 
 
-def test_permission_grant_and_revoke_are_audited(db, admin, ds):
-    tmpl = _make_task(db, admin, ds, name="授权用任务")
+def test_permission_grant_and_revoke_are_audited(db, admin, ds, team):
+    tmpl = _make_task(db, admin, ds, team, name="授权用任务")
     grantee = db.get(User, 8050)
     if grantee is None:
         grantee = User(id=8050, feishu_open_id="ou_audit_grantee", name="被授权人", role=ROLE_USER)

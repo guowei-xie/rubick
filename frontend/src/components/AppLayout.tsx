@@ -3,13 +3,16 @@ import {
   UserOutlined,
   AppstoreOutlined,
   TeamOutlined,
+  IdcardOutlined,
+  UsergroupAddOutlined,
   DatabaseOutlined,
   AuditOutlined,
   SearchOutlined,
   LogoutOutlined,
+  KeyOutlined,
 } from "@ant-design/icons";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useAuth } from "../auth";
+import { isManager, useAuth } from "../auth";
 import NotificationBell from "./NotificationBell";
 import { ROLE } from "./StatusTag";
 
@@ -23,13 +26,23 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const loc = useLocation();
   const [sp, setSp] = useSearchParams();
 
+  // 管理者(开发者/管理员)= 能建任务的角色。团队入口只给他们:普通用户不入团队,
+  // 他们拿的是任务级授权。
+  const manager = isManager(user);
+
   const items: NavItem[] = [
     { key: "/tasks", label: "任务列表", icon: <AppstoreOutlined /> },
   ];
+  // 侧边栏第一个「管理者可见但非管理员专属」的入口。团队页是一等公民(任务归属、
+  // 团队账号、编辑权都在那儿),故上移到侧边栏而不是藏在头像下拉里。
+  if (manager) items.push({ key: "/teams", label: "我的团队", icon: <TeamOutlined /> });
   if (user?.role === "admin")
     items.push(
-      { key: "/admin/users", label: "用户管理", icon: <TeamOutlined /> },
+      // 用户管理做的是身份/角色,让 TeamOutlined 归给团队
+      { key: "/admin/users", label: "用户管理", icon: <IdcardOutlined /> },
+      { key: "/admin/teams", label: "团队管理", icon: <UsergroupAddOutlined /> },
       { key: "/admin/datasources", label: "数据源", icon: <DatabaseOutlined /> },
+      { key: "/admin/credentials", label: "取数账号", icon: <KeyOutlined /> },
       { key: "/admin/audit", label: "审计", icon: <AuditOutlined /> }
     );
 
@@ -109,6 +122,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Dropdown
             menu={{
               items: [
+                // 「我的取数账号」已随个人取数账号功能下线;团队账号在左侧「我的团队」里
                 {
                   key: "logout",
                   label: "退出登录",

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_manager
+from app.api.deps import require_task_author
 from app.core.database import get_db
 from app.models.permission import Permission
 from app.models.user import User
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/lookup", tags=["lookup"])
 
 
 @router.get("/users")
-def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_manager)):
+def lookup_users(q: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_task_author)):
     q = (q or "").strip()
     if not q:
         # 空查询:只显示历史 —— 之前被授权过的人

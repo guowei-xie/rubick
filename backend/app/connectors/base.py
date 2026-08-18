@@ -22,6 +22,26 @@ class QueryResult:
         return len(self.rows)
 
 
+@dataclass(frozen=True)
+class Credential:
+    """连接目标库时使用的身份。
+
+    只表达「我是谁」,不含 host/port/database —— 开发者能换身份,换不了连哪个库。
+
+    owner_team_id 是这个身份归属的团队;None 表示数据源自带的**公共账号**
+    (仅剩管理员测数据源连通性一个用处)。它同时就是审计要记的那个事实
+    (见 QueryJob.run_as_team_id),所以取数链路不必再自己判断「这次算不算团队账号」。
+    """
+
+    username: str
+    password: str | None = None
+    owner_team_id: int | None = None
+
+    @property
+    def is_team_account(self) -> bool:
+        return self.owner_team_id is not None
+
+
 @dataclass
 class ConnectionConfig:
     host: str

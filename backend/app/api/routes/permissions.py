@@ -4,11 +4,16 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import client_ip, require_manager
+from app.api.deps import client_ip, require_task_author
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError
 from app.models.audit import ACTION_PERMISSION_GRANT, ACTION_PERMISSION_REVOKE
-from app.models.permission import Permission
+from app.models.permission import (
+    ACTION_EDIT,
+    BUSINESS_ACTIONS,
+    RESOURCE_TEMPLATE,
+    Permission,
+)
 from app.models.template import SqlTemplate
 from app.models.user import User
 from app.schemas.permission import GrantIn, PermissionOut
@@ -47,20 +52,29 @@ def list_permissions(
     resource_type: str | None = None,
     resource_id: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_manager),
+    user: User = Depends(require_task_author),
 ):
-    stmt = select(Permission).order_by(Permission.id.desc())
+    # 恒只列业务授权:任务编辑权(edit)是团队内治理动作,它出现在这个面向业务方的
+    # 授权列表里只会让人困惑,而且从这里能撤销就绕开了团队守卫与专用审计码。
+    stmt = (
+        select(Permission)
+        .where(Permission.action.in_(BUSINESS_ACTIONS))
+        .order_by(Permission.id.desc())
+    )
     if resource_type:
         stmt = stmt.where(Permission.resource_type == resource_type)
     if resource_id:
         stmt = stmt.where(Permission.resource_id == resource_id)
-    # 普通用户只能看自己作为作者的任务授权;管理者(管理员/开发者)看全部
-    if not permission_service.is_manager(user):
-        owned = [str(i) for i in permission_service.owned_template_ids(db, user)]
-        if not owned:
+    # 收窄到「我有编辑权的任务」:平台管理员看全部
+    manageable = permission_service.manageable_template_ids(
+        db, permission_service.team_scope(db, user)
+    )
+    if manageable is not None:
+        if not manageable:
             return []
         stmt = stmt.where(
-            Permission.resource_type == "template", Permission.resource_id.in_(owned)
+            Permission.resource_type == RESOURCE_TEMPLATE,
+            Permission.resource_id.in_([str(i) for i in manageable]),
         )
     return _enrich(db, list(db.scalars(stmt)))
 
@@ -68,14 +82,14 @@ def list_permissions(
 @router.post("", response_model=list[PermissionOut])
 def grant(
     data: GrantIn, db: Session = Depends(get_db),
-    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
+    user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
 ):
-    # 作者只能对自己维护的任务授权;管理者(管理员/开发者)任意
-    # (主体仅 user 由 GrantIn.subject_type=Literal 在入参层保证)
-    if data.resource_type != "template":
+    # 只能对「自己有编辑权的任务」授权(作者 / 该团队的团队管理员 / 被授予编辑权者 / 平台管理员)
+    # 主体仅 user、动作仅 view/run/download,均由 GrantIn 的 Literal 在入参层保证
+    if data.resource_type != RESOURCE_TEMPLATE:
         raise PermissionDeniedError("仅支持对任务授权")
-    if not permission_service.owns_template(db, user, data.resource_id):
-        raise PermissionDeniedError("只能对自己的任务授权")
+    if not permission_service.can_edit_template(db, user, data.resource_id):
+        raise PermissionDeniedError("只能对自己有编辑权的任务授权")
     # 主体解析(open_id → 授权时落库 vs 已知 subject_id)交给服务层,路由只做转发。
     created = permission_service.grant(
         db,
@@ -115,12 +129,20 @@ def grant(
 @router.delete("/{perm_id}")
 def revoke(
     perm_id: int, db: Session = Depends(get_db),
-    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
+    user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
 ):
     p = db.get(Permission, perm_id)
     if p:
-        if p.resource_type == "template" and not permission_service.owns_template(db, user, p.resource_id):
-            raise PermissionDeniedError("只能撤销自己任务的授权")
+        # 任务编辑权不从这里撤销:它有专用入口(/tasks/{id}/editors)、专用审计码与团队守卫。
+        # 允许从这里删会让一次「撤销编辑权」记成业务授权撤销,治理上查不出来。
+        if p.action == ACTION_EDIT:
+            raise PermissionDeniedError(
+                "任务编辑权请在该任务的「编辑人」里撤销(需要团队管理员权限)"
+            )
+        if p.resource_type == RESOURCE_TEMPLATE and not permission_service.can_edit_template(
+            db, user, p.resource_id
+        ):
+            raise PermissionDeniedError("只能撤销自己有编辑权的任务的授权")
         # delete+commit 之后属性就读不到了,必须先快照
         before = audit_service.snapshot(
             p, ("subject_type", "subject_id", "resource_type", "resource_id", "action")

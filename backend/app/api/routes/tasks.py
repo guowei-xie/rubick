@@ -1,40 +1,65 @@
-"""统一「任务列表」:任务(SqlTemplate)+ 按角色收窄 + 能力标记,以及任务的运行记录。"""
+"""统一「任务列表」:任务(SqlTemplate)+ 按团队收窄 + 能力标记,以及任务的运行记录、
+任务的「编辑人」与所属团队维护。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import client_ip, get_current_user
+from app.api.deps import client_ip, get_current_user, require_admin
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
-from app.models.audit import ACTION_TASK_ENUM_REFRESH
+from app.models.audit import (
+    ACTION_TASK_EDIT_GRANT,
+    ACTION_TASK_EDIT_REVOKE,
+    ACTION_TASK_ENUM_REFRESH,
+    ACTION_TASK_TEAM_TRANSFER,
+)
 from app.models.permission import ACTION_RUN, ACTION_VIEW, RESOURCE_TEMPLATE
 from app.models.query_job import QueryJob
-from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
+from app.models.template import SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.common import ParamDef
 from app.schemas.query import JobOut, TaskOut
+from app.schemas.team import EditorIn, TaskEditorOut, TaskTeamIn
 from app.schemas.template import EnumRefreshIn, SharedEnumValuesOut
-from app.services import audit_service, enum_cache_service, permission_service
+from app.services import (
+    audit_service,
+    credential_service,
+    enum_cache_service,
+    permission_service,
+    team_service,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+def _load(db: Session, template_id: int) -> SqlTemplate:
+    """取任务或 404。本文件所有按 id 取任务的入口都走它。"""
+    tmpl = db.get(SqlTemplate, template_id)
+    if tmpl is None:
+        raise NotFoundError("任务不存在")
+    return tmpl
+
+
 @router.get("", response_model=list[TaskOut])
 def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """管理者(管理员/开发者)看全部(彼此可见可编辑);普通用户只看被授权的已上线任务。"""
-    stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
-    if permission_service.is_manager(user):
-        rows = list(db.scalars(stmt))
-    else:
-        visible = permission_service.visible_template_ids(db, user) or set()
-        published_visible = and_(SqlTemplate.status == STATUS_PUBLISHED, SqlTemplate.id.in_(visible or {-1}))
-        rows = list(db.scalars(stmt.where(published_visible)))
+    """平台管理员看全部;开发者看**所属团队**的全部任务(含草稿/已下线);
+    普通用户只看被授权的已上线任务。
 
-    runnable = permission_service.action_template_ids(db, user, ACTION_RUN)  # None=管理员(全部)
+    可见性下推到 SQL(visible_condition),逐行的能力标记走内存里的 scope —— 落地页要对
+    几百行逐行判定,逐行查库必然 N+1(见 permission_service.TeamScope)。
+    """
+    scope = permission_service.team_scope(db, user)
+    stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
+    cond = permission_service.visible_condition(scope)
+    rows = list(db.scalars(stmt if cond is None else stmt.where(cond)))
+
     ids = [t.id for t in rows]
     authorized = permission_service.authorized_run_users(db, ids)  # 一次批量查
+    # 任务所属团队的取数账号是否就绪,一次批量算完(逐个查会 N+1)。
+    # 传已加载的行而不是 id —— 团队与数据源都在手上,不必让服务再查一遍
+    cred_ready = credential_service.ready_template_ids(db, rows)
     # 各任务最后一次运行时间(含试跑),一次批量聚合,避免 N+1
     last_runs: dict[int, object] = {}
     if ids:
@@ -46,22 +71,19 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
             last_runs[tid] = ts
     out: list[TaskOut] = []
     for t in rows:
-        can_manage = permission_service.is_template_owner(user, t)
-        can_run = bool(
-            t.status == STATUS_PUBLISHED
-            and t.published_version_id is not None
-            and (can_manage or runnable is None or t.id in runnable)
-        )
         out.append(
             TaskOut(
                 id=t.id, name=t.name, description=t.description,
                 status=t.status, datasource_id=t.datasource_id,
                 datasource_name=t.datasource_name, engine=t.engine,
                 author_id=t.author_id, author_name=t.author_name,
+                team_id=t.team_id, team_name=t.team_name,
                 published_version_id=t.published_version_id, created_at=t.created_at,
                 updated_at=t.updated_at, last_run_at=last_runs.get(t.id),
                 timeout_seconds=t.timeout_seconds,
-                can_manage=can_manage, can_run=can_run,
+                can_manage=permission_service.can_edit(scope, t),
+                can_run=permission_service.can_run(scope, t),
+                credential_ready=t.id in cred_ready,
                 authorized_users=authorized.get(t.id, []),
             )
         )
@@ -72,15 +94,17 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
 def task_run_records(
     template_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """任务的运行记录。管理者(管理员/开发者)与作者看全部;其他人只看自己跑过的。"""
-    tmpl = db.get(SqlTemplate, template_id)
-    if tmpl is None:
-        raise NotFoundError("任务不存在")
+    """任务的运行记录。**团队内部人**(同团队成员 / 平台管理员)看全部;
+    被授权的业务使用者只看自己跑过的。"""
+    tmpl = _load(db, template_id)
+    scope = permission_service.team_scope(db, user)
+    if not permission_service.can_view(scope, tmpl):
+        raise PermissionDeniedError("无权查看该任务")
     stmt = (
         select(QueryJob).where(QueryJob.template_id == template_id)
         .order_by(QueryJob.id.desc()).limit(200)
     )
-    if not permission_service.is_template_owner(user, tmpl):
+    if not permission_service.is_insider(scope, tmpl):
         stmt = stmt.where(QueryJob.user_id == user.id)
     return list(db.scalars(stmt))
 
@@ -89,10 +113,8 @@ def _published_param(
     db: Session, user: User, template_id: int, variable: str, *, action: str
 ) -> tuple[SqlTemplate, dict]:
     """读/更新共享候选值的共同前置:任务 → 权限 → 已上线版本 → 该变量的定义。"""
-    tmpl = db.get(SqlTemplate, template_id)
-    if tmpl is None:
-        raise NotFoundError("任务不存在")
-    # can() 内部已给管理者与作者放行,不必再叠一次 owner 判定
+    tmpl = _load(db, template_id)
+    # can() 内部已给平台管理员与团队内部人放行,不必再叠一次判定
     if not permission_service.can(db, user, action, RESOURCE_TEMPLATE, template_id):
         raise PermissionDeniedError("无权访问该任务")
     ver = db.get(TemplateVersion, tmpl.published_version_id) if tmpl.published_version_id else None
@@ -151,3 +173,114 @@ def refresh_task_enum_values(
         ip=ip,
     )
     return out
+
+
+# ---------------------------------------------------------------- 任务编辑权(团队内)
+# 刻意不走 /api/permissions:那个入口面向业务使用者(view/run/download,从飞书通讯录选人),
+# 这里面向团队成员(edit,只能从本团队成员里选)。合成一个入口会让业务授权变成一条提权后门。
+
+
+@router.get("/{template_id}/editors", response_model=list[TaskEditorOut])
+def list_task_editors(
+    template_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """该任务的「编辑人」名单。含隐式(作者 / 团队管理员,不可撤销)与显式授权两类,
+    每项带 source 供 UI 区分。"""
+    tmpl = _load(db, template_id)
+    if not permission_service.can_view(permission_service.team_scope(db, user), tmpl):
+        raise PermissionDeniedError("无权查看该任务")
+    return permission_service.editors_of(db, tmpl)
+
+
+@router.post("/{template_id}/editors")
+def grant_task_editor(
+    template_id: int,
+    data: EditorIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    ip: str | None = Depends(client_ip),
+):
+    """把某任务的编辑权授予一名**本团队成员**。仅团队管理员或平台管理员可操作。"""
+    tmpl = _load(db, template_id)
+    team = team_service.require_team_admin_of_template(db, user, tmpl)
+    target = db.get(User, data.user_id)
+    if target is None:
+        raise NotFoundError("用户不存在")
+    if not team_service.is_member(db, target, team.id):
+        raise RubicError(f"{target.name} 不是团队《{team.name}》的成员,不能授予编辑权")
+    created = permission_service.grant_edit(
+        db, template_id=tmpl.id, user_id=target.id, granted_by=user.id
+    )
+    audit_service.log(
+        db, user=user, action=ACTION_TASK_EDIT_GRANT,
+        resource_type=RESOURCE_TEMPLATE, resource_id=tmpl.id, resource_name=tmpl.name,
+        detail={
+            "team_id": team.id, "team_name": team.name,
+            "target_user_id": target.id, "target_user_name": target.name,
+            # grant 幂等:重复授予不新建行。false 即说明这次是重复操作
+            "created": created,
+        },
+        ip=ip,
+    )
+    return {"ok": True, "created": created}
+
+
+@router.delete("/{template_id}/editors/{user_id}")
+def revoke_task_editor(
+    template_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    ip: str | None = Depends(client_ip),
+):
+    tmpl = _load(db, template_id)
+    team = team_service.require_team_admin_of_template(db, user, tmpl)
+    target = db.get(User, user_id)
+    removed = permission_service.revoke_edit(db, template_id=tmpl.id, user_id=user_id)
+    if not removed:
+        # 什么都没发生就不记日志,否则留下一条误导性的「撤销」
+        return {"ok": True, "removed": False}
+    audit_service.log(
+        db, user=user, action=ACTION_TASK_EDIT_REVOKE,
+        resource_type=RESOURCE_TEMPLATE, resource_id=tmpl.id, resource_name=tmpl.name,
+        detail={
+            "team_id": team.id, "team_name": team.name,
+            "target_user_id": user_id,
+            "target_user_name": target.name if target else None,
+        },
+        ip=ip,
+    )
+    return {"ok": True, "removed": True}
+
+
+# ---------------------------------------------------------------- 转移所属团队
+
+
+@router.put("/{template_id}/team")
+def transfer_task_team(
+    template_id: int,
+    data: TaskTeamIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+    ip: str | None = Depends(client_ip),
+):
+    """把任务转移到另一个团队。**仅平台管理员** —— 这同时改变任务的可见范围与取数身份,
+    是一次跨组织的治理动作,不是任务编辑的一部分(故也不从 PUT /templates/{id} 进)。
+    """
+    tmpl = _load(db, template_id)
+    target = team_service.get_team(db, data.team_id)
+    from_name = tmpl.team_name
+    # 撤销原团队的编辑权授权由 transfer_template 一并完成(规则只在那里写一次)
+    from_id, revoked = team_service.transfer_template(db, tmpl, target)
+    audit_service.log(
+        db, user=user, action=ACTION_TASK_TEAM_TRANSFER,
+        resource_type=RESOURCE_TEMPLATE, resource_id=tmpl.id, resource_name=tmpl.name,
+        detail={
+            "from_team_id": from_id, "from_team_name": from_name,
+            "to_team_id": target.id, "to_team_name": target.name,
+            # 原团队里的「指定任务编辑权」随之失效:它们的前提(同团队)已不成立
+            "revoked_editor_user_ids": revoked,
+        },
+        ip=ip,
+    )
+    return {"ok": True, "team_id": target.id, "team_name": target.name}

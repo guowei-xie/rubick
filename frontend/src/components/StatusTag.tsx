@@ -24,6 +24,34 @@ export const ROLE: TagMap = {
   admin: { color: "red", label: "管理员" },
 };
 
+// 团队内的角色。团队页、团队管理页、我的团队页共用,免得几处各写一份「紫色 = 团队管理员」
+export const TEAM_ROLE: TagMap = {
+  member: { color: "default", label: "成员" },
+  team_admin: { color: "purple", label: "团队管理员" },
+};
+
+// 任务编辑权的来源。author / team_admin 是身份的推论(隐式,不可撤销),granted 才是授权行。
+// 三个值的标签、配色、说明都在这里定义一次 —— 面板的表格列与弹窗都读它。
+export const EDITOR_SOURCE: TagMap = {
+  author: { color: "default", label: "任务作者" },
+  team_admin: { color: "default", label: "团队管理员" },
+  granted: { color: "green", label: "已授予" },
+};
+
+// 编辑权来源的悬停说明(与 EDITOR_SOURCE 同键)
+export const EDITOR_SOURCE_HINT: Record<string, string> = {
+  author: "任务作者(天然可编辑,不可撤销)",
+  team_admin: "团队管理员(天然可编辑本团队全部任务,不可撤销)",
+  granted: "被授予了该任务的编辑权",
+};
+
+// 团队取数账号的三态。dot/tint 供任务卡片的告警胶囊复用(同 TEMPLATE_STATUS 的用法)
+export const CREDENTIAL_STATUS: TagMap = {
+  unconfigured: { color: "default", label: "未配置" },
+  unverified: { color: "orange", label: "已配置 · 未测通", dot: "#fa8c16", tint: "#fff2e8" },
+  verified: { color: "green", label: "已测通", dot: "#52c41a", tint: "#e8f6ec" },
+};
+
 export const NOTE_LEVEL: TagMap = {
   info: { color: "blue", label: "info" },
   success: { color: "green", label: "success" },

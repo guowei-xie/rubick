@@ -3,8 +3,9 @@ import {
   MoreOutlined,
   PlusOutlined,
   UserOutlined,
+  WarningOutlined,
 } from "@ant-design/icons";
-import { TEMPLATE_STATUS } from "./StatusTag";
+import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
 import { fmtTime } from "../format";
 
 const fmt = (t: string) => fmtTime(t, false);
@@ -113,6 +114,30 @@ export default function TaskCard({
           <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
             <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
           </Tooltip>
+          {/* 所属团队的取数账号没就绪 ⇒ 这任务跑不动。只给管得着的人看:
+              业务用户看一堆自己修不了的红字只会造成困扰(他们点运行时会拿到指名团队的报错) */}
+          {r.can_manage && r.credential_ready === false && (
+            <Tooltip
+              title={`团队${r.team_name ? `《${r.team_name}》` : ""}尚未配置该数据源的取数账号,或账号未通过连接测试 —— 该任务当前无法运行,请联系团队管理员`}
+            >
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 8px",
+                  borderRadius: 10,
+                  background: CREDENTIAL_STATUS.unverified.tint,
+                  color: CREDENTIAL_STATUS.unverified.dot,
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                <WarningOutlined />
+                缺取数账号
+              </span>
+            </Tooltip>
+          )}
         </div>
         {/* 用 span 包住 Dropdown 并 stopPropagation:菜单项虽 DOM 上在 portal,但在 React 树里仍是本卡子节点,
             合成事件会冒泡到卡片 onClick(取数),这里拦在卡片之前。 */}
@@ -184,6 +209,29 @@ export default function TaskCard({
             title={r.datasource_name}
           >
             {r.datasource_name}
+          </span>
+        )}
+        {/* 团队标签:跨团队互不可见之后,平台管理员(看全部)与多团队开发者都需要一眼分辨归属 */}
+        {r.team_name && (
+          <span
+            style={{
+              display: "inline-block",
+              maxWidth: "100%",
+              marginLeft: 6,
+              fontSize: 12,
+              fontWeight: 500,
+              color: "var(--ink-secondary)",
+              background: "var(--app-bg)",
+              borderRadius: 6,
+              padding: "2px 8px",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+              textOverflow: "ellipsis",
+              verticalAlign: "bottom",
+            }}
+            title={`所属团队:${r.team_name}`}
+          >
+            {r.team_name}
           </span>
         )}
       </div>

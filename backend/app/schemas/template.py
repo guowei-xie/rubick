@@ -43,6 +43,10 @@ class TemplateCreateIn(BaseModel):
     name: str
     description: str | None = None
     tags: list[str] = []
+    # 所属团队,**必填**:它决定任务的可见范围与取数身份(团队账号)。
+    # 开发者只能选自己所属的团队;平台管理员可选任意团队(见 permission_service
+    # .require_can_create_in_team)。「开发者必须先有团队才能建任务」就落在那里。
+    team_id: int
     datasource_id: int
     sql_text: str
     params: list[ParamDef] = []
@@ -54,7 +58,11 @@ class TemplateCreateIn(BaseModel):
 
 class TemplateUpdateIn(BaseModel):
     """更新会生成一个新版本。原任务已上线时新版本自动接替上线(见
-    template_service.add_version);草稿/已下线则维持原状态。"""
+    template_service.add_version);草稿/已下线则维持原状态。
+
+    刻意**不接受 team_id**:转移团队会同时改变可见范围与取数身份,是一次跨组织的治理动作,
+    只有平台管理员能做,走独立端点 PUT /tasks/{id}/team(独立审计码 + 连带撤销编辑权)。
+    """
 
     name: str | None = None
     description: str | None = None
@@ -74,6 +82,9 @@ class TestRunIn(BaseModel):
     以便在「运行记录」里预览/导出;不带则只返回样例行、不留痕。两种情况都不发通知。
     """
 
+    # 用哪个团队的取数账号试跑。**必填**:少了它就只能猜,而「猜」等于让人借任意团队的
+    # 账号跑任意 SQL。操作者必须是该团队成员(credential_service.for_team 会校验)。
+    team_id: int
     datasource_id: int
     sql_text: str
     params: list[ParamDef] = []
@@ -98,6 +109,7 @@ class PreviewSqlOut(BaseModel):
 class EnumSqlIn(BaseModel):
     """作者在任务编辑器里测试「枚举值获取 SQL」。"""
 
+    team_id: int  # 同 TestRunIn.team_id:用哪个团队的账号跑,必填且要校验成员资格
     datasource_id: int
     sql: str
 
@@ -123,6 +135,8 @@ class TemplateOut(BaseModel):
     description: str | None
     tags: list[str]
     datasource_id: int
+    team_id: int | None = None
+    team_name: str | None = None
     status: str
     author_id: int
     published_version_id: int | None

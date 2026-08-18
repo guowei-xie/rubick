@@ -42,6 +42,15 @@ class QueryJob(Base, TimestampMixin):
     # 实际发给数据库的最终 SQL(参数已代入,供运行记录查阅)
     executed_sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # 本次取数实际使用的**库身份** = 任务所属团队的团队账号。固化下来,审计才能回答
+    # 「这次数据是用哪个团队的账号取的」。只存库账号名,不存密码。
+    # 刻意**不做外键**:团队被删之后这条审计记录仍要读得懂(外键会阻止删团队或把它 SET NULL,
+    # 两种都毁掉这条记录)。与 TemplateEnumValues.updated_by 同一取舍。
+    # nullable 是必须的:enqueue 建行时还没解析身份(worker 才解析,见 execute_job),
+    # 且 _ensure_column 只能加可空列。为空 = 身份解析之前就失败了。
+    run_as_team_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    run_as_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     # 结果文件在本地结果目录(RESULT_DIR)下的相对路径 key;下载时换带签名 token 的 URL
     result_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     result_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

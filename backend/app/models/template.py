@@ -32,6 +32,17 @@ class SqlTemplate(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default=STATUS_DRAFT)
     author_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")))
 
+    # 所属团队:任务的可见性边界,同时也是取数身份的来源(团队账号)。判定见 services/permission_service。
+    # DB 侧可空**只为承载迁移前的存量行**:_ensure_column 无法给有数据的表加 NOT NULL 列,
+    # 而补 NOT NULL 需 MySQL MODIFY / SQLite 重建表 —— 既测不到,又会让代码一旦回滚就整表
+    # INSERT 全挂(错误 1364,即 query_jobs.modes 那次事故的翻版)。
+    # 「恒有值」由三处保证:① migrate._assert_every_template_has_team 在部署期硬失败;
+    # ② template_service.create_template 必填;③ 判定函数 fail-closed —— team_id 为空的
+    # 「无主任务」除平台管理员外谁都看不到,不会静默泄漏。
+    team_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey(tbl("teams.id")), index=True, nullable=True
+    )
+
     # 该任务的查询超时(秒);None=按数据源引擎默认(Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
@@ -47,13 +58,18 @@ class SqlTemplate(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
-    # 便于列表展示创建人 / 数据源(引擎)
+    # 便于列表展示创建人 / 数据源(引擎)/ 团队
     author = relationship("User", foreign_keys=[author_id], lazy="joined")
     datasource = relationship("DataSource", lazy="joined")
+    team = relationship("Team", lazy="joined")
 
     @property
     def author_name(self) -> str | None:
         return self.author.name if self.author else None
+
+    @property
+    def team_name(self) -> str | None:
+        return self.team.name if self.team else None
 
     @property
     def datasource_name(self) -> str | None:

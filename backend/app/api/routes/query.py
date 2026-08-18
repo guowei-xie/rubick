@@ -26,16 +26,21 @@ def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user
 
 @router.get("/jobs", response_model=list[JobOut])
 def my_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """本人发起的 + 我所属团队任务下的全部运行;平台管理员看全部。
+    口径与 /tasks/{id}/jobs 同源(见 permission_service.job_visibility_condition)。"""
     stmt = select(QueryJob).order_by(QueryJob.id.desc()).limit(100)
-    if not permission_service.is_manager(user):
-        stmt = stmt.where(QueryJob.user_id == user.id)
+    cond = permission_service.job_visibility_condition(
+        permission_service.team_scope(db, user)
+    )
+    if cond is not None:
+        stmt = stmt.where(cond)
     return list(db.scalars(stmt))
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
 def get_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     job = db.get(QueryJob, job_id)
-    if job is None or not permission_service.can_access_job(user, job):
+    if job is None or not permission_service.can_access_job(db, user, job):
         raise NotFoundError("运行记录不存在")
     return JobOut.model_validate(job)
 
@@ -71,9 +76,9 @@ def download_file(job_id: int, t: str, db: Session = Depends(get_db)):
 
 @router.get("/jobs/{job_id}/preview")
 def preview(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """运行结果预览(表头 + 前 50 行)。发起人/管理者/任务作者可看。"""
+    """运行结果预览(表头 + 前 50 行)。发起人本人,或对该任务可见的人可看。"""
     job = db.get(QueryJob, job_id)
-    if job is None or not query_service.can_view_job_result(db, user, job):
+    if job is None or not permission_service.can_access_job(db, user, job):
         raise NotFoundError("运行记录不存在")
     if job.status != "success" or not job.result_object_key:
         raise RubicError("该次运行无可预览结果")

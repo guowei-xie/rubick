@@ -3,8 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import client_ip, require_admin, require_manager
-from app.connectors import get_connector
+from app.api.deps import client_ip, require_admin, require_task_author
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, RubicError
 from app.models.audit import (
@@ -17,7 +16,7 @@ from app.models.datasource import DataSource
 from app.models.template import SqlTemplate
 from app.models.user import User
 from app.schemas.datasource import DataSourceIn, DataSourceOut, DataSourceUpdateIn
-from app.services import audit_service
+from app.services import audit_service, credential_service
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 
@@ -38,7 +37,7 @@ def _audit(
 
 
 @router.get("", response_model=list[DataSourceOut])
-def list_datasources(db: Session = Depends(get_db), _: User = Depends(require_manager)):
+def list_datasources(db: Session = Depends(get_db), _: User = Depends(require_task_author)):
     # 开发者建模板需读数据源下拉;DataSourceOut 不含密码。增删改/测连仍限管理员。
     return list(db.scalars(select(DataSource).order_by(DataSource.id)))
 
@@ -106,9 +105,14 @@ def delete_datasource(
     if used:
         raise RubicError(f"该数据源被 {used} 个任务使用,请先把这些任务改用其它数据源或删除后再试")
     before = audit_service.snapshot(ds, _DS_AUDIT_FIELDS)  # delete 后属性不可再读
+    # 团队取数账号随数据源一起走:数据源都没了,那些凭证行只会变成永远查不到源的垃圾
+    revoked = credential_service.delete_for_datasource(db, ds_id)
     db.delete(ds)
     db.commit()
-    _audit(db, admin, ip, ACTION_DATASOURCE_DELETE, ds_id, before.get("name"), before)
+    _audit(
+        db, admin, ip, ACTION_DATASOURCE_DELETE, ds_id, before.get("name"),
+        {**before, "revoked_credentials": revoked},
+    )
     return {"ok": True}
 
 
@@ -117,8 +121,7 @@ def test_datasource(ds_id: int, db: Session = Depends(get_db), _: User = Depends
     ds = db.get(DataSource, ds_id)
     if ds is None:
         raise NotFoundError("数据源不存在")
-    try:
-        get_connector(ds).test_connection()
-    except Exception as e:
-        raise RubicError(f"连接失败:{e}") from e
+    # 显式用数据源自带的公共账号(本页配的就是它);个人凭证的连通性测试走
+    # /credentials/mine/{ds_id}/test,两者共用 probe 以免错误文案各自漂移
+    credential_service.probe(ds, ds.public_credential)
     return {"ok": True}

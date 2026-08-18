@@ -27,3 +27,16 @@ class DataSource(Base, TimestampMixin):
     # 引擎特有参数(如 hive auth 方式、连接超时等)
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(default=True)
+
+    @property
+    def public_credential(self):
+        """数据源自带的公共账号(能看到该库全部数据)。
+
+        它不是默认值而是一个显式选择:凡是用它取数的地方都要在代码里写出来
+        (见 connectors/factory.get_connector 的说明)。自团队取数账号强制生效起,
+        **只剩一个正当用处**:管理员在数据源页点「测试连接」。
+        业务取数一律走任务所属团队的账号(见 services/credential_service)。
+        """
+        from app.connectors.base import Credential  # 局部导入:模型层不依赖连接器层
+
+        return Credential(username=self.username, password=self.password)

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import client_ip, get_current_user, require_manager
+from app.api.deps import client_ip, get_current_user, require_task_author
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError
 from app.models.audit import (
@@ -31,6 +31,7 @@ from app.schemas.template import (
 )
 from app.services import (
     audit_service,
+    credential_service,
     enum_cache_service,
     params_service,
     permission_service,
@@ -40,7 +41,9 @@ from app.services import (
 router = APIRouter(prefix="/templates", tags=["templates"])
 
 # 进审计 detail 的任务元信息字段(SQL 单独记,不混在 diff 里)
-_TMPL_AUDIT_FIELDS = ("name", "description", "tags", "datasource_id", "timeout_seconds", "status")
+_TMPL_AUDIT_FIELDS = (
+    "name", "description", "tags", "datasource_id", "team_id", "timeout_seconds", "status",
+)
 
 # 审计里 SQL 原文的截断长度,与 query_service 记录 executed_sql 的口径一致
 _SQL_CAP = 20000
@@ -63,9 +66,12 @@ def _load(db: Session, template_id: int) -> SqlTemplate:
     return tmpl
 
 
-def _require_author_or_manager(tmpl: SqlTemplate, user: User) -> None:
-    if not permission_service.is_template_owner(user, tmpl):
-        raise PermissionDeniedError("只有作者或管理者可操作该任务")
+def _require_can_edit(db: Session, tmpl: SqlTemplate, user: User) -> None:
+    """编辑权守卫。四条口径集中在 permission_service.can_edit,此处只复用不重写。"""
+    if not permission_service.can_edit(permission_service.team_scope(db, user), tmpl):
+        raise PermissionDeniedError(
+            "无权编辑该任务:需为任务作者、该团队的团队管理员,或已获得该任务的编辑授权"
+        )
 
 
 @router.get("", response_model=list[TemplateOut])
@@ -74,7 +80,7 @@ def list_templates(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """默认:业务用户看到有权限的已上线任务。mine=true:作者看自己维护的全部任务(含草稿/已下线)。
+    """默认:按可见性(团队 + 显式授权)收窄。mine=true:作者看自己维护的全部任务(含草稿/已下线)。
 
     注:前端任务列表走 /tasks(带能力标记);本端点保留给按作者维度取原始模板行的用法。
     """
@@ -83,20 +89,20 @@ def list_templates(
         stmt = stmt.where(SqlTemplate.author_id == user.id)
         return list(db.scalars(stmt))
 
-    stmt = stmt.where(SqlTemplate.status == STATUS_PUBLISHED)
-    visible = permission_service.visible_template_ids(db, user)
-    if visible is None:  # admin:全部
-        return list(db.scalars(stmt))
-    if not visible:
-        return []
-    return list(db.scalars(stmt.where(SqlTemplate.id.in_(visible))))
+    # 与 /tasks 同一条可见性规则(此前这里完全忽略了授权,只按 published 过滤)
+    cond = permission_service.visible_condition(permission_service.team_scope(db, user))
+    if cond is not None:
+        stmt = stmt.where(cond)
+    return list(db.scalars(stmt))
 
 
 @router.post("", response_model=TemplateOut)
 def create_template(
     data: TemplateCreateIn, db: Session = Depends(get_db),
-    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
+    user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
 ):
+    # 建任务必须选团队:它决定任务的可见范围与取数身份。开发者只能选自己所属的团队。
+    permission_service.require_can_create_in_team(db, user, data.team_id)
     # 作者测出来的候选值随版本一并落库(见 template_service._sync_enum_cache)
     tmpl = template_service.create_template(db, user, data)
     _audit(
@@ -104,6 +110,7 @@ def create_template(
         {
             **audit_service.snapshot(tmpl, _TMPL_AUDIT_FIELDS),
             "datasource_name": tmpl.datasource_name,
+            "team_name": tmpl.team_name,
             "version_no": 1,
             "sql_text": (data.sql_text or "")[:_SQL_CAP],
             "param_names": [p.name for p in (data.params or [])],
@@ -115,19 +122,16 @@ def create_template(
 @router.get("/{template_id}", response_model=TemplateDetailOut)
 def get_template(template_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     tmpl = _load(db, template_id)
-    is_owner = permission_service.is_template_owner(user, tmpl)
-    if not is_owner:
-        # 业务用户:必须有 view 权限且任务已上线
-        if tmpl.status != STATUS_PUBLISHED or not permission_service.can(
-            db, user, "view", "template", template_id
-        ):
-            raise PermissionDeniedError("无权查看该任务")
+    scope = permission_service.team_scope(db, user)
+    if not permission_service.can_view(scope, tmpl):
+        raise PermissionDeniedError("无权查看该任务")
 
     detail = TemplateDetailOut.model_validate(tmpl)
     if tmpl.published_version_id:
         pv = db.get(TemplateVersion, tmpl.published_version_id)
         detail.published_version = TemplateVersionOut.model_validate(pv) if pv else None
-    if is_owner:
+    # 最新版本(含未上线的 SQL 原文)只给**团队内部人**:业务使用者被授权后只该看到已上线的那一面
+    if permission_service.is_insider(scope, tmpl):
         latest = template_service.latest_version(db, tmpl.id)
         detail.latest_version = TemplateVersionOut.model_validate(latest) if latest else None
     return detail
@@ -138,11 +142,11 @@ def update_template(
     template_id: int,
     data: TemplateUpdateIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_manager),
+    user: User = Depends(require_task_author),
     ip: str | None = Depends(client_ip),
 ):
     tmpl = _load(db, template_id)
-    _require_author_or_manager(tmpl, user)
+    _require_can_edit(db, tmpl, user)
     # 快照必须早于 add_version:SQLAlchemy 就地改对象,提交后再读拿到的是新值
     before = audit_service.snapshot(tmpl, _TMPL_AUDIT_FIELDS)
     prev = template_service.latest_version(db, tmpl.id)
@@ -170,12 +174,12 @@ def publish(
     template_id: int,
     data: PublishIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_manager),
+    user: User = Depends(require_task_author),
     ip: str | None = Depends(client_ip),
 ):
     """上线最新版本(UI 里的「上线 / 重新上线」)。"""
     tmpl = _load(db, template_id)
-    _require_author_or_manager(tmpl, user)
+    _require_can_edit(db, tmpl, user)
     before_status = tmpl.status  # 必须在 publish 之前取
     version = template_service.publish(db, tmpl, user, data.note)
     # 从回收站(已下线)重新上线单独记一个动作码:这在业务上是「恢复」,
@@ -197,10 +201,10 @@ def publish(
 @router.post("/{template_id}/archive")
 def archive(
     template_id: int, db: Session = Depends(get_db),
-    user: User = Depends(require_manager), ip: str | None = Depends(client_ip),
+    user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
 ):
     tmpl = _load(db, template_id)
-    _require_author_or_manager(tmpl, user)
+    _require_can_edit(db, tmpl, user)
     before_status = tmpl.status
     before_version_id = tmpl.published_version_id  # archive 会清空,先存
     template_service.archive(db, tmpl)
@@ -213,18 +217,27 @@ def archive(
 
 
 @router.post("/test-run")
-def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_manager)):
+def test_run(data: TestRunIn, db: Session = Depends(get_db), user: User = Depends(require_task_author)):
     """作者自检试跑:返回样例行;关联到已存在任务时同时落一条 source=test 的运行记录。"""
     return template_service.test_run(db, data, user)
 
 
 @router.post("/preview-sql", response_model=PreviewSqlOut)
-def preview_sql(data: PreviewSqlIn, _: User = Depends(require_manager)):
+def preview_sql(data: PreviewSqlIn, _: User = Depends(require_task_author)):
     """SQL 预览:代入当前测试值渲染即将执行的 SQL(不连库执行),未填变量原样保留 :变量。"""
     return {"rendered_sql": params_service.preview_sql(data.sql_text, data.params, data.values)}
 
 
 @router.post("/enum-sql", response_model=ValueListOut)
-def enum_sql(data: EnumSqlIn, db: Session = Depends(get_db), _: User = Depends(require_manager)):
-    """作者测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。"""
-    return enum_cache_service.run_value_query(db, data.datasource_id, data.sql)
+def enum_sql(
+    data: EnumSqlIn, db: Session = Depends(get_db), user: User = Depends(require_task_author)
+):
+    """作者测试「枚举值获取 SQL」,返回候选值(结果第一列去重)。
+
+    用**任务所属团队**的取数账号 —— 与试跑同理:编辑器里的验证必须与上线后的取数身份一致,
+    否则「这里测通了、业务却跑不动」。for_team 内部校验操作者是该团队成员。
+    """
+    credential = credential_service.for_team(
+        db, team_id=data.team_id, datasource_id=data.datasource_id, actor=user
+    )
+    return enum_cache_service.run_value_query(db, data.datasource_id, data.sql, credential)

@@ -69,6 +69,9 @@ export interface User {
   name: string;
   role: "user" | "admin" | "developer";
   email?: string;
+  /** 我所属的团队(随 /auth/me 一起下发,前端所有团队门禁零额外请求)。
+   *  刻意不含「账号就绪没」——那只有编辑器需要,走 myTeamCredentials()。 */
+  teams?: { id: number; name: string; is_team_admin: boolean }[];
 }
 
 // ---- auth ----
@@ -92,8 +95,8 @@ export const testRun = (data: any) => http.post("/templates/test-run", data).the
 // SQL 预览:代入当前测试值渲染即将执行的 SQL(不执行),未填变量原样保留 :变量
 export const previewSql = (data: { sql_text: string; params: any[]; values: any }) =>
   http.post("/templates/preview-sql", data).then((r) => r.data as { rendered_sql: string });
-// 作者测试「枚举值获取 SQL」
-export const runEnumSql = (data: { datasource_id: number; sql: string }) =>
+// 作者测试「枚举值获取 SQL」。team_id 必填:用哪个团队的账号跑,后端还会校验成员资格
+export const runEnumSql = (data: { team_id: number; datasource_id: number; sql: string }) =>
   http.post("/templates/enum-sql", data).then((r) => r.data as ValueListOut);
 // 业务填参:读某变量的共享候选值(纯读缓存,不跑 SQL,打开抽屉即可用)
 export const taskEnumValues = (templateId: number, variable: string) =>
@@ -138,6 +141,144 @@ export const deleteDatasource = (id: number) =>
   http.delete(`/datasources/${id}`).then((r) => r.data);
 export const testDatasource = (id: number) =>
   http.post(`/datasources/${id}/test`).then((r) => r.data);
+
+// ---- teams(团队与成员)----
+// 团队是任务的归属边界与取数身份边界:任务必属一个团队,同团队互相可见,
+// 编辑权默认仅限作者(团队管理员可按任务授予)。
+export interface TeamMember {
+  user_id: number;
+  name: string;
+  avatar?: string | null;
+  role: string;
+  is_team_admin: boolean;
+  joined_at?: string | null;
+}
+export interface Team {
+  id: number;
+  name: string;
+  description?: string | null;
+  member_count: number;
+  /** 任务数,**含回收站里已下线的** —— 删团队的卡点看的就是它 */
+  template_count: number;
+  admins: TeamMember[];
+  created_at?: string | null;
+}
+export interface TeamDetail extends Team {
+  members: TeamMember[];
+}
+
+export const listTeams = () => http.get("/teams").then((r) => r.data as Team[]);
+export const getTeamDetail = (id: number) =>
+  http.get(`/teams/${id}`).then((r) => r.data as TeamDetail);
+export const createTeam = (data: { name: string; description?: string; admin_user_ids?: number[] }) =>
+  http.post("/teams", data).then((r) => r.data as Team);
+export const updateTeam = (id: number, data: { name?: string; description?: string }) =>
+  http.put(`/teams/${id}`, data).then((r) => r.data as Team);
+export const deleteTeam = (id: number) => http.delete(`/teams/${id}`).then((r) => r.data);
+/** 可加入本团队的候选人:登录过的**开发者**且尚不在本团队(不走飞书通讯录)。 */
+export const teamCandidates = (id: number, q?: string) =>
+  http.get(`/teams/${id}/candidates`, { params: { q } }).then(
+    (r) => r.data as { user_id: number; name: string; avatar?: string; email?: string }[]
+  );
+export const addTeamMember = (id: number, data: { user_id: number; is_team_admin?: boolean }) =>
+  http.post(`/teams/${id}/members`, data).then((r) => r.data as TeamMember);
+export const removeTeamMember = (id: number, userId: number) =>
+  http.delete(`/teams/${id}/members/${userId}`).then((r) => r.data);
+export const grantTeamAdmin = (id: number, userId: number) =>
+  http.post(`/teams/${id}/members/${userId}/admin`).then((r) => r.data as TeamMember);
+export const revokeTeamAdmin = (id: number, userId: number) =>
+  http.delete(`/teams/${id}/members/${userId}/admin`).then((r) => r.data as TeamMember);
+
+// ---- 任务编辑权(团队内)----
+// 与业务授权(view/run/download)分开:那个面向业务方、从飞书通讯录选人;
+// 这个面向团队成员、只能从本团队成员里选,由团队管理员授予。
+export interface TaskEditor {
+  user_id: number;
+  name: string;
+  avatar?: string | null;
+  /** author / team_admin 是身份的推论(隐式,不可撤销);granted 才是一条授权行 */
+  source: "author" | "team_admin" | "granted";
+}
+export const listTaskEditors = (templateId: number) =>
+  http.get(`/tasks/${templateId}/editors`).then((r) => r.data as TaskEditor[]);
+/** 本团队每个任务的编辑人,按任务 id 分组。**一次请求查完** ——
+ *  逐任务调 listTaskEditors 会变成 N 个往返(团队页的「任务编辑权」面板一进就要整张表)。 */
+export const teamTaskEditors = (teamId: number) =>
+  http
+    .get(`/teams/${teamId}/task-editors`)
+    .then((r) => r.data as Record<string, TaskEditor[]>);
+export const grantTaskEditor = (templateId: number, userId: number) =>
+  http.post(`/tasks/${templateId}/editors`, { user_id: userId }).then((r) => r.data);
+export const revokeTaskEditor = (templateId: number, userId: number) =>
+  http.delete(`/tasks/${templateId}/editors/${userId}`).then((r) => r.data);
+/** 转移任务所属团队(仅平台管理员):同时改变可见范围与取数身份。 */
+export const transferTaskTeam = (templateId: number, teamId: number) =>
+  http.put(`/tasks/${templateId}/team`, { team_id: teamId }).then((r) => r.data);
+
+// ---- credentials(团队取数账号)----
+// 任务用**所属团队**的库账号取数,数据权限交由数据库裁决。
+// 密码只写不读:接口永不回传。库用户名是半机密(Hive auth=NONE 下它本身就是完整凭证),
+// 只有该团队的团队管理员与平台管理员看得到 —— 其它人拿到的 username 恒为 null。
+export interface TeamCredentialStatus {
+  team_id: number;
+  team_name?: string | null;
+  datasource_id: number;
+  datasource_name: string;
+  engine: string;
+  host?: string | null;
+  port?: number | null;
+  database?: string | null;
+  configured: boolean; // 是否已登记账号
+  username?: string | null; // 仅团队管理员 / 平台管理员可见
+  verified: boolean; // 是否通过过连接测试(任务上线的卡点看这个)
+  last_verified_at?: string | null;
+  last_verify_error?: string | null;
+  updated_by?: number | null;
+  updated_by_name?: string | null;
+  updated_at?: string | null;
+}
+export interface NotReadyTemplate {
+  template_id: number;
+  template_name: string;
+  team_id?: number | null;
+  team_name?: string | null;
+  author_id: number;
+  author_name?: string | null;
+  datasource_id: number;
+  datasource_name?: string | null;
+  reason: string; // 未配置 / 未测通 / 无所属团队
+}
+export interface CredentialOverview {
+  datasources: { id: number; name: string; engine: string }[];
+  teams: {
+    team_id: number;
+    team_name: string;
+    member_count: number;
+    admins: TeamMember[];
+    credentials: TeamCredentialStatus[];
+  }[];
+  /** 非空 ⇒ 这些已上线任务**此刻就跑不动**(不再是「切开关前要清零的清单」) */
+  not_ready_templates: NotReadyTemplate[];
+}
+
+/** 我所在各团队 × 各数据源的就绪态。给任务编辑器用,**永不含库用户名**。 */
+export const myTeamCredentials = () =>
+  http.get("/credentials/my-teams").then((r) => r.data as TeamCredentialStatus[]);
+export const listTeamCredentials = (teamId: number) =>
+  http.get(`/credentials/teams/${teamId}`).then((r) => r.data as TeamCredentialStatus[]);
+/** 登记/修改团队在某数据源上的账号;password 留空表示保留原密码。改动后需重新测通 ——
+ *  注意那会让该数据源上**本团队的全部任务**立即变为未就绪。 */
+export const saveTeamCredential = (
+  teamId: number,
+  dsId: number,
+  data: { username: string; password?: string }
+) => http.put(`/credentials/teams/${teamId}/${dsId}`, data).then((r) => r.data as TeamCredentialStatus);
+export const testTeamCredential = (teamId: number, dsId: number) =>
+  http.post(`/credentials/teams/${teamId}/${dsId}/test`).then((r) => r.data as TeamCredentialStatus);
+export const deleteTeamCredential = (teamId: number, dsId: number) =>
+  http.delete(`/credentials/teams/${teamId}/${dsId}`).then((r) => r.data);
+export const credentialOverview = () =>
+  http.get("/credentials/overview").then((r) => r.data as CredentialOverview);
 
 // ---- permissions ----
 export const listPermissions = (resource_id?: string) =>

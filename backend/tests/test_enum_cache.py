@@ -52,6 +52,16 @@ def _datasource(db, name: str) -> DataSource:
 
 
 @pytest.fixture
+def team(db, ds, ds2, team_factory, team_credential):
+    """任务必属团队,且上线要求团队账号已测通。两个数据源都备好账号 ——
+    有用例会把任务的数据源换成 ds2(验证候选值随数据源作废)。"""
+    t = team_factory("enum-team", [])
+    team_credential(t, ds, username="enum_team_acct")
+    team_credential(t, ds2, username="enum_team_acct2")
+    return t
+
+
+@pytest.fixture
 def ds(db):
     return _datasource(db, "enum-mysql")
 
@@ -74,18 +84,19 @@ def _fake_query(monkeypatch, values, *, truncated=False, duration_ms=42):
     """替掉真实取数:记录调用次数,便于断言「没有跑 SQL」。"""
     calls = {"n": 0}
 
-    def fake(db, datasource_id, sql):
+    def fake(db, datasource_id, sql, credential=None):
         calls["n"] += 1
+        calls["credential"] = credential  # 取数身份(个人取数账号);开关关闭时为 None
         return ValueListOut(values=list(values), truncated=truncated, duration_ms=duration_ms)
 
     monkeypatch.setattr(enum_cache_service, "run_value_query", fake)
     return calls
 
 
-def _make_published(db, admin, ds, *, name, samples=None, enum_sql=ENUM_SQL, sql=SQL):
+def _make_published(db, admin, ds, team, *, name, samples=None, enum_sql=ENUM_SQL, sql=SQL):
     tmpl = create_template(
         TemplateCreateIn(
-            name=name, datasource_id=ds.id, sql_text=sql,
+            name=name, team_id=team.id, datasource_id=ds.id, sql_text=sql,
             params=[ParamDef(name="cs", kind="list", enum_sql=enum_sql)],
             enum_samples=samples or {},
         ),
@@ -132,10 +143,10 @@ def _count_rows(db, template_id) -> int:
 # ---------------------------------------------------------------- 读:纯缓存,不打库
 
 
-def test_read_never_executes_sql(db, admin, ds, monkeypatch):
+def test_read_never_executes_sql(db, admin, ds, team, monkeypatch):
     """核心保证:业务侧读候选值绝不触发取数 —— 这正是「不再一次性消费」的意义。"""
     tmpl = _make_published(
-        db, admin, ds, name="读缓存不打库",
+        db, admin, ds, team, name="读缓存不打库",
         samples={"cs": EnumSampleIn(values=["a", "b"], source_sql=ENUM_SQL)},
     )
 
@@ -147,10 +158,10 @@ def test_read_never_executes_sql(db, admin, ds, monkeypatch):
     assert out.cached is True and out.values == ["a", "b"]
 
 
-def test_author_sample_becomes_business_options(db, admin, ds):
+def test_author_sample_becomes_business_options(db, admin, ds, team):
     """作者测出来的候选,业务用户打开就能直接勾选。"""
     tmpl = _make_published(
-        db, admin, ds, name="作者测试即共享",
+        db, admin, ds, team, name="作者测试即共享",
         samples={"cs": EnumSampleIn(values=["x", "y"], source_sql=ENUM_SQL, duration_ms=88)},
     )
     biz = _biz_user(db, 9010, "业务甲")
@@ -162,10 +173,10 @@ def test_author_sample_becomes_business_options(db, admin, ds):
     assert out.duration_ms == 88 and out.updated_at is not None
 
 
-def test_sample_dropped_when_source_sql_mismatches(db, admin, ds):
+def test_sample_dropped_when_source_sql_mismatches(db, admin, ds, team):
     """作者测完又改了 enum_sql 才保存:那批值对不上新 SQL,必须在持久化边界丢掉。"""
     tmpl = _make_published(
-        db, admin, ds, name="测完改了SQL",
+        db, admin, ds, team, name="测完改了SQL",
         samples={"cs": EnumSampleIn(values=["旧"], source_sql="SELECT 早先的 SQL")},
     )
     out = _read(db, admin, tmpl)
@@ -173,9 +184,9 @@ def test_sample_dropped_when_source_sql_mismatches(db, admin, ds):
     assert _count_rows(db, tmpl.id) == 0
 
 
-def test_sample_absent_does_not_clear_existing_cache(db, admin, ds, monkeypatch):
+def test_sample_absent_does_not_clear_existing_cache(db, admin, ds, team, monkeypatch):
     """编辑器每次开窗都清测试结果,所以「只改任务名」发来的是空 —— 不能当成清空。"""
-    tmpl = _make_published(db, admin, ds, name="改名不清缓存")
+    tmpl = _make_published(db, admin, ds, team, name="改名不清缓存")
     _fake_query(monkeypatch, ["p", "q"])
     _refresh(db, admin, tmpl)
 
@@ -187,9 +198,9 @@ def test_sample_absent_does_not_clear_existing_cache(db, admin, ds, monkeypatch)
 # ---------------------------------------------------------------- 更新:共享 + 幂等
 
 
-def test_refresh_is_shared_between_users(db, admin, ds, monkeypatch):
+def test_refresh_is_shared_between_users(db, admin, ds, team, monkeypatch):
     """甲点更新,乙看到的就是甲那次的结果 —— 共享的意义。"""
-    tmpl = _make_published(db, admin, ds, name="更新即共享")
+    tmpl = _make_published(db, admin, ds, team, name="更新即共享")
     a = _biz_user(db, 9020, "业务A")
     b = _biz_user(db, 9021, "业务B")
     for u in (a, b):
@@ -202,9 +213,9 @@ def test_refresh_is_shared_between_users(db, admin, ds, monkeypatch):
     assert out.updated_by == a.id and out.updated_by_name == "业务A"
 
 
-def test_refresh_replaces_and_keeps_single_row(db, admin, ds, monkeypatch):
+def test_refresh_replaces_and_keeps_single_row(db, admin, ds, team, monkeypatch):
     """反复更新是覆盖写,不是追加 —— 一个变量恒定一行。"""
-    tmpl = _make_published(db, admin, ds, name="覆盖写")
+    tmpl = _make_published(db, admin, ds, team, name="覆盖写")
     _fake_query(monkeypatch, ["第一次"])
     _refresh(db, admin, tmpl)
     # 绕过 30 秒节流,直接验证覆盖语义
@@ -216,9 +227,9 @@ def test_refresh_replaces_and_keeps_single_row(db, admin, ds, monkeypatch):
     assert _count_rows(db, tmpl.id) == 1
 
 
-def test_upsert_is_idempotent_across_sessions(db, admin, ds):
+def test_upsert_is_idempotent_across_sessions(db, admin, ds, team):
     """并发插入撞唯一约束时要重查改写,不能把 IntegrityError 抛给用户。"""
-    tmpl = _make_published(db, admin, ds, name="并发写")
+    tmpl = _make_published(db, admin, ds, team, name="并发写")
     other = SessionLocal()
     try:
         other.add(
@@ -242,9 +253,9 @@ def test_upsert_is_idempotent_across_sessions(db, admin, ds):
     assert _read(db, admin, tmpl).values == ["我后写的"]
 
 
-def test_refresh_throttled_within_window(db, admin, ds, monkeypatch):
+def test_refresh_throttled_within_window(db, admin, ds, team, monkeypatch):
     """双击 / 多人同点:30 秒内直接复用,不再浪费一次线上查询。"""
-    tmpl = _make_published(db, admin, ds, name="节流")
+    tmpl = _make_published(db, admin, ds, team, name="节流")
     calls = _fake_query(monkeypatch, ["只该跑一次"])
     _refresh(db, admin, tmpl)
     out = _refresh(db, admin, tmpl)
@@ -256,9 +267,9 @@ def test_refresh_throttled_within_window(db, admin, ds, monkeypatch):
 # ---------------------------------------------------------------- 过期与剪枝
 
 
-def test_stale_when_enum_sql_changed(db, admin, ds, monkeypatch):
+def test_stale_when_enum_sql_changed(db, admin, ds, team, monkeypatch):
     """作者改了 enum_sql 又没重测:旧候选一律不展示(按产品决策),只给 stale 让前端解释。"""
-    tmpl = _make_published(db, admin, ds, name="SQL变了")
+    tmpl = _make_published(db, admin, ds, team, name="SQL变了")
     _fake_query(monkeypatch, ["旧值"])
     _refresh(db, admin, tmpl)
 
@@ -267,9 +278,9 @@ def test_stale_when_enum_sql_changed(db, admin, ds, monkeypatch):
     assert out.stale is True and out.cached is False and out.values == []
 
 
-def test_stale_when_datasource_changed(db, admin, ds, ds2, monkeypatch):
+def test_stale_when_datasource_changed(db, admin, ds, ds2, team, monkeypatch):
     """同一段 SQL 换个数据源结果就不一样,同样算过期。"""
-    tmpl = _make_published(db, admin, ds, name="数据源变了")
+    tmpl = _make_published(db, admin, ds, team, name="数据源变了")
     _fake_query(monkeypatch, ["库一的值"])
     _refresh(db, admin, tmpl)
 
@@ -278,11 +289,11 @@ def test_stale_when_datasource_changed(db, admin, ds, ds2, monkeypatch):
     assert out.stale is True and out.values == []
 
 
-def test_cache_survives_archive_and_restore(db, admin, ds, monkeypatch):
+def test_cache_survives_archive_and_restore(db, admin, ds, team, monkeypatch):
     """下线进回收站再恢复,共享候选要还在 —— 否则每次上下线都白费一次取数。"""
     from app.api.routes.templates import archive
 
-    tmpl = _make_published(db, admin, ds, name="上下线")
+    tmpl = _make_published(db, admin, ds, team, name="上下线")
     _fake_query(monkeypatch, ["还在"])
     _refresh(db, admin, tmpl)
 
@@ -292,16 +303,16 @@ def test_cache_survives_archive_and_restore(db, admin, ds, monkeypatch):
     assert out.cached is True and out.stale is False and out.values == ["还在"]
 
 
-def test_prune_drops_cache_for_removed_and_delisted_variables(db, admin, ds, monkeypatch):
+def test_prune_drops_cache_for_removed_and_delisted_variables(db, admin, ds, team, monkeypatch):
     """变量没了、或不再是「配了枚举 SQL 的值列表」,缓存行必须清掉,别留下读不到的业务数据。"""
-    tmpl = _make_published(db, admin, ds, name="剪枝-删变量")
+    tmpl = _make_published(db, admin, ds, team, name="剪枝-删变量")
     _fake_query(monkeypatch, ["v"])
     _refresh(db, admin, tmpl)
     _resave(db, admin, tmpl, ds, sql="SELECT 1", params=[])
     assert _count_rows(db, tmpl.id) == 0
 
     # IN (:cs) → = :cs:_normalize_params 会把 enum_sql 清掉,名字却还在
-    t2 = _make_published(db, admin, ds, name="剪枝-降级为单值")
+    t2 = _make_published(db, admin, ds, team, name="剪枝-降级为单值")
     _fake_query(monkeypatch, ["v"])
     _refresh(db, admin, t2)
     _resave(db, admin, t2, ds, sql="SELECT * FROM o WHERE c = :cs")
@@ -311,10 +322,10 @@ def test_prune_drops_cache_for_removed_and_delisted_variables(db, admin, ds, mon
 # ---------------------------------------------------------------- 上限与权限
 
 
-def test_values_capped_on_seed(db, admin, ds):
+def test_values_capped_on_seed(db, admin, ds, team):
     """手搓 payload 也不能把元数据库撑爆:落库前再截一次到 1000。"""
     tmpl = _make_published(
-        db, admin, ds, name="截断",
+        db, admin, ds, team, name="截断",
         samples={
             "cs": EnumSampleIn(
                 values=[str(i) for i in range(1500)], source_sql=ENUM_SQL
@@ -326,14 +337,14 @@ def test_values_capped_on_seed(db, admin, ds):
     assert out.truncated is True
 
 
-def test_refresh_requires_permission(db, admin, ds):
-    tmpl = _make_published(db, admin, ds, name="无权更新")
+def test_refresh_requires_permission(db, admin, ds, team):
+    tmpl = _make_published(db, admin, ds, team, name="无权更新")
     outsider = _biz_user(db, 9030, "路人")
     with pytest.raises(PermissionDeniedError):
         _refresh(db, outsider, tmpl)
 
 
-def test_refresh_rejects_variable_without_enum_sql(db, admin, ds):
-    tmpl = _make_published(db, admin, ds, name="没配枚举SQL", enum_sql=None)
+def test_refresh_rejects_variable_without_enum_sql(db, admin, ds, team):
+    tmpl = _make_published(db, admin, ds, team, name="没配枚举SQL", enum_sql=None)
     with pytest.raises(RubicError):
         _refresh(db, admin, tmpl)

@@ -36,11 +36,19 @@ def ds(db):
     return d
 
 
-def test_lifecycle_pending_publish_archive(db, admin, ds):
+@pytest.fixture
+def team(db, ds, team_factory, team_credential):
+    """任务必属团队,且上线要求团队账号已测通 —— 故这两件事一起备好。"""
+    t = team_factory("flow-team", [])
+    team_credential(t, ds, username="flow_team_acct")
+    return t
+
+
+def test_lifecycle_pending_publish_archive(db, admin, ds, team):
     tmpl = template_service.create_template(
         db, admin,
         TemplateCreateIn(
-            name="流程测试", datasource_id=ds.id,
+            name="流程测试", team_id=team.id, datasource_id=ds.id,
             sql_text="SELECT * FROM o WHERE d = :d AND c IN (:cs)",
             params=[
                 ParamDef(name="d", kind="single", label="日期"),
@@ -75,11 +83,11 @@ def test_lifecycle_pending_publish_archive(db, admin, ds):
     assert tmpl.status == STATUS_ARCHIVED and tmpl.published_version_id is None
 
 
-def test_edit_draft_stays_draft(db, admin, ds):
+def test_edit_draft_stays_draft(db, admin, ds, team):
     tmpl = template_service.create_template(
         db, admin,
         TemplateCreateIn(
-            name="草稿编辑", datasource_id=ds.id,
+            name="草稿编辑", team_id=team.id, datasource_id=ds.id,
             sql_text="SELECT * FROM o WHERE d = :d", params=[ParamDef(name="d")],
         ),
     )
@@ -92,10 +100,13 @@ def test_edit_draft_stays_draft(db, admin, ds):
     assert tmpl.status == STATUS_DRAFT and tmpl.published_version_id is None
 
 
-def test_publish_without_version_raises(db, admin, ds):
+def test_publish_without_version_raises(db, admin, ds, team):
     from app.models.template import SqlTemplate
 
-    tmpl = SqlTemplate(name="空模板", datasource_id=ds.id, dialect="mysql", author_id=admin.id)
+    tmpl = SqlTemplate(
+        name="空模板", team_id=team.id, datasource_id=ds.id,
+        dialect="mysql", author_id=admin.id,
+    )
     db.add(tmpl)
     db.commit()
     with pytest.raises(RubicError):

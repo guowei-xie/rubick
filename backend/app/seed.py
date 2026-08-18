@@ -4,9 +4,10 @@
 
 产出:
   - 4 个用户:admin/analyst(管理员)、dev(开发者)、viewer(普通用户)
+  - 一个演示团队「演示团队」:analyst 任团队管理员、dev 任成员
   - 演示业务库 rubic_demo.orders(与平台元数据库同一 MySQL 实例,不同 database)
-  - 一个 MySQL 数据源指向 rubic_demo
-  - 一条已上线任务"按日期查订单",授权给 viewer 个人
+  - 一个 MySQL 数据源指向 rubic_demo,并为演示团队登记同一套账号作团队取数账号
+  - 一条已上线任务"按日期查订单"(归属演示团队),授权给 viewer 个人
 之后即可用 viewer 登录 → 跑任务 → 下载 → 在审计里看到记录。
 (mock 登录需要 config.ini 里 MOCK_AUTH = true,默认关闭)
 """
@@ -19,11 +20,12 @@ from sqlalchemy import select, text
 from app.core.database import Base, SessionLocal, engine
 import app.models  # noqa: F401
 from app.models.datasource import DataSource
+from app.models.team import Team
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn
-from app.services import permission_service, template_service
+from app.services import credential_service, permission_service, team_service, template_service
 
 DEMO_DB = "rubic_demo"
 DEMO_HOST = os.getenv("DEMO_DS_HOST", "localhost")
@@ -86,8 +88,20 @@ def main() -> None:
         print("3) users")
         admin = upsert_user(db, "ou_admin", "管理员小A", ROLE_ADMIN)
         analyst = upsert_user(db, "ou_analyst", "管理员小B", ROLE_ADMIN)  # 原商分并入管理员
-        upsert_user(db, "ou_dev", "开发小D", ROLE_DEVELOPER)  # 开发者:近似管理员,不含治理
+        dev = upsert_user(db, "ou_dev", "开发小D", ROLE_DEVELOPER)  # 开发者:只在团队内取值
         viewer = upsert_user(db, "ou_viewer", "普通小C", ROLE_USER)
+
+        print("3.5) demo team")
+        # 开发者必须先有团队才能建任务(见 permission_service.require_can_create_in_team)。
+        # 团队成员只能是开发者,所以团队管理员也由开发者担任;平台管理员不受团队约束、
+        # 无需入队(require_member / require_team_admin 里对他恒放行)。
+        team = db.scalar(select(Team).where(Team.name == "演示团队"))
+        if team is None:
+            team = team_service.create_team(
+                db, name="演示团队", description="seed 造的演示团队", created_by=admin.id
+            )
+        if not team_service.is_member(db, dev, team.id):
+            team_service.add_member(db, team, dev.id, is_team_admin_flag=True, added_by=admin.id)
 
         print("4) demo datasource")
         ds = db.scalar(select(DataSource).where(DataSource.name == "demo-mysql"))
@@ -106,6 +120,20 @@ def main() -> None:
             db.commit()
             db.refresh(ds)
 
+        print("4.5) team credential (演示环境直接复用数据源账号,并标记为已测通)")
+        # 真实环境里由团队管理员在团队页配置并点「测试连接」;seed 为了能一把跑通,
+        # 直接写入并标记测通 —— 否则任务上线会被卡点拦下(这正是卡点该有的行为)。
+        cred, _ = credential_service.upsert(
+            db, team_id=team.id, datasource_id=ds.id,
+            username=DEMO_USER, password=DEMO_PASS, updated_by=admin.id,
+        )
+        if not cred.verified:
+            from datetime import datetime
+
+            cred.last_verified_at = datetime.now()
+            cred.last_verify_error = None
+            db.commit()
+
         print("5) demo template (published)")
         existing = db.scalar(select(SqlTemplate).where(SqlTemplate.name == "按日期查订单"))
         if existing is None:
@@ -116,6 +144,7 @@ def main() -> None:
                     name="按日期查订单",
                     description="查询指定起始日期之后的订单明细",
                     tags=["订单", "演示"],
+                    team_id=team.id,
                     datasource_id=ds.id,
                     sql_text=(
                         "SELECT order_id, customer, amount, created_date "

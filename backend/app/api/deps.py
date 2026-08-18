@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
 from app.core.security import decode_access_token
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import User, is_platform_admin
 from app.services import permission_service
 
 
@@ -27,15 +27,21 @@ def get_current_user(
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.role != ROLE_ADMIN:
+    """平台管理员守卫。判定复用 models.user.is_platform_admin —— 「谁是全通」只表述一次。"""
+    if not is_platform_admin(user):
         raise PermissionDeniedError("需要管理员权限")
     return user
 
 
-def require_manager(user: User = Depends(get_current_user)) -> User:
-    """管理员或开发者:模板/授权等非治理写操作的守卫(治理仍用 require_admin)。
-    「谁是管理者」的定义集中在 permission_service.is_manager,此处只复用不重列角色。"""
-    if not permission_service.is_manager(user):
+def require_task_author(user: User = Depends(get_current_user)) -> User:
+    """管理员或开发者:能进任务编辑器(建/改任务、试跑)的职能守卫。
+
+    它只回答「有没有这项职能」,**不回答「能不能动这个任务」** —— 后者由
+    permission_service.can_edit 按团队判定。旧名 require_manager 已删除:那个名字暗示
+    「管理者对任务全通」,而那条短路正是团队功能拆掉的东西。
+    「谁能建任务」的定义集中在 permission_service.can_author,此处只复用不重列角色。
+    """
+    if not permission_service.can_author(user):
         raise PermissionDeniedError("需要开发者或管理员权限")
     return user
 

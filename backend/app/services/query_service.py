@@ -25,11 +25,22 @@ from app.models.user import User
 from app.models.datasource import ENGINE_HIVE
 from app.services import (
     audit_service,
+    credential_service,
     notify_service,
     params_service,
     permission_service,
     result_service,
 )
+
+
+def _run_as_detail(job: QueryJob) -> dict:
+    """审计 detail 里的取数身份 = 这次用了哪个团队的库账号。
+
+    为空只发生在「身份还没解析出来就失败了」的行上(如入队即被拒),此时无字段可记。
+    """
+    if not job.run_as_username:
+        return {}
+    return {"run_as": {"team_id": job.run_as_team_id, "db_username": job.run_as_username}}
 
 
 def effective_timeout(tmpl: SqlTemplate, ds: DataSource) -> int:
@@ -56,6 +67,9 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
     # 请求内先做参数校验与安全网关,把可预见的错误即时反馈给用户
     params_service.validate_and_bind(version.params, values)
     validate_readonly(version.sql_text, tmpl.dialect)
+    # 作者凭证也在请求内先探一次:缺了就当场告诉业务用户找谁去配,
+    # 而不是让他等 worker 跑完、再从运行记录里读一条失败原因
+    credential_service.for_template(db, tmpl)
 
     job = QueryJob(
         user_id=user.id,
@@ -84,6 +98,7 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
 def execute_job(job_id: int, ip: str | None = None) -> None:
     """worker 侧执行。自管独立 DB 会话,幂等地推进任务状态并发通知。"""
     db = SessionLocal()
+    failure: Exception | None = None
     try:
         job = db.get(QueryJob, job_id)
         if job is None or job.status not in (JOB_QUEUED, JOB_RUNNING):
@@ -96,13 +111,22 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
         job.status = JOB_RUNNING
         db.commit()
 
+        # 必须在 try 之前:失败分支要用它给 job.error 脱敏,而失败可能发生在身份解析之前
+        # (参数校验 / SQL 网关),那时它就是 None —— redact(None) 原样返回,不必分叉。
+        credential = None
         try:
             bound = params_service.validate_and_bind(version.params, job.params)
             validate_readonly(version.sql_text, tmpl.dialect)
+            # 取数身份 = 任务所属团队(不是发起人、也不是作者)。入队时已探过一次,
+            # 这里是 worker 侧的纵深防御:排队期间凭证可能被团队管理员改掉或被回收
+            credential = credential_service.for_template(db, tmpl)
+            if credential.is_team_account:
+                job.run_as_team_id = credential.owner_team_id
+                job.run_as_username = credential.username
             sql_text, bound = params_service.expand_list_params(version.sql_text, bound)  # 展开正选 IN
             job.executed_sql = params_service.render_sql(sql_text, bound)  # 存下最终 SQL 供查阅
             db.commit()
-            connector = get_connector(ds)
+            connector = get_connector(ds, credential)
             res = connector.execute(
                 sql_text, bound,
                 timeout_seconds=effective_timeout(tmpl, ds),
@@ -124,36 +148,39 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
                 resource_id=tmpl.id,
                 detail={"template_version_id": version.id, "datasource": ds.name,
                         "params": job.params, "row_count": res.row_count,
-                        "truncated": res.truncated, "executed_sql": (job.executed_sql or "")[:20000]},
+                        "truncated": res.truncated, "executed_sql": (job.executed_sql or "")[:20000],
+                        # 用哪个团队的库账号取的数 —— 按团队隔离数据权限后,这是审计的关键一列
+                        **_run_as_detail(job)},
                 ip=ip,
             )
         except Exception as e:
+            failure = e  # 交给 notify_service 判断这次失败还该通知谁
             job.status = JOB_FAILED
-            job.error = str(e)[:2000]
+            # job.error 是**面向用户**的:它经 JobOut 展示给运行记录查看者,还会被
+            # notify_service 推进飞书通知。而引擎的鉴权报错会带上库账号名
+            # (`Access denied for user 'team_acct'@...`),业务用户根本不属于这个团队,
+            # 却能就此拿到团队库账号 —— Hive auth=NONE 下那就是完整凭证。故这里必须脱敏。
+            job.error = credential_service.redact(str(e), credential)[:2000]
             db.commit()
             audit_service.log(
                 db, user=user, action=ACTION_RUN_QUERY_FAILED, resource_type=RESOURCE_TEMPLATE,
                 resource_id=tmpl.id,
+                # 审计 detail 保留**原文**:这是 admin-only 的取证面,抹掉就查不出哪个账号被拒
                 detail={"error": str(e)[:500], "params": job.params,
-                        "executed_sql": (job.executed_sql or "")[:20000]},
+                        "executed_sql": (job.executed_sql or "")[:20000],
+                        **_run_as_detail(job)},
                 ip=ip,
             )
 
-        notify_service.notify_job_done(db, job)
+        notify_service.notify_job_done(db, job, failure)
     finally:
         db.close()
 
 
-def can_view_job_result(db: Session, user: User, job: QueryJob) -> bool:
-    """能查看/下载某次运行结果:发起人本人、管理者(管理员/开发者),或该任务的作者
-    (作者可看自己任务下的全部运行)。"""
-    if permission_service.can_access_job(user, job):
-        return True
-    return permission_service.is_template_owner(user, db.get(SqlTemplate, job.template_id))
-
-
 def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:
-    if not can_view_job_result(db, user, job):
+    # 「谁能看这次运行的结果」只有一条规则,住在 permission_service.can_access_job。
+    # 这里曾有一个 can_view_job_result 重复表述同一件事,已删除。
+    if not permission_service.can_access_job(db, user, job):
         raise PermissionDeniedError("无权下载该次运行结果")
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可下载结果")

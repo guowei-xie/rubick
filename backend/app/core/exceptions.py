@@ -24,6 +24,16 @@ class UnauthorizedError(RubicError):
     status_code = 401
 
 
+class CredentialRequiredError(RubicError):
+    """任务所属团队的取数账号缺失 / 未测通(见 services/credential_service)。
+
+    409 而非 403:请求者本身有权限,是被依赖的一项配置还没就绪,补齐后重试即可成功。
+    「你不是这个团队的成员」那种是真的没权限,走 PermissionDeniedError(403)。
+    """
+
+    status_code = 409
+
+
 class SqlSafetyError(RubicError):
     """SQL 安全网关拒绝。"""
 

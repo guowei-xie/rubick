@@ -22,7 +22,7 @@ from app.models.template import (
 )
 from app.models.user import User
 from app.schemas.common import ParamDef
-from app.services import enum_cache_service, params_service, result_service
+from app.services import credential_service, enum_cache_service, params_service, result_service
 
 
 def _next_version_no(db: Session, template_id: int) -> int:
@@ -79,6 +79,8 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         description=data.description,
         tags=data.tags,
         datasource_id=data.datasource_id,
+        # 所属团队由路由层先过 permission_service.require_can_create_in_team 校验
+        team_id=data.team_id,
         dialect=dialect,
         status=STATUS_DRAFT,
         author_id=author.id,
@@ -107,6 +109,11 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     - 原本草稿(draft)/已下线 → 维持原状态,由列表「上线」操作再晋升。
     """
     was_published = tmpl.status == STATUS_PUBLISHED
+    if was_published:
+        # 已上线任务保存后新版本会自动接替上线,那也是一次上线 ⇒ 先过卡点再落库。
+        # 提前问一次是为了「要么整件事成立、要么一行都不写」:否则作者的编辑会先 flush
+        # 出去、再被卡点回滚掉,白丢一次输入。_mark_published 里还有一道兜底。
+        credential_service.require_ready(db, tmpl)
     latest = latest_version(db, tmpl.id)
     sql_text = data.sql_text if data.sql_text is not None else (latest.sql_text if latest else "")
 
@@ -118,6 +125,8 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
         tmpl.tags = data.tags
     if data.datasource_id is not None:
         tmpl.datasource_id = data.datasource_id
+    # 刻意**不动 team_id**:TemplateUpdateIn 里根本没有这个字段。转移团队会同时改变可见范围
+    # 与取数身份,是平台管理员的治理动作,走 PUT /tasks/{id}/team。
     # 超时:编辑器每次提交完整表单,直接覆盖(None=恢复引擎默认)
     tmpl.timeout_seconds = data.timeout_seconds
     # 方言始终跟随数据源引擎
@@ -139,7 +148,7 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     # 已上线任务被编辑:新版本自动接替上线,状态与可运行性不变;
     # 草稿(draft)/已下线则维持原状态,由列表「上线」操作再晋升。
     if was_published:
-        _mark_published(tmpl, version, author, "编辑保存自动上线")
+        _mark_published(db, tmpl, version, author, "编辑保存自动上线")
 
     _sync_enum_cache(db, tmpl, version, data, author)
     db.commit()
@@ -156,8 +165,15 @@ def latest_version(db: Session, template_id: int) -> TemplateVersion | None:
     )
 
 
-def _mark_published(tmpl: SqlTemplate, version: TemplateVersion, publisher: User, note: str | None) -> None:
-    """把某版本标记为已上线并写发布留痕(不提交,由调用方统一 commit)。"""
+def _mark_published(
+    db: Session, tmpl: SqlTemplate, version: TemplateVersion, publisher: User, note: str | None
+) -> None:
+    """把某版本标记为已上线并写发布留痕(不提交,由调用方统一 commit)。
+
+    上线卡点也放在这里:所有上线入口(publish、编辑已上线任务自动接替上线,以及以后新加的)
+    都必经此函数,校验写在这一处就不可能被绕过。
+    """
+    credential_service.require_ready(db, tmpl)
     version.accepted_by = publisher.id
     version.accepted_note = note
     tmpl.published_version_id = version.id
@@ -170,7 +186,7 @@ def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -
     version = latest_version(db, tmpl.id)
     if version is None:
         raise RubicError("该任务还没有可上线的版本")
-    _mark_published(tmpl, version, publisher, note)
+    _mark_published(db, tmpl, version, publisher, note)
     db.commit()
     return version
 
@@ -190,6 +206,12 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
     if ds is None:
         raise NotFoundError("数据源不存在")
     validate_readonly(data.sql_text, ds.engine)  # 方言取自数据源
+    # 试跑用**任务所属团队**的取数账号 —— 与正式取数完全同一套身份,所以「试跑通过」
+    # 就等于「上线后能跑」。for_team 内部会校验操作者是该团队成员(平台管理员除外),
+    # 那道校验必须长在服务层:team_id 是客户端传来的。
+    credential = credential_service.for_team(
+        db, team_id=data.team_id, datasource_id=ds.id, actor=user
+    )
     bound = params_service.validate_and_bind(data.params, data.values)
     sql_text, bound = params_service.expand_list_params(data.sql_text, bound)  # 展开正选 IN
     executed_sql = params_service.render_sql(sql_text, bound)
@@ -207,12 +229,14 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
             status=JOB_RUNNING,
             source=SOURCE_TEST,
             executed_sql=executed_sql,
+            run_as_team_id=credential.owner_team_id,
+            run_as_username=credential.username if credential.is_team_account else None,
         )
         db.add(job)
         db.commit()
         db.refresh(job)
 
-    connector = get_connector(ds)
+    connector = get_connector(ds, credential)
     limit = min(data.limit, settings.MAX_RESULT_ROWS)
     try:
         result = connector.execute(
@@ -222,13 +246,16 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
             max_rows=limit,
         )
     except (RubicError, Exception) as e:  # noqa: BLE001 -- 引擎错误转可读 400,并把试跑记录标记失败
+        # 与 query_service 同一口径:面向用户的文案要抹掉团队库账号名。试跑记录也会
+        # 出现在该任务的「运行记录」里,而那对被授权的业务用户可见。
+        safe = credential_service.redact(str(e), credential)
         if job is not None:
             job.status = JOB_FAILED
-            job.error = str(e)[:2000]
+            job.error = safe[:2000]
             db.commit()
         if isinstance(e, RubicError):
             raise
-        raise RubicError(f"试跑失败:{str(e)[:500]}") from e
+        raise RubicError(f"试跑失败:{safe[:500]}") from e
 
     # 成功:存结果文件(便于运行记录里预览/导出),推进记录状态
     if job is not None:

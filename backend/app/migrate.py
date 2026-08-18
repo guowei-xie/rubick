@@ -10,12 +10,15 @@
 """
 from __future__ import annotations
 
-from sqlalchemy import inspect as sa_inspect, text
+from sqlalchemy import func, inspect as sa_inspect, select, text
+from sqlalchemy import update as sa_update
 from sqlalchemy.orm import Session
 
 import app.models  # noqa: F401  注册所有模型
 from app.core.database import Base, engine, tbl
-from app.models.template import TemplateVersion
+from app.models.team import DEFAULT_TEAM_NAME, Team, TeamMember
+from app.models.template import SqlTemplate, TemplateVersion
+from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User
 from app.reencrypt_secrets import main as reencrypt_secrets
 
 
@@ -99,6 +102,10 @@ def _retired_columns() -> list[tuple]:
         # d4d4961 取消「变量正/反选」后 modes 成为死列,当时漏了迁移:
         # 线上 rubick_query_jobs.modes 残留为 json NOT NULL,自 8/3 起阻断了全部取数入队。
         (QueryJob.__table__, "modes"),
+        # 取数身份从「个人账号」改为「团队账号」后,run_as_user_id 被 run_as_team_id 取代。
+        # 线上从未有过这一列(个人账号功能未曾发布),故这条对线上是 no-op;
+        # 登记它是为了清掉本地开发库里已经加出来的那一列。
+        (QueryJob.__table__, "run_as_user_id"),
     ]
 
 
@@ -287,10 +294,129 @@ def _migrate_params_v3() -> None:
     print(f"[migrate] params v2 → v3:重写 {changed_versions} 个版本")
 
 
+# ---------------------------------------------------------------- 团队功能
+
+
+def _default_team_needed(db: Session) -> tuple[bool, str]:
+    """是否需要建「默认团队」,以及原因(打印用)。
+
+    两种情况:
+      ① 有任务还没团队(存量库):不并入的话这些任务会变成「无主任务」,除平台管理员外谁都看不到;
+      ② 库里已有开发者/管理员但一个团队都没有:否则他们连建任务时能选的团队都没有,
+        而报错会发生在业务侧、离这次迁移很远,没人联想得到。
+    全新空库两条都不成立 ⇒ 不造一个没人要的团队。
+    """
+    orphan_tasks = db.scalar(
+        select(func.count()).select_from(SqlTemplate).where(SqlTemplate.team_id.is_(None))
+    ) or 0
+    if orphan_tasks:
+        return True, f"{orphan_tasks} 个存量任务还没有团队"
+    teams = db.scalar(select(func.count()).select_from(Team)) or 0
+    authors = db.scalar(
+        select(func.count()).select_from(User).where(User.role.in_((ROLE_ADMIN, ROLE_DEVELOPER)))
+    ) or 0
+    if teams == 0 and authors:
+        return True, f"库里已有 {authors} 名管理员/开发者,但一个团队都没有"
+    return False, ""
+
+
+def _migrate_default_team() -> None:
+    """存量任务并入「默认团队」,并把管理员/开发者纳入该团队。
+
+    **自检式幂等**:靠「还有没有 team_id 为空的任务 / 有没有团队」判断,不靠版本号或标记位,
+    因此可以反复执行。
+
+    刻意**不**把「任务作者」一律加进团队:历史上普通用户也能当作者,而加入团队等于把该团队
+    取数账号的全部数据权限交给他(见 models/team.py)。这类任务只打印出来交人工决定
+    (改角色 / 加成员 / 转移任务),不静默扩权。
+    """
+    with Session(engine) as db:
+        needed, why = _default_team_needed(db)
+        if not needed:
+            print("[migrate] 默认团队:无需建立(任务都已有团队,或是全新空库)")
+            return
+        print(f"[migrate] 默认团队:需要建立 —— {why}")
+
+        team = db.scalar(select(Team).where(Team.name == DEFAULT_TEAM_NAME))
+        if team is None:
+            team = Team(
+                name=DEFAULT_TEAM_NAME,
+                description="团队功能上线前的存量任务与成员。请由平台管理员按实际组织拆分。",
+            )
+            db.add(team)
+            db.flush()
+            print(f"[migrate] 建立团队《{DEFAULT_TEAM_NAME}》id={team.id}")
+
+        # 成员:管理员当团队管理员,开发者当普通成员。已存在的成员行跳过(幂等)。
+        existing = {
+            uid for (uid,) in db.execute(
+                select(TeamMember.user_id).where(TeamMember.team_id == team.id)
+            )
+        }
+        added = 0
+        for u in db.scalars(
+            select(User).where(User.role.in_((ROLE_ADMIN, ROLE_DEVELOPER))).order_by(User.id)
+        ):
+            if u.id in existing:
+                continue
+            db.add(TeamMember(team_id=team.id, user_id=u.id, is_team_admin=u.role == ROLE_ADMIN))
+            added += 1
+
+        # 任务并入:只动 team_id 为空的行
+        merged = db.execute(
+            sa_update(SqlTemplate)
+            .where(SqlTemplate.team_id.is_(None))
+            .values(team_id=team.id)
+        ).rowcount or 0
+        db.commit()
+        print(f"[migrate] 默认团队:并入 {merged} 个任务、新增 {added} 名成员")
+
+        # 体检:作者不在团队里的任务 —— 这些作者切换后会失去自己任务的可见性
+        stranded = db.execute(
+            select(SqlTemplate.id, SqlTemplate.name, User.name, User.role)
+            .join(User, User.id == SqlTemplate.author_id)
+            .outerjoin(
+                TeamMember,
+                (TeamMember.team_id == SqlTemplate.team_id)
+                & (TeamMember.user_id == SqlTemplate.author_id),
+            )
+            .where(TeamMember.id.is_(None))
+            .order_by(SqlTemplate.id)
+        ).all()
+        if stranded:
+            print(
+                f"[migrate] ⚠️ 以下 {len(stranded)} 个任务的作者不在其所属团队内,"
+                "切换后作者将看不到自己的任务。请人工决定(改角色并加入团队 / 转移任务):"
+            )
+            for tid, tname, uname, urole in stranded:
+                print(f"    任务#{tid} 《{tname}》 作者={uname}({urole})")
+
+
+def _assert_every_template_has_team() -> None:
+    """体检:任务必属团队。
+
+    留一行空 team_id 就意味着一个「无主任务」——除平台管理员外谁都看不到,也解析不出取数身份
+    (见 models/template.py 对 team_id 可空的说明)。宁可在部署窗口失败(有人看着、信息明确),
+    也不要到运行期变成一句「无权查看该任务」。
+    """
+    with Session(engine) as db:
+        rows = db.execute(
+            select(SqlTemplate.id, SqlTemplate.name).where(SqlTemplate.team_id.is_(None))
+        ).all()
+    if rows:
+        raise RuntimeError(
+            f"以下 {len(rows)} 个任务没有所属团队,平台无法判定其可见性与取数身份:"
+            + "、".join(f"#{tid}《{name}》" for tid, name in rows)
+            + "。请先建团队并为它们指定归属(或重跑 _migrate_default_team)。"
+        )
+    print("[migrate] 任务归属体检通过:每个任务都有所属团队")
+
+
 def main() -> None:
     print("[migrate] create_all on", engine.url)
-    # 建缺失的表(如新表)。共享枚举候选值表 template_enum_values 就是靠这一步建出来的,
-    # 它没有增量列,不需要下面的 _ensure_column。
+    # 建缺失的表(如新表)。共享枚举候选值表 template_enum_values,以及团队三张表
+    # teams / team_members / team_datasource_credentials,都是靠这一步建出来的;
+    # 它们没有增量列,不需要下面的 _ensure_column。
     Base.metadata.create_all(bind=engine)
 
     # 增量列:按任务的查询超时(P0-3)
@@ -301,6 +427,14 @@ def main() -> None:
     _ensure_column(tbl("audit_logs"), "resource_name", "VARCHAR(200)")
     # 增量索引:审计按时间范围检索 + 分页 COUNT(全库写入量最大的表,无索引会全表扫)
     _ensure_index(tbl("audit_logs"), f"ix_{tbl('audit_logs')}_created_at", "created_at")
+    # 增量列:本次取数实际使用的库身份(= 任务所属团队的团队账号),存量行留空
+    _ensure_column(tbl("query_jobs"), "run_as_team_id", "BIGINT")
+    _ensure_column(tbl("query_jobs"), "run_as_username", "VARCHAR(128)")
+    # 增量列 + 索引:任务所属团队(可见性边界 + 取数身份来源)。
+    # 只能加**可空**列(_ensure_column 的固有限制;补 NOT NULL 需 MySQL MODIFY / SQLite 重建表,
+    # 既测不到又会挡住代码回滚)——「恒有值」靠下面的回填 + 体检 + 应用层必填三处保证。
+    _ensure_column(tbl("sql_templates"), "team_id", "BIGINT")
+    _ensure_index(tbl("sql_templates"), f"ix_{tbl('sql_templates')}_team_id", "team_id")
 
     # 存量敏感字段明文 → 密文(P0-2)
     reencrypt_secrets()
@@ -317,6 +451,15 @@ def main() -> None:
     _migrate_pending_accept()
     _migrate_params_v2()
     _migrate_params_v3()
+
+    # 团队功能:存量任务并入默认团队,并体检「任务必属团队」(幂等)。
+    # 顺序必须在 _ensure_column(team_id) 之后 —— 否则回填的目标列还不存在。
+    _migrate_default_team()
+    _assert_every_template_has_team()
+
+    # 个人取数账号已被团队账号取代。线上从未有过这张表(该功能未曾发布),故对线上是 no-op;
+    # 这一步是为了清掉本地开发库里已经建出来的那张表。
+    _drop_table(tbl("user_datasource_credentials"))
 
     print("[migrate] 完成。")
 

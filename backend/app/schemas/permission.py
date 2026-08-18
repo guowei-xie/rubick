@@ -14,7 +14,10 @@ class GrantIn(BaseModel):
     subject_avatar: str | None = None
     resource_type: str = "template"
     resource_id: str
-    actions: list[str] = ["view", "run", "download"]
+    # **必须是枚举而非 list[str]**:自由字符串会让任何能对某任务授权的人塞一个 "edit" 进来,
+    # 给自己或别人开出编辑权 —— 那是一条提权后门。任务编辑权只走 /api/tasks/{id}/editors
+    # (团队管理员守卫 + 专用审计码),见 models/permission.py 的 BUSINESS_ACTIONS。
+    actions: list[Literal["view", "run", "download"]] = ["view", "run", "download"]
 
     @model_validator(mode="after")
     def _require_subject(self) -> "GrantIn":
