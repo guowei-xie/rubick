@@ -124,11 +124,12 @@ export default function TaskCard({
           <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
             <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
           </Tooltip>
-          {/* 所属团队的取数账号没就绪 ⇒ 这任务跑不动。只给管得着的人看:
-              业务用户看一堆自己修不了的红字只会造成困扰(他们点运行时会拿到指名团队的报错) */}
+          {/* 所属团队压根没登记该数据源的取数账号 ⇒ 这任务跑不动。只给管得着的人看:
+              业务用户看一堆自己修不了的红字只会造成困扰(他们点运行时会拿到指名团队的报错)。
+              「已配置但没点过测试连接」不在此列 —— 那种账号照样能跑,不该挂告警。 */}
           {r.can_manage && r.credential_ready === false && (
             <Tooltip
-              title={`团队${r.team_name ? `《${r.team_name}》` : ""}尚未配置该数据源的取数账号,或账号未通过连接测试 —— 该任务当前无法运行,请联系团队管理员`}
+              title={`团队${r.team_name ? `《${r.team_name}》` : ""}尚未登记该数据源的取数账号 —— 该任务当前无法运行,请联系团队管理员`}
             >
               <span
                 style={{
@@ -137,8 +138,8 @@ export default function TaskCard({
                   gap: 4,
                   padding: "2px 8px",
                   borderRadius: 10,
-                  background: CREDENTIAL_STATUS.unverified.tint,
-                  color: CREDENTIAL_STATUS.unverified.dot,
+                  background: CREDENTIAL_STATUS.unconfigured.tint,
+                  color: CREDENTIAL_STATUS.unconfigured.dot,
                   fontSize: 12,
                   fontWeight: 600,
                 }}

@@ -64,8 +64,9 @@ class TaskOut(BaseModel):
     # 可填参取数(已发布且有运行权限)。注意它只表达「授权够不够」,
     # 跑得起来还要 credential_ready —— 那是别人的配置,不属于本人的权限
     can_run: bool = False
-    # 任务所属**团队**在该任务数据源上的取数账号是否就绪。false ⇒ 该任务跑不动,
-    # 得团队管理员去配。只给 can_manage 的人展示告警(业务用户看了也修不了)。
+    # 任务所属**团队**在该任务数据源上**登记过取数账号吗**。false ⇒ 连都没得连,该任务跑不动,
+    # 得团队管理员去登记。不看「测通没」——测试连接是非必选项(见 services/credential_service)。
+    # 只给 can_manage 的人展示告警(业务用户看了也修不了)。
     # 默认 False:漏算时宁可多一个告警,也不要静默宣称「就绪」
     credential_ready: bool = False
     authorized_users: list[AuthorizedUserOut] = []  # 显式授权可运行的用户(卡片参与者头像)

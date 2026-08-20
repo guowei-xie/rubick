@@ -27,12 +27,14 @@ export default function CredentialTag({
   const meta = CREDENTIAL_STATUS[credentialState(c)];
   if (!c.configured) return <Tag color={meta.color}>{meta.label}</Tag>;
 
+  // 未测通只是「还没验过」,不代表不可用 —— 任务照样能上线、能运行(测试连接是可选自检)
   const tip = c.verified
     ? `最近测通:${fmtTime(c.last_verified_at)}`
-    : c.last_verify_error || "还没测过,或改过账号后需要重新测试";
+    : c.last_verify_error ||
+      "还没点过「测试连接」(或改过账号后自检痕迹被清空)。不影响任务运行,建议顺手验一下";
   const text =
     withUsername && c.username
-      ? `${c.username}${c.verified ? "" : " · 未测通"}`
+      ? `${c.username}${c.verified ? "" : " · 未验过"}`
       : meta.label;
 
   return (

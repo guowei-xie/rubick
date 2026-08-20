@@ -14,9 +14,10 @@ import CredentialTag from "../../components/CredentialTag";
  * 平台管理员的「取数账号」总览 —— **常态健康看板**。
  *
  * 这不再是「切开关前的体检表」:强制使用团队账号已是唯一路径,过渡开关已删除。
- * 因此下方「此刻跑不动的已上线任务」不会因为有上线卡点就恒为空,现实里有三条路径会让它冒出来:
- *   ① 团队管理员改了用户名/密码 ⇒ 测通被清 ⇒ 该源上全团队任务集体失效(最危险的一步);
- *   ② 账号被删;③ 库侧权限变更导致重测失败。
+ * 下方「此刻缺账号的已上线任务」只收**压根没有账号**的两种情形:① 任务没有所属团队;
+ * ② 所属团队在该数据源上的账号被回收/从未登记。
+ * **未测通不在此列** —— 测试连接是可选的自检,没点过的账号照样能跑(见后端 credential_service);
+ * 覆盖矩阵里仍会用「已配置 · 未验过」把它标出来,供你催团队自查。
  *
  * 本页只看状态、可回收,拿不到密码(接口就不回传)。
  */
@@ -136,8 +137,9 @@ export default function AdminCredentialsPage() {
         message="任务一律用「所属团队」的数据库账号取数"
         description={
           <>
-            团队账号未配置或未测通时，该团队在该数据源上的任务<b>不允许上线、也无法运行</b>
-            （不会静默回退到数据源的公共账号）。账号由各团队的<b>团队管理员</b>在团队页配置，
+            团队<b>没有登记账号</b>时，该团队在该数据源上的任务不允许上线、也无法运行
+            （不会静默回退到数据源的公共账号）。「测试连接」是团队管理员的<b>可选自检</b>，
+            没点过的账号一样能跑。账号由各团队的<b>团队管理员</b>在团队页配置，
             密码加密存储，<b>任何人（含平台管理员）都看不到</b> —— 你在这里只能看到状态与库用户名，
             以及在权限调整时回收账号。
           </>
@@ -157,7 +159,7 @@ export default function AdminCredentialsPage() {
       />
 
       <div style={{ fontWeight: 600, margin: "28px 0 12px" }}>
-        此刻跑不动的已上线任务
+        此刻缺账号的已上线任务
         {notReady.length > 0 ? (
           <Tag color="red" style={{ marginLeft: 8 }}>
             {notReady.length}
@@ -174,7 +176,7 @@ export default function AdminCredentialsPage() {
           showIcon
           style={{ marginBottom: 12 }}
           message="这些已上线任务现在就跑不动 —— 业务同学点运行会失败"
-          description="常见原因:团队管理员刚改过账号(测通状态被清空,该数据源上本团队全部任务一起停摆),或账号被回收。请点团队名去催配。"
+          description="原因只有一种:所属团队在该数据源上压根没有取数账号(被回收,或从未登记),或任务没有所属团队。请点团队名去催配。"
         />
       )}
       <Table
@@ -184,7 +186,7 @@ export default function AdminCredentialsPage() {
         columns={notReadyColumns}
         pagination={false}
         size="small"
-        locale={{ emptyText: "全部已上线任务的团队账号都已配置并测通" }}
+        locale={{ emptyText: "全部已上线任务的所属团队都登记了取数账号" }}
       />
     </Card>
   );

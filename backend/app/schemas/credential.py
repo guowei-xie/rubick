@@ -29,7 +29,7 @@ class CredentialCellOut(BaseModel):
     datasource_id: int
     configured: bool
     username: str | None = None  # 仅团队管理员 / 平台管理员可见,否则恒为 None
-    verified: bool = False  # 是否通过过连接测试(上线卡点看这个)
+    verified: bool = False  # 最近一次连接测试是否通过。纯提示,不影响能否上线/运行
     last_verified_at: datetime | None = None
     last_verify_error: str | None = None
     # 上次是谁改的。团队账号是共享的,而团队管理员读不到审计日志(/audit 是 require_admin),
@@ -72,7 +72,10 @@ class TeamCredentialsOut(BaseModel):
 
 
 class NotReadyTemplateOut(BaseModel):
-    """已上线但所属团队账号未就绪的任务 —— **此刻就跑不动**,需要该团队去配账号。"""
+    """已上线但**压根没有取数账号**的任务 —— 此刻就跑不动,需要该团队去登记账号。
+
+    「已配置但未测通」不在此列:测试连接是非必选项,那种账号照样能跑
+    (见 services/credential_service 模块 docstring)。"""
 
     template_id: int
     template_name: str
@@ -82,7 +85,7 @@ class NotReadyTemplateOut(BaseModel):
     author_name: str | None = None
     datasource_id: int
     datasource_name: str | None = None
-    reason: str  # 未配置 / 未测通 / 无所属团队
+    reason: str  # 未配置 / 无所属团队
 
 
 class CredentialOverviewOut(BaseModel):
@@ -90,7 +93,7 @@ class CredentialOverviewOut(BaseModel):
 
     刻意**不再有 enforced 字段**:强制使用团队账号已是唯一路径,过渡开关
     REQUIRE_OWNER_CREDENTIAL 已删除。not_ready_templates 非空即意味着那些已上线任务
-    此刻跑不动,而不再是「切开关前要清零的清单」。
+    此刻跑不动 —— 只因为**没有账号**,不因为「没点过测试连接」。
     """
 
     datasources: list[DataSourceBriefOut]

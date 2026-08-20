@@ -57,7 +57,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
 
     ids = [t.id for t in rows]
     authorized = permission_service.authorized_run_users(db, ids)  # 一次批量查
-    # 任务所属团队的取数账号是否就绪,一次批量算完(逐个查会 N+1)。
+    # 任务所属团队登记过该数据源的取数账号吗,一次批量算完(逐个查会 N+1)。
     # 传已加载的行而不是 id —— 团队与数据源都在手上,不必让服务再查一遍
     cred_ready = credential_service.ready_template_ids(db, rows)
     # 各任务最后一次运行时间(含试跑),一次批量聚合,避免 N+1

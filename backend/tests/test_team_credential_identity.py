@@ -162,6 +162,30 @@ def test_enqueue_preflight_names_the_team(db, ds, author, biz, team_a, spy_conne
     assert team_a.name in str(e.value) and ds.name in str(e.value)
 
 
+def test_enqueue_block_notifies_team_admins(
+    db, ds, author, biz, a_admin, team_a, ready, spy_connector
+):
+    """入队即被拦下时,**团队管理员照样要收到通知**。
+
+    这是「账号没配/失效」的常见落点:worker 那条只在排队期间被改掉时才触发。
+    少了这条,业务用户拿到一句「找团队管理员」就没下文了,而团队管理员毫不知情。
+    通知不依赖运行记录行 —— 此时 job 还没建出来。
+    """
+    spy_connector()
+    tmpl = _published(db, author, ds, team_a, name="tid-入队即被拦下")
+    _grant_run(db, tmpl, biz, author)
+    credential_service.delete(db, team_a.id, ds.id)
+    since_note = db.scalar(select(func.max(Notification.id))) or 0
+
+    with pytest.raises(CredentialRequiredError):
+        query_service.enqueue(db, biz, tmpl.id, {"d": "2026-08-01"})
+
+    db.expire_all()
+    notes = db.scalars(select(Notification).where(Notification.id > since_note)).all()
+    assert {n.user_id for n in notes} == {a_admin.id}, "只通知能修的人,发起人已同步拿到报错"
+    assert notes[0].job_id is None and notes[0].template_id == tmpl.id
+
+
 def test_worker_rechecks_identity_and_notifies_team_admins(
     db, ds, author, biz, a_admin, team_a, ready, spy_connector, monkeypatch
 ):
@@ -327,10 +351,14 @@ def test_enum_sql_route_enforces_membership(db, ds, author, a_admin, team_a, tea
 # ---------------------------------------------------------------- 上线卡点
 
 
-def test_publish_gate_blocks_until_team_account_is_verified(
+def test_publish_gate_blocks_only_until_team_account_exists(
     db, ds, author, team_a, spy_connector
 ):
-    """三段:未配置拦下 → 已配未测通拦下 → 测通放行。"""
+    """两段:未登记账号拦下 → 一登记就放行,**不要求先点「测试连接」**。
+
+    卡点只拦「压根没有账号」:那时连都没得连。测通与否不拦 —— 否则团队管理员改完密码
+    忘了点一下,该数据源上全团队的任务就集体下线,而测通也只代表那一刻连得上。
+    """
     spy_connector()
     tmpl = create_template(
         TemplateCreateIn(
@@ -346,10 +374,7 @@ def test_publish_gate_blocks_until_team_account_is_verified(
         db, team_id=team_a.id, datasource_id=ds.id,
         username="teamA_acct", password="pw", updated_by=A_ADMIN,
     )
-    with pytest.raises(CredentialRequiredError, match="尚未通过连接测试"):
-        publish(tmpl.id, PublishIn(note="上线"), db, author, ip=None)
-
-    credential_service.verify(db, cred)
+    assert cred.verified is False, "刻意不测:上线不该要求先测通"
     publish(tmpl.id, PublishIn(note="上线"), db, author, ip=None)
     db.refresh(tmpl)
     assert tmpl.published_version_id is not None

@@ -94,11 +94,12 @@ def team_factory(db):
 
 @pytest.fixture
 def team_credential(db):
-    """给 (团队 × 数据源) 登记一套**已测通**的取数账号。
+    """给 (团队 × 数据源) 登记一套取数账号,并顺手标记为已测通。
 
-    上线卡点(credential_service.require_ready)要求团队账号已测通,所以任何走到 publish
-    的用例都需要它。这里直接写 last_verified_at 而不真去连库 —— 「测通」这条链路由
-    spy_connector 的用例专门覆盖,其它用例只需要一个「已就绪」的前置状态。
+    上线卡点(credential_service.require_ready)要求团队**登记过**账号,所以任何走到 publish
+    的用例都需要它。测通与否不影响任何拦截(测试连接是非必选项),这里仍写上 last_verified_at
+    是为了让用例的前置状态与真实环境里「配完顺手验一下」的常态一致 —— 「没验过也能跑」由
+    test_unverified_credential_is_usable 专门覆盖。
     """
 
     def make(team, ds, *, username: str = "team_acct", password: str | None = "team-pw"):

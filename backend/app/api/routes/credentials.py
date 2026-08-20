@@ -112,8 +112,9 @@ def upsert_team_credential(
 ):
     """登记/修改本团队在该数据源上的取数账号。password 留空表示保留原密码。
 
-    改动后 verified 会被重置为 false —— 换了凭证必须重新测通。注意这意味着**该数据源上
-    本团队的全部任务会立即变为未就绪、无法运行**,前端要为此做二次确认。
+    改动后 verified 会被重置为 false —— 那条测通记录只对被换掉的那套凭证成立。
+    **这不影响任务能不能跑**:测试连接是非必选项(见 services/credential_service),
+    账号登记好即可上线与取数。
     """
     team = team_service.require_team_admin(db, user, team_id)
     cred, password_changed = credential_service.upsert(
@@ -135,9 +136,10 @@ def verify_team_credential(  # 刻意不叫 test_*:那样会被 pytest 当成测
     user: User = Depends(require_task_author),
     ip: str | None = Depends(client_ip),
 ):
-    """用本团队的账号真连一次目标库。测通才算就绪(上线卡点看的就是这个)。
+    """用本团队的账号真连一次目标库。**自愿的自检**:不测也能上线、也能取数,
+    这一步只是让团队管理员当场知道账号填对没。
 
-    审计:这是上线卡点的凭据,失败也要留痕 —— 「一直测不通」本身就是要能查的事实。
+    审计:成功失败都留痕 —— 「一直测不通」本身就是要能查的治理事实。
     """
     team = team_service.require_team_admin(db, user, team_id)
     cred = credential_service.get(db, team.id, ds_id)

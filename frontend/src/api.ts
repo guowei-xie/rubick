@@ -231,7 +231,7 @@ export interface TeamCredentialStatus {
   database?: string | null;
   configured: boolean; // 是否已登记账号
   username?: string | null; // 仅团队管理员 / 平台管理员可见
-  verified: boolean; // 是否通过过连接测试(任务上线的卡点看这个)
+  verified: boolean; // 最近一次连接测试是否通过。纯提示 —— 不影响任务能否上线/运行
   last_verified_at?: string | null;
   last_verify_error?: string | null;
   updated_by?: number | null;
@@ -247,7 +247,7 @@ export interface NotReadyTemplate {
   author_name?: string | null;
   datasource_id: number;
   datasource_name?: string | null;
-  reason: string; // 未配置 / 未测通 / 无所属团队
+  reason: string; // 未配置 / 无所属团队
 }
 export interface CredentialOverview {
   datasources: { id: number; name: string; engine: string }[];
@@ -262,13 +262,13 @@ export interface CredentialOverview {
   not_ready_templates: NotReadyTemplate[];
 }
 
-/** 我所在各团队 × 各数据源的就绪态。给任务编辑器用,**永不含库用户名**。 */
+/** 我所在各团队 × 各数据源的账号状态(配没配 / 验过没)。给任务编辑器用,**永不含库用户名**。 */
 export const myTeamCredentials = () =>
   http.get("/credentials/my-teams").then((r) => r.data as TeamCredentialStatus[]);
 export const listTeamCredentials = (teamId: number) =>
   http.get(`/credentials/teams/${teamId}`).then((r) => r.data as TeamCredentialStatus[]);
-/** 登记/修改团队在某数据源上的账号;password 留空表示保留原密码。改动后需重新测通 ——
- *  注意那会让该数据源上**本团队的全部任务**立即变为未就绪。 */
+/** 登记/修改团队在某数据源上的账号;password 留空表示保留原密码。
+ *  改动会清空「已测通」这条自检痕迹,但**不影响任务能不能跑** —— 测试连接是可选的。 */
 export const saveTeamCredential = (
   teamId: number,
   dsId: number,

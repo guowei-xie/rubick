@@ -21,7 +21,6 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, String, UniqueConstraint
-from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, tbl
@@ -47,8 +46,9 @@ class TeamDataSourceCredential(Base, TimestampMixin):
     password: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
 
     # 最近一次连通性测试**通过**的时间。None = 从未测通。
-    # 这是上线卡点的唯一依据:改过用户名/密码就必须清空它(见 credential_service.upsert),
-    # 否则「换了个错密码」的凭证会顶着旧的测通记录继续放行。
+    # **不是卡点,只是自检痕迹**:测试连接是非必选项,未测通的账号照样能上线、能取数
+    # (见 credential_service 模块 docstring)。改过用户名/密码时清空它
+    # (见 credential_service.upsert),因为那条记录只对被换掉的那套凭证成立。
     last_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # 最近一次测试失败的原因,给团队管理员自查用。引擎报错文本,不含密码
     last_verify_error: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
@@ -61,19 +61,14 @@ class TeamDataSourceCredential(Base, TimestampMixin):
     # 刻意不声明 team / datasource 关系:全部调用点要么只用 id、要么手上已有对象。
     # 加了 lazy="joined" 会让每次凭证查询都多两个 LEFT JOIN,还会把 password 列拉出来解密。
 
-    @hybrid_property
+    @property
     def verified(self) -> bool:
-        """凭证是否可用 = 通过过连接测试。
+        """最近一次连接测试通过过吗。**纯展示口径,不表达「能不能用」** ——
+        能不能用只看这行凭证在不在(见 credential_service._resolve)。
 
-        hybrid 而非普通 property:同一条规则既要在 Python 里判(`cred.verified`),
-        也要在 SQL 里筛(`where(TeamDataSourceCredential.verified)`)。两处共用这一条规则,
-        以后给「就绪」加维度(如测通有效期)只改这里,不会出现「列表说就绪、运行时被拒」。
+        普通 property 而非 hybrid:自从测试连接变成非必选项,就没有任何查询按它筛了。
+        留着 hybrid 反而危险 —— 缺了 SQL 表达式时 `where(cls.verified)` 会静默求值成常量
+        True(`x is not None` 是 Python 的身份比较,无法重载成 SQL);普通 property 会让
+        这种误用当场报错。展示侧的批量判定借 fget 复用本实现,见 credential_service._is_verified。
         """
         return self.last_verified_at is not None
-
-    @verified.inplace.expression
-    @classmethod
-    def _verified_expr(cls):
-        """SQL 侧的同一条规则。必须显式给出:`x is not None` 是 Python 的身份比较,
-        无法被重载成 SQL,类级别求值只会得到常量 True。"""
-        return cls.last_verified_at.is_not(None)

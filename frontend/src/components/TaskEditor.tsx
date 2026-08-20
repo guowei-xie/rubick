@@ -77,14 +77,14 @@ export default function TaskEditor({
   }));
   // 名字从下拉选项里取(而不是只从 user.teams):平台管理员选的团队他自己可能并不属于
   const teamLabel = teamOptions.find((o) => o.value === teamWatch)?.label ?? teamCred?.team_name;
-  // 选完团队 + 数据源就当场提示账号就绪没 —— 别等点上线才被卡点拦下。
+  // 选完团队 + 数据源就当场提示账号登记了没 —— 别等点上线才被卡点拦下。
+  // 只有「压根没账号」才拦上线;「有账号但没点过测试连接」照样能上线,故那种情况不报警,
+  // 顶多在提示里带一句「还没验过」。
   // 刻意不显示库用户名:它是半机密(Hive auth=NONE 下就是完整凭证),只在团队管理员的配置页可见。
   const credHint =
-    !teamWatch || !teamCred ? undefined : !teamCred.verified ? (
+    !teamWatch || !teamCred ? undefined : !teamCred.configured ? (
       <span style={{ color: "#d46b08" }}>
-        团队《{teamLabel}》
-        {teamCred.configured ? "在该数据源上的取数账号还没测通" : "还没配置该数据源的取数账号"}
-        ,任务将无法上线 ——{" "}
+        团队《{teamLabel}》还没登记该数据源的取数账号,任务将无法上线 ——{" "}
         {isTeamAdminOf(user, teamWatch) ? (
           <a
             href={withBase(`/teams/${teamWatch}?tab=credentials`)}
@@ -98,7 +98,10 @@ export default function TaskEditor({
         )}
       </span>
     ) : (
-      <span style={{ color: "#8c8c8c" }}>取数将使用团队《{teamLabel}》的账号(已测通)</span>
+      <span style={{ color: "#8c8c8c" }}>
+        取数将使用团队《{teamLabel}》的账号
+        {teamCred.verified ? "(已测通)" : "(该账号还没点过「测试连接」,不影响上线)"}
+      </span>
     );
 
   useEffect(() => {

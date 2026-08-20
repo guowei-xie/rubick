@@ -45,10 +45,12 @@ export const EDITOR_SOURCE_HINT: Record<string, string> = {
   granted: "被授予了该任务的编辑权",
 };
 
-// 团队取数账号的三态。dot/tint 供任务卡片的告警胶囊复用(同 TEMPLATE_STATUS 的用法)
+// 团队取数账号的三态。dot/tint 供任务卡片的告警胶囊复用(同 TEMPLATE_STATUS 的用法)。
+// 注意只有 unconfigured 才意味着「跑不动」:测试连接是可选自检,「已配置 · 未验过」照样能跑,
+// 故它用中性的蓝而不是橙 —— 橙色会被读成「有问题待处理」。
 export const CREDENTIAL_STATUS: TagMap = {
-  unconfigured: { color: "default", label: "未配置" },
-  unverified: { color: "orange", label: "已配置 · 未测通", dot: "#fa8c16", tint: "#fff2e8" },
+  unconfigured: { color: "default", label: "未配置", dot: "#fa8c16", tint: "#fff2e8" },
+  unverified: { color: "blue", label: "已配置 · 未验过", dot: "#1677ff", tint: "#e6f4ff" },
   verified: { color: "green", label: "已测通", dot: "#52c41a", tint: "#e8f6ec" },
 };
 

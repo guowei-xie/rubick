@@ -27,8 +27,12 @@
 半机密(Hive 在 auth=NONE 下用户名本身就是完整凭证,拿到就能用本地客户端绕过平台直连),
 故只对该团队的团队管理员、平台管理员与审计日志可见 —— 见 reveal_username 参数与 redact()。
 
-**「就绪」只有一处定义**:TeamDataSourceCredential.verified(hybrid,Python 与 SQL 共用),
-本模块的单行判定与批量判定都引用它。
+**「就绪」= 已登记账号,测试连接不是必选项**:配好用户名/密码即可上线与运行,
+`verified`(最近一次连接测试是否通过)只是给团队管理员的自检信息与页面上的弱提醒,
+不参与任何拦截。理由:测通与否只代表**那一刻**连得上,库侧权限随时会变,拿它当卡点既拦不住
+真正的失败,又会因为「改完密码忘了点测试」让该数据源上全团队的任务集体停摆 ——
+把偶发的连不上留给运行时报错(错误文案已指名团队与补救路径),比预先卡住所有人划算。
+真正必须拦的只有「压根没有账号」:那时连都没得连,失败是必然的。
 """
 from __future__ import annotations
 
@@ -86,16 +90,14 @@ def _resolve(db: Session, ds: DataSource, team: Team | None, remedy: str) -> Cre
         raise CredentialRequiredError(
             f"团队《{team.name}》尚未配置数据源《{ds.name}》的取数账号,{remedy}"
         )
-    if not cred.verified:
-        raise CredentialRequiredError(
-            f"团队《{team.name}》在数据源《{ds.name}》上的取数账号尚未通过连接测试,{remedy}"
-        )
+    # 刻意不看 cred.verified:测试连接是自愿的自检,不是取数的前置条件(见模块 docstring)。
+    # 账号真的连不上时,由引擎在本次取数里报错 —— 那条报错同样指名团队与补救路径。
     return Credential(
         username=cred.username, password=cred.password, owner_team_id=cred.team_id
     )
 
 
-_REMEDY = "请联系该团队的团队管理员在「我的团队 → 团队取数账号」中配置并测试连接"
+_REMEDY = "请联系该团队的团队管理员在「我的团队 → 团队取数账号」中登记账号"
 
 
 def for_template(db: Session, tmpl: SqlTemplate) -> Credential:
@@ -130,12 +132,15 @@ def for_team(
         raise PermissionDeniedError(f"你不是团队《{team.name}》的成员,无法使用该团队的取数账号")
     return _resolve(
         db, _load_datasource(db, datasource_id), team,
-        "请联系该团队的团队管理员配置并测试连接后再试",
+        "请联系该团队的团队管理员登记账号后再试",
     )
 
 
 def require_ready(db: Session, tmpl: SqlTemplate) -> None:
-    """上线卡点:不就绪就别让它上线,免得业务用户第一次点运行才发现跑不了。
+    """上线卡点:**只拦「压根没有账号」**,免得业务用户第一次点运行才发现连都没得连。
+
+    不拦「未测通」:测试连接是非必选项(见模块 docstring),否则团队管理员改完密码忘了点一下,
+    该数据源上全团队的任务就会集体下线。
 
     编辑一个已上线的任务会让新版本自动接替上线(见 template_service.add_version),
     那同样是一次上线,故文案要把这条路径也说清楚,否则作者会困惑「我只是点了保存」。
@@ -184,9 +189,9 @@ def upsert(
     """按 (team_id, datasource_id) 覆盖写,返回 (凭证行, 密码是否被改动)。
 
     password 传空表示保留原密码(与数据源编辑同一约定,见 routes/datasources.py)。
-    用户名或密码有变动即清空 last_verified_at:换了凭证就必须重新测通,否则新凭证会
-    顶着旧的测通记录蒙混过上线卡点 —— 而这次「未就绪」会让该数据源上**本团队的全部任务**
-    集体跑不动,所以前端在改密码时要做二次确认。
+    用户名或密码有变动即清空 last_verified_at:那条记录是「**这套**凭证连通过」的凭据,
+    换了凭证它就失效了,继续挂着只会误导团队管理员。清空**不影响任务能不能跑** ——
+    测试连接是非必选项(见模块 docstring),所以这里也不需要前端做什么二次确认。
     """
     _load_datasource(db, datasource_id)
     username = (username or "").strip()
@@ -235,10 +240,12 @@ def probe(ds: DataSource, credential: Credential) -> None:
 
 
 def verify(db: Session, cred: TeamDataSourceCredential) -> None:
-    """用这套凭证真连一次目标库。成功记 last_verified_at,失败记原因并**清空**测通状态。
+    """用这套凭证真连一次目标库(**自愿的自检,不是上线前置条件**)。
+    成功记 last_verified_at,失败记原因并清空测通状态。
 
-    失败即清空是有意的:一套连不上的凭证不该继续以「已测通」的身份通过上线卡点。
-    偶发网络问题导致的清空,重测一次即可恢复。
+    这条链路的价值是「让团队管理员当场知道账号填对没」,而不是给平台一个卡点 ——
+    测通只代表那一刻连得上,库侧权限随时会变(见模块 docstring)。
+    失败即清空:那条测通记录只对当次连接成立,留着会让人误以为账号还好着。
     注:两条路径都会在返回/抛出**之前**把状态落库并 commit —— 路由层的审计据此记 ok。
     """
     ds = _load_datasource(db, cred.datasource_id)
@@ -286,8 +293,8 @@ def delete_for_team(db: Session, team_id: int) -> int:
 # ---------------------------------------------------------------- 查询视图
 
 
-def _verified_pairs(db: Session, pairs: set[tuple[int, int]]) -> set[tuple[int, int]]:
-    """给定 (team_id, datasource_id) 组合中已测通的那些。
+def _configured_pairs(db: Session, pairs: set[tuple[int, int]]) -> set[tuple[int, int]]:
+    """给定 (team_id, datasource_id) 组合中**已登记账号**的那些(不看测通与否)。
 
     只取两列(不取实体):实体加载会把 password 这个 EncryptedText 列一并解密,
     而这里一个密码都不需要 —— 任务列表是落地页,每次渲染白解密几百行很不值。
@@ -299,7 +306,6 @@ def _verified_pairs(db: Session, pairs: set[tuple[int, int]]) -> set[tuple[int, 
     ds_ids = {d for _, d in pairs}
     rows = db.execute(
         select(TeamDataSourceCredential.team_id, TeamDataSourceCredential.datasource_id).where(
-            TeamDataSourceCredential.verified,
             TeamDataSourceCredential.team_id.in_(team_ids),
             TeamDataSourceCredential.datasource_id.in_(ds_ids),
         )
@@ -308,18 +314,18 @@ def _verified_pairs(db: Session, pairs: set[tuple[int, int]]) -> set[tuple[int, 
 
 
 def ready_template_ids(db: Session, templates) -> set[int]:
-    """给定任务里「所属团队的凭证已就绪」的那些 id。
+    """给定任务里「所属团队已登记该数据源的取数账号」的那些 id。
 
     收已加载的任务对象而不是 id:调用方(任务列表)手上本来就有整行,
     只收 id 会让这里为了拿回 team_id / datasource_id 再查一遍库。
     """
-    verified = _verified_pairs(
+    configured = _configured_pairs(
         db, {(t.team_id, t.datasource_id) for t in templates if t.team_id is not None}
     )
     return {
         t.id
         for t in templates
-        if t.team_id is not None and (t.team_id, t.datasource_id) in verified
+        if t.team_id is not None and (t.team_id, t.datasource_id) in configured
     }
 
 
@@ -404,7 +410,7 @@ def list_for_team(db: Session, team_id: int, *, reveal_username: bool) -> list[d
 
 def my_teams_status(db: Session, user: User) -> list[dict]:
     """我所在各团队 × 各数据源的就绪态。给任务编辑器用:选完团队与数据源就能当场提示
-    「就绪 / 未配置 / 未测通」,不必等到点上线才发现。
+    「已登记 / 未登记」,不必等到点上线才发现;未测通只作为一句建议性提示。
 
     **永不含 username** —— 编辑器只需要知道「就绪没」,而它面向全体团队成员。
     """
@@ -437,12 +443,13 @@ def my_teams_status(db: Session, user: User) -> list[dict]:
 
 
 def overview(db: Session) -> dict:
-    """平台管理员视角:团队 × 数据源 的覆盖矩阵 + 此刻跑不动的已上线任务。
+    """平台管理员视角:团队 × 数据源 的覆盖矩阵 + 此刻缺账号的已上线任务。
 
-    **这不再是「切开关前的体检表」而是常态健康看板** —— 开关已取消,`not_ready_templates`
-    不会因为有上线卡点就恒为空。现实里有三条路径会让它冒出来:
-      ① 团队管理员改了用户名/密码 ⇒ 测通被清 ⇒ 该源上全团队任务集体失效(最危险的一步);
-      ② 账号被删;③ 库侧权限变更导致重测失败。
+    **常态健康看板**。`not_ready_templates` 只收「压根没有账号」的两种情形:
+      ① 任务没有所属团队;② 所属团队在该数据源上的账号被删/从未登记。
+    **不再收「未测通」** —— 测试连接是非必选项(见模块 docstring),未测通的账号照样能跑,
+    把它列进「跑不动」只会制造一份永远清不完、也不该清的清单。测通与否仍在覆盖矩阵里
+    以弱提醒呈现,供管理员催团队自查。
 
     全部走列级批量查询后在内存里配对,不做 N+1,也不加载任何密码。
     """
@@ -479,7 +486,7 @@ def overview(db: Session) -> dict:
         for t in teams
     ]
 
-    # 此刻跑不动的已上线任务:所属团队在该任务数据源上没有已测通的凭证。
+    # 此刻跑不动的已上线任务:所属团队在该任务数据源上压根没有凭证行。
     # 列级 select + join 取团队/作者名:SqlTemplate 实体会把 description/tags 与三个 joined
     # 关系一起拉来,而这里只要几个字段。
     ds_names = {ds.id: ds.name for ds in datasources}
@@ -494,11 +501,7 @@ def overview(db: Session) -> dict:
             "author_name": author_name,
             "datasource_id": ds_id,
             "datasource_name": ds_names.get(ds_id),
-            "reason": (
-                "无所属团队"
-                if team_id is None
-                else ("未测通" if (team_id, ds_id) in creds else "未配置")
-            ),
+            "reason": "无所属团队" if team_id is None else "未配置",
         }
         for tid, name, team_id, author_id, author_name, ds_id in db.execute(
             select(
@@ -513,7 +516,7 @@ def overview(db: Session) -> dict:
             .where(SqlTemplate.status == STATUS_PUBLISHED)
             .order_by(SqlTemplate.id)
         )
-        if team_id is None or not _is_verified(creds.get((team_id, ds_id)))
+        if team_id is None or (team_id, ds_id) not in creds
     ]
 
     return {
@@ -526,5 +529,11 @@ def overview(db: Session) -> dict:
 
 
 def _is_verified(cred) -> bool:
-    """就绪判定,对 ORM 行与列级 Row 都成立(两者都有 last_verified_at)。"""
-    return cred is not None and cred.last_verified_at is not None
+    """「最近一次测试连接通过过吗」,对 ORM 行与列级 Row 都成立(两者都有 last_verified_at)。
+
+    这是纯展示口径(三态标签、覆盖矩阵的弱提醒),**不参与任何拦截** —— 拦截只看有没有账号。
+    直接借模型上那条 property 的实现(fget),不在这里另抄一遍:本模块的查询视图大多拿的是
+    列级 Row(为了不解密 password),Row 上没有属性描述符,但 fget 只读 last_verified_at,
+    对 Row 同样成立。
+    """
+    return cred is not None and TeamDataSourceCredential.verified.fget(cred)

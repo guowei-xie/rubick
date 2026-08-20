@@ -17,6 +17,9 @@ import { dash, fmtTime } from "../format";
  * 本团队的任务运行时用的就是这里登记的库账号,能取到什么由数据库决定。
  * 每个数据源一行(含尚未配置的),这样「还差哪个源没配」一眼可见。
  *
+ * 「测试连接」是**自愿的自检**,不是配置流程里的必经一步:账号存下来就能上线、能取数。
+ * 未测通只在状态列留一条弱提醒,不拦任何操作(见后端 services/credential_service)。
+ *
  * canEdit=false(普通团队成员)时只读:后端连库用户名都不返回(半机密,见 api.ts),
  * 页面也不渲染任何写操作按钮。
  */
@@ -57,8 +60,9 @@ export default function TeamCredentialsPanel({
   const replaceRow = (updated: TeamCredentialStatus) =>
     setRows((rs) => rs.map((r) => (r.datasource_id === updated.datasource_id ? updated : r)));
 
-  const doSave = async (v: { username: string; password?: string }) => {
-    if (!editing) return;
+  /** 返回是否保存成功 —— 「保存并测试」要据此决定还测不测。 */
+  const doSave = async (v: { username: string; password?: string }): Promise<boolean> => {
+    if (!editing) return false;
     setSaving(true);
     try {
       replaceRow(
@@ -68,43 +72,36 @@ export default function TeamCredentialsPanel({
           password: v.password || undefined,
         })
       );
-      message.success("已保存,请点「测试连接」验证后本团队的任务才能上线");
+      message.success("已保存");
       setEditing(null);
+      return true;
     } catch (e: any) {
       message.error(errMsg(e, "保存失败"));
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
+  // 改动只会清空「已测通」这条自检痕迹,不影响任务能不能跑(测试连接非必选),
+  // 故这里不再做二次确认 —— 从前那次确认是为了警告「全团队任务立刻停摆」,那个后果已经不存在了。
   const save = async () => {
+    await doSave(await form.validateFields());
+  };
+
+  /** 「保存并测试连接」:测通不是上线的前置条件,但配的时候顺手验一下最省心,
+   *  所以把它做成弹窗里的一个次要按钮 —— 想验的人一步到位,不想验的直接点「保存」。 */
+  const saveAndTest = async () => {
+    const row = editing;
     const v = await form.validateFields();
-    // 改动会清空测通状态 —— 团队账号是共享的,一次误改会让该数据源上**本团队的全部任务**
-    // 立刻停摆。个人账号时代没有这个风险,所以这里要专门确认一次。
-    const willBreak = editing?.verified && (v.password || v.username !== editing.username);
-    if (willBreak) {
-      Modal.confirm({
-        title: "修改后需要重新测通",
-        content: (
-          <>
-            保存后,该数据源上<b>本团队的全部任务</b>会立即变为「未就绪」、无法运行,
-            直到你重新点「测试连接」并通过。确认修改?
-          </>
-        ),
-        okText: "确认修改",
-        cancelText: "取消",
-        onOk: () => doSave(v),
-      });
-      return;
-    }
-    await doSave(v);
+    if (row && (await doSave(v))) await test(row);
   };
 
   const test = async (row: TeamCredentialStatus) => {
     setTestingId(row.datasource_id);
     try {
       replaceRow(await testTeamCredential(teamId, row.datasource_id));
-      message.success("连接成功,该数据源上的任务可以上线了");
+      message.success("连接成功,账号没问题");
     } catch (e: any) {
       // 失败时后端也写了状态(清空测通 + 记原因),重拉把原因带出来
       message.error(errMsg(e, "连接失败"));
@@ -205,9 +202,9 @@ export default function TeamCredentialsPanel({
           <>
             业务用户运行本团队的任务时，走的是团队这套账号 —— 能取到哪些数据由数据库的授权决定。
             <br />
-            账号需<b>测试连接通过</b>才算就绪：未就绪的数据源上，本团队的任务无法上线、也无法运行。
-            <b>改过用户名或密码后测通状态会被清空</b>，该数据源上本团队的全部任务会一起停摆，
-            直到重新测通。密码加密存储，<b>任何人（包括平台管理员）都无法查看</b>。
+            账号<b>存下来就生效</b>：本团队在该数据源上的任务即可上线、可运行。「测试连接」是
+            <b>可选的自检</b>，用来当场确认账号填对了没；不点也不影响使用，只是账号真填错时
+            要等到运行失败才知道。密码加密存储，<b>任何人（包括平台管理员）都无法查看</b>。
             {!canEdit && (
               <>
                 <br />
@@ -217,12 +214,13 @@ export default function TeamCredentialsPanel({
           </>
         }
       />
+      {/* 弱提醒:未测通不拦任何事,只是「还没验过,建议顺手点一下」 */}
       {canEdit && unverified > 0 && (
         <Alert
-          type="warning"
+          type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`有 ${unverified} 个数据源的账号尚未测通,该数据源上本团队的任务现在跑不动`}
+          message={`有 ${unverified} 个数据源的账号还没验过,建议点一次「测试连接」确认能连上（不影响任务运行）`}
         />
       )}
       <Table rowKey="datasource_id" loading={loading} dataSource={rows} columns={columns} />
@@ -230,9 +228,22 @@ export default function TeamCredentialsPanel({
         title={`配置团队「${teamName}」在「${editing?.datasource_name || ""}」上的取数账号`}
         open={!!editing}
         onCancel={() => setEditing(null)}
-        onOk={save}
-        confirmLoading={saving}
-        okText="保存"
+        footer={[
+          <Button key="cancel" onClick={() => setEditing(null)}>
+            取消
+          </Button>,
+          // 次要按钮而不是必经步骤:测试连接是可选的自检
+          <Button
+            key="save-test"
+            onClick={saveAndTest}
+            loading={saving || testingId === editing?.datasource_id}
+          >
+            保存并测试连接
+          </Button>,
+          <Button key="save" type="primary" onClick={save} loading={saving}>
+            保存
+          </Button>,
+        ]}
       >
         <Form form={form} layout="vertical">
           <Form.Item

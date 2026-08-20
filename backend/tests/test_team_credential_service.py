@@ -116,6 +116,7 @@ def test_blank_username_rejected(db, team, ds):
 
 
 def test_changing_credential_clears_verified(db, team, ds, team_credential):
+    # 清空的只是「这套凭证连通过」的自检痕迹,不影响任务能不能跑(测试连接非必选)
     cred = team_credential(team, ds, username="acct", password=SECRET)
     assert cred.verified is True
 
@@ -127,7 +128,7 @@ def test_changing_credential_clears_verified(db, team, ds, team_credential):
     db.refresh(cred)
     assert cred.verified is True, "同值提交不该清空测通状态"
 
-    # 改用户名 ⇒ 必须重新测通,否则换了错凭证也能顶着旧记录过上线卡点
+    # 改用户名 ⇒ 旧的测通记录对新凭证不成立,得清掉,否则会误导团队管理员
     credential_service.upsert(
         db, team_id=team.id, datasource_id=ds.id,
         username="acct-new", password=None, updated_by=T_ADMIN,
@@ -178,7 +179,7 @@ def test_verify_failure_clears_verified_and_records_reason(db, team, ds, spy_con
     spy_connector(fail="Access denied for user 'team_acct'")
     with pytest.raises(RubicError):
         credential_service.verify(db, cred)
-    # 一套连不上的凭证不该继续以「已测通」的身份通过上线卡点
+    # 一套连不上的凭证不该继续挂着「已测通」,那会让团队管理员误以为账号还好着
     assert cred.verified is False
     assert "Access denied" in cred.last_verify_error
 
@@ -203,14 +204,20 @@ def test_for_template_errors_name_the_team_and_datasource(db, team, ds):
     assert "团队管理员" in msg, "报错要指路:业务用户得知道找谁"
 
 
-def test_for_template_rejects_unverified(db, team, ds):
+def test_unverified_credential_is_usable(db, team, ds):
+    """**测试连接是非必选项**:登记了账号、一次都没测过,取数身份照样解析得出来。
+
+    从前这里是个卡点,代价是团队管理员改完密码忘了点「测试连接」,该数据源上全团队的任务
+    就集体停摆;而测通只代表那一刻连得上,拦不住真正的失败。现在连不上就在取数时报错。
+    """
     credential_service.upsert(
         db, team_id=team.id, datasource_id=ds.id,
         username="acct", password=SECRET, updated_by=T_ADMIN,
     )
     tmpl = _tmpl(db, ds, team)
-    with pytest.raises(CredentialRequiredError, match="尚未通过连接测试"):
-        credential_service.for_template(db, tmpl)
+    cred = credential_service.for_template(db, tmpl)
+    assert cred.username == "acct" and cred.owner_team_id == team.id
+    assert credential_service.get(db, team.id, ds.id).verified is False
 
 
 def test_orphan_task_never_falls_back_to_public_account(db, ds, team_credential, team):
@@ -283,7 +290,7 @@ def test_my_teams_status_never_reveals_username(db, team, ds, member, team_crede
 
 
 def test_ready_template_ids_pairs_team_and_datasource(db, ds, team, other_team, team_credential):
-    """同一个数据源:甲队已测通、乙队未配置 ⇒ 两个任务分别在集合内外。"""
+    """同一个数据源:甲队已登记账号、乙队未配置 ⇒ 两个任务分别在集合内外。"""
     team_credential(team, ds, username="ready_acct")
     ready = _tmpl(db, ds, team, name="tcred-就绪任务")
     not_ready = _tmpl(db, ds, other_team, name="tcred-未就绪任务")
