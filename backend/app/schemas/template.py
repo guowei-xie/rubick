@@ -89,7 +89,9 @@ class TestRunIn(BaseModel):
     sql_text: str
     params: list[ParamDef] = []
     values: dict[str, Any] = {}
-    limit: int = 100
+    # 试跑取样行数。默认与前端编辑器实际发的值、以及两份手册写的「最多取 50 行」对齐 ——
+    # 这里曾默认 100,全靠前端显式传 50 才没走样。上限仍受 MAX_RESULT_ROWS 收口。
+    limit: int = 50
     # 关联到某个已存在任务时,试跑会落一条 source=test 的运行记录;新建未保存任务时为空,不留痕
     template_id: int | None = None
 

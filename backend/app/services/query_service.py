@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 from app.connectors import get_connector
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
+from app.core.exceptions import (
+    CredentialRequiredError,
+    NotFoundError,
+    PermissionDeniedError,
+    RubicError,
+)
 from app.core.sql_gateway import validate_readonly
 from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED, ACTION_SUBMIT_QUERY
 from app.models.datasource import DataSource
@@ -67,9 +72,15 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
     # 请求内先做参数校验与安全网关,把可预见的错误即时反馈给用户
     params_service.validate_and_bind(version.params, values)
     validate_readonly(version.sql_text, tmpl.dialect)
-    # 作者凭证也在请求内先探一次:缺了就当场告诉业务用户找谁去配,
-    # 而不是让他等 worker 跑完、再从运行记录里读一条失败原因
-    credential_service.for_template(db, tmpl)
+    # 取数身份(= 任务所属团队的账号)也在请求内先探一次:缺了就当场告诉业务用户找谁去配,
+    # 而不是让他等 worker 跑完、再从运行记录里读一条失败原因。
+    # 这条**才是**「账号没配/失效」的常见落点(worker 侧那条只在排队期间被改掉时才触发),
+    # 所以通知能修的人必须挂在这里 —— 否则业务用户干等,而团队管理员毫不知情。
+    try:
+        credential_service.for_template(db, tmpl)
+    except CredentialRequiredError:
+        notify_service.notify_credential_blocked(db, tmpl, requester_id=user.id)
+        raise
 
     job = QueryJob(
         user_id=user.id,

@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 # backend/ 目录(本文件为 backend/app/core/config.py)
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -38,6 +39,8 @@ class Settings(BaseSettings):
     # mock 登录开关,默认关闭(生产安全默认)。
     # 注意:mock 登录信任前端传入的 open_id、无凭证校验,一旦开启且该 open_id 命中
     # BOOTSTRAP_ADMINS 即可无凭证登录为管理员。仅本地无飞书想快速试跑时才显式改 true。
+    # **且只在 DATABASE_URL 指向本地库时才允许开**(见 _guard_mock_auth):mock 登录会
+    # JIT 建号,连着远端库开它就会把 ou_admin 这类假账号写进正式库。
     MOCK_AUTH: bool = False
     # 引导管理员:逗号分隔的飞书邮箱或 open_id,登录时自动授予管理员(解决上线冷启动)
     BOOTSTRAP_ADMINS: str = ""
@@ -101,6 +104,44 @@ class Settings(BaseSettings):
             u = urlparse(self.APP_BASE_URL)
             self.FRONTEND_ORIGIN = f"{u.scheme}://{u.netloc}" if u.netloc else self.APP_BASE_URL
         return self
+
+    @model_validator(mode="after")
+    def _guard_mock_auth(self) -> "Settings":
+        """护栏:mock 登录只允许连本地库。
+
+        mock 登录会按前端传来的 open_id JIT 建号(见 auth_service.mock_login),所以
+        「MOCK_AUTH=true + DATABASE_URL 指向远端库」这个组合等于往正式库里灌假账号 ——
+        bitest 正是这么被灌进 ou_admin / ou_analyst / ou_dev / ou_viewer 的
+        (已由 app/cleanup_mock_users.py 清除)。这里直接拒绝启动,而不是悄悄把开关关掉:
+        配置写错了就该当场报出来,而不是让人以为 mock 登录坏了。
+        """
+        if self.MOCK_AUTH and not self.DATABASE_IS_LOCAL:
+            raise ValueError(
+                f"MOCK_AUTH=true 但 DATABASE_URL 指向远端库({self.database_display}):"
+                "mock 登录会把假账号写进这个库。要么把 MOCK_AUTH 改回 false(走飞书登录),"
+                "要么把 DATABASE_URL 换成本地库(sqlite 或 localhost 的 MySQL)。"
+            )
+        return self
+
+    @property
+    def DATABASE_IS_LOCAL(self) -> bool:
+        """DATABASE_URL 是否指向本机库。
+
+        判据只有一条:主机名是本机。sqlite 走文件、URL 里根本没有主机名(host 为 None),
+        因此与 localhost / 回环地址一同落在同一个判断里 —— 不必为它单开分支。
+        用 SQLAlchemy 的 URL 解析而非 urlparse:连接串的转义规则(密码里的 @ / : 等)
+        以它为准,这里是安全边界,不该另立一套解析。
+        """
+        return (make_url(self.DATABASE_URL).host or "") in {"", "localhost", "127.0.0.1", "::1"}
+
+    @property
+    def database_display(self) -> str:
+        """库地址的可打印形式(密码已打码,可安全进日志/报错)。
+
+        与 initdb / migrate / renumber_users 等脚本里打印 `engine.url` 的口径一致
+        (同为 SQLAlchemy 的 hide_password 渲染),不另造一套遮蔽写法。
+        """
+        return make_url(self.DATABASE_URL).render_as_string(hide_password=True)
 
     @property
     def BASE_PATH(self) -> str:

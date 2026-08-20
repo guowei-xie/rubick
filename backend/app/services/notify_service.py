@@ -1,9 +1,12 @@
 """取数通知:优先飞书机器人推送,始终写一条站内通知作镜像/兜底。
 
 「一次运行该通知谁」这条策略只住在本模块:发起人恒收;若失败原因是**只有别人能修**的
-(当前只有「任务所属团队未配置/未测通取数账号」一种),再额外通知那些能修的人 ——
+(当前只有「任务所属团队没登记取数账号」一种),再额外通知那些能修的人 ——
 即该团队的**团队管理员**(团队账号由他们维护,作者本人可能也无权配)。
-query_service 只负责把失败原因交过来,不在共享失败路径上按异常类型分叉。
+
+「谁能修」的判定不外泄:worker 侧的共享失败路径把原始异常交过来(notify_job_done 按类型分派),
+入队阶段则因为**还没有运行记录行**而直接叫 notify_credential_blocked —— 两条路径调用形态不同,
+但收件人名单与文案仍只在本模块写一次。
 """
 from __future__ import annotations
 
@@ -27,12 +30,14 @@ def _push(
     body: str,
     level: str,
     link: str,
-    job: QueryJob,
+    job_id: int | None,
     template_id: int,
 ) -> Notification:
     """投递一条通知:先试飞书,再写站内记录(飞书失败也要留下站内那条)。
 
     所有通知都走这一个出口 —— 以后加 Notification 列、加限流、换飞书卡片模板,只改这里。
+    job_id 可空:入队阶段就被拦下的取数根本没有运行记录行(见 notify_credential_blocked),
+    而那条通知照样要发。
     """
     user = db.get(User, user_id)
     sent = bool(user) and feishu_service.send_message(user.feishu_open_id, title, body, link)
@@ -40,7 +45,7 @@ def _push(
         user_id=user_id,
         title=title,
         body=body,
-        job_id=job.id,
+        job_id=job_id,
         template_id=template_id,
         level=level,
         feishu_sent=sent,
@@ -73,25 +78,30 @@ def _credential_fixers(db: Session, tmpl: SqlTemplate) -> list[int]:
     )
 
 
-def _notify_credential_blocked(db: Session, tmpl: SqlTemplate, job: QueryJob) -> None:
-    """任务因「团队账号未配置/未测通」跑不动时,额外给能修的人提个醒。
+def notify_credential_blocked(
+    db: Session, tmpl: SqlTemplate | None, *, requester_id: int, job_id: int | None = None
+) -> None:
+    """任务因「团队账号未登记」跑不动时,额外给能修的人提个醒。
 
     常规失败通知只发给发起人,但这件事只有团队管理员能修 —— 不通知他们,业务用户会一直
     干等,而能修的人毫不知情。恰好是发起人本人时不重复发。
+
+    两个调用点、两个阶段:入队时(query_service.enqueue,**常见落点**,那时还没有运行记录行,
+    故 job_id 为空)与 worker 执行时(排队期间凭证被改掉/回收)。
     """
     if tmpl is None:
         return
     team_label = f"团队《{tmpl.team_name}》" if tmpl.team_name else "该任务所属团队"
     for uid in _credential_fixers(db, tmpl):
-        if uid == job.user_id:
+        if uid == requester_id:
             continue
         _push(
             db,
             user_id=uid,
             title="任务取数被阻断:缺少团队取数账号",
             body=(
-                f"有人运行《{tmpl.name}》时失败:{team_label}尚未配置该任务数据源的取数账号,"
-                "或账号未通过连接测试。请到团队页的「团队取数账号」配置并测通。"
+                f"有人运行《{tmpl.name}》时失败:{team_label}尚未登记该任务数据源的取数账号。"
+                "请到团队页的「团队取数账号」登记一套。"
             ),
             level="error",
             link=(
@@ -99,7 +109,7 @@ def _notify_credential_blocked(db: Session, tmpl: SqlTemplate, job: QueryJob) ->
                 if tmpl.team_id
                 else f"{settings.APP_BASE_URL}/teams"
             ),
-            job=job,
+            job_id=job_id,
             template_id=tmpl.id,
         )
 
@@ -126,9 +136,9 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
         level=level,
         # 深链到该任务的运行记录(前端 /tasks 读 records 参数打开对应抽屉)
         link=f"{settings.APP_BASE_URL}/tasks?records={job.template_id}",
-        job=job,
+        job_id=job.id,
         template_id=job.template_id,
     )
     if isinstance(error, CredentialRequiredError):
-        _notify_credential_blocked(db, tmpl, job)
+        notify_credential_blocked(db, tmpl, requester_id=job.user_id, job_id=job.id)
     return note

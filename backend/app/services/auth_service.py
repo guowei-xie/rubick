@@ -87,6 +87,12 @@ def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
     即自动提权——故由 MOCK_AUTH 开关严格保护,默认关闭,生产切勿开启(见 config.MOCK_AUTH)。"""
     if not settings.MOCK_AUTH:
         raise UnauthorizedError("mock 登录未启用")
+    # 第二道护栏(第一道在 config._guard_mock_auth,启动即拒)。这里挡的是运行期把
+    # MOCK_AUTH 改成 true 的情形:下面几行会 JIT 建号,连着远端库就是往正式库灌假账号。
+    if not settings.DATABASE_IS_LOCAL:
+        raise UnauthorizedError(
+            f"mock 登录只允许连本地库使用,当前库是 {settings.database_display}"
+        )
     user = db.scalar(select(User).where(User.feishu_open_id == feishu_open_id))
     if user is None:
         # mock 环境下按需创建(JIT),便于空库首次登录(无需 seed)

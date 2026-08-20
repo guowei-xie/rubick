@@ -17,6 +17,7 @@ import os
 
 from sqlalchemy import select, text
 
+from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 import app.models  # noqa: F401
 from app.models.datasource import DataSource
@@ -77,6 +78,15 @@ def upsert_user(db, open_id: str, name: str, role: str) -> User:
 
 
 def main() -> None:
+    # 护栏:seed 造的是假数据 —— 4 个假账号、演示团队、演示数据源,还会在目标实例上
+    # CREATE DATABASE rubic_demo。连着远端库跑一次就污染正式库(bitest 的假账号即由此
+    # 而来,已由 app/cleanup_mock_users.py 清除),故只允许对本地库执行。
+    if not settings.DATABASE_IS_LOCAL:
+        raise SystemExit(
+            f"拒绝执行:seed 只能对本地库跑,当前 DATABASE_URL 指向 {settings.database_display}。"
+            "要造演示数据请先把 DATABASE_URL 换成本地库(sqlite 或 localhost 的 MySQL)。"
+        )
+
     print("1) create metadata tables")
     Base.metadata.create_all(bind=engine)
 
@@ -121,8 +131,8 @@ def main() -> None:
             db.refresh(ds)
 
         print("4.5) team credential (演示环境直接复用数据源账号,并标记为已测通)")
-        # 真实环境里由团队管理员在团队页配置并点「测试连接」;seed 为了能一把跑通,
-        # 直接写入并标记测通 —— 否则任务上线会被卡点拦下(这正是卡点该有的行为)。
+        # 真实环境里由团队管理员在团队页登记账号,「测试连接」是自愿的自检。
+        # seed 顺手把测通时间也写上,免得演示环境的团队页上常挂着一条「未测通」的弱提醒。
         cred, _ = credential_service.upsert(
             db, team_id=team.id, datasource_id=ds.id,
             username=DEMO_USER, password=DEMO_PASS, updated_by=admin.id,
