@@ -1,8 +1,13 @@
-"""默认库进不去时的绕开:数据源上配的库是**首选**,不是**前提**。
+"""默认库怎么参与建连:取数时是「首选」,测试连接时压根不参与。
 
 线上事故:团队账号没有 `business_analysis` 的 [USE] 权限,而 pyhive 在建连期就执行
 `USE <库>`,于是任务 SQL 一行都没跑就失败 —— 哪怕那条 SQL 写了全限定表名、上线后本来跑得动。
 这直接反向破坏了 credential_service 立的承诺:「试跑通过即代表上线后能跑」。
+
+两条候选顺序刻意相反:
+- **取数**(execute):先配的库,进不去才绕开 —— 不写库名的老 SQL 才能照旧解析;
+- **测试连接**:先中立的 default —— 它只该回答「账号能不能登进数仓」,而线上那个应用库
+  本来就不是常用库,拿它当门槛只会把可用的账号判成连不上。
 
 绕开只认鉴权拒绝:密码错、库不存在、网络不通都要原样报出来,否则真故障会被藏成一次静默重试。
 """
@@ -12,6 +17,7 @@ from app.connectors.base import ConnectionConfig
 from tests.conftest import HIVE_PERM_DENIED, hive_thrift_error
 
 DB = "business_analysis"
+VISIBLE = ["default", "finance_bp", DB]
 
 
 # ---------------------------------------------------------------- Hive
@@ -50,11 +56,14 @@ class _FakeConn:
 class _FakeCursor:
     description = [("c",)]
 
-    def execute(self, *a, **kw):
-        pass
+    def __init__(self):
+        self._show = False
 
-    def fetchone(self):
-        return (1,)
+    def execute(self, sql, *a, **kw):
+        self._show = "SHOW DATABASES" in sql
+
+    def fetchall(self):
+        return [(d,) for d in VISIBLE] if self._show else [(1,)]
 
     def fetchmany(self, n):
         return [(1,)]
@@ -76,48 +85,52 @@ def _hive(**kw):
     return conn
 
 
-def test_bypasses_the_database_when_use_is_denied():
-    """默认库被鉴权拒 → 换 default 再连一次,连通,并把「哪个库被绕开」这个事实留下。"""
-    c = _hive(denied=[DB])
-    assert c.test_connection() is None  # 连通:这不算失败
-    assert c._hive.attempts == [DB, "default"]
-    assert c.bypassed_database == DB
+def test_test_connection_never_touches_the_configured_database():
+    """「测试连接」只连中立库,压根不碰数据源配的那个库,并列出账号可访问的库。"""
+    c = _hive(denied=[DB])  # 配的库进不去也无所谓 —— 它不参与
+    assert c.test_connection() == VISIBLE
+    assert c._hive.attempts == ["default"]
 
 
-def test_bypass_lets_the_task_sql_decide():
-    """试跑/取数走同一条建连:绕开后 execute 照常返回 —— 成败重新由任务 SQL 决定。"""
+def test_test_connection_falls_back_when_even_default_is_denied():
+    """极严策略把 default 也关了才退到配的库 —— 否则可用的账号会被判成连不上。"""
+    c = _hive(denied=["default"])
+    assert c.test_connection() == VISIBLE
+    assert c._hive.attempts == ["default", DB]
+
+
+def test_query_prefers_the_configured_database_then_bypasses_it():
+    """取数反过来:先配的库(不写库名的老 SQL 靠它解析),被鉴权拒才绕开。"""
     c = _hive(denied=[DB])
     res = c.execute("SELECT 1 FROM business_analysis.t", None, timeout_seconds=5, max_rows=10)
     assert res.columns == ["c"]
     assert c._hive.attempts == [DB, "default"]
 
 
-def test_nothing_bypassed_when_database_is_reachable():
-    """有权限的场景必须完全不变:只连一次,没有绕开。"""
+def test_query_connects_once_when_the_database_is_reachable():
+    """有权限的场景必须完全不变:只连一次。"""
     c = _hive()
-    assert c.test_connection() is None
+    c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert c._hive.attempts == [DB]
-    assert c.bypassed_database is None
 
 
 def test_reports_the_first_database_when_both_are_denied():
-    """两个库都进不去时报**第一次**的原因 —— 作者关心的是数据源上配的那个库。"""
+    """两个库都进不去时报**第一个候选**的原因 —— 那才是调用方本来想连的库。"""
     c = _hive(denied=[DB, "default"])
     with pytest.raises(RuntimeError) as ei:
-        c.test_connection()
+        c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     msg = str(ei.value)
     assert c._hive.attempts == [DB, "default"]
     assert "TExecuteStatementResp" not in msg  # 不泄 Thrift repr
     assert f"[USE] privilege on [{DB}]" in msg
-    assert c.bypassed_database is None
 
 
-def test_transport_failure_does_not_bypass():
-    """网络/认证类故障不绕开:换个库重试只会把真故障藏起来,且白付一次握手。"""
+def test_transport_failure_does_not_try_another_database():
+    """网络/认证类故障不换库重试:那只会把真故障藏起来,且白付一次握手。"""
     c = _hive(error=OSError("Could not connect to h:10000"))
     with pytest.raises(RuntimeError) as ei:
         c.test_connection()
-    assert c._hive.attempts == [DB]  # 只试了一次
+    assert c._hive.attempts == ["default"]  # 只试了一次
     assert "Could not connect" in str(ei.value)
 
 
@@ -144,7 +157,12 @@ class _FakeSAConn:
         return False
 
     def exec_driver_sql(self, sql):
-        return None
+        return type("R", (), {"fetchall": lambda _s: [(d,) for d in VISIBLE]})()
+
+    def execute(self, stmt, params=None):
+        return type("R", (), {
+            "keys": lambda _s: ["c"], "fetchmany": lambda _s, n: [(1,)],
+        })()
 
 
 def _mysql_error(code: int, msg: str):
@@ -168,14 +186,23 @@ def _mysql(monkeypatch, *, primary_error=None, fallback_error=None):
     return conn, engines
 
 
-def test_mysql_bypasses_when_denied_to_database(monkeypatch):
-    """1044(进不去这个库)→ 改用不带默认库的连接,连通并留下被绕开的库名。"""
+def test_mysql_test_connection_never_uses_the_configured_database(monkeypatch):
+    """MySQL 侧更直接:测试连接压根不带默认库,身份对了就连得上。"""
     c, engines = _mysql(monkeypatch, primary_error=_mysql_error(
         1044, "Access denied for user 'team_acct'@'10.0.0.5' to database 'business_analysis'"
     ))
-    assert c.test_connection() is None
+    assert c.test_connection() == VISIBLE
+    assert engines["primary"].connects == 0  # 带库的那条连接根本没用上
+    assert engines["fallback"].connects == 1
+
+
+def test_mysql_query_bypasses_when_denied_to_database(monkeypatch):
+    """取数时 1044(进不去这个库)→ 改用不带默认库的连接继续。"""
+    c, engines = _mysql(monkeypatch, primary_error=_mysql_error(
+        1044, "Access denied for user 'team_acct'@'10.0.0.5' to database 'business_analysis'"
+    ))
+    c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert engines["primary"].connects == 1 and engines["fallback"].connects == 1
-    assert c.bypassed_database == DB
 
 
 @pytest.mark.parametrize(("code", "msg"), [
@@ -186,14 +213,6 @@ def test_mysql_does_not_bypass_on_bad_credentials_or_missing_db(monkeypatch, cod
     """密码错(1045)与库不存在(1049)不绕开:那是配置问题,藏起来只会更难查。"""
     c, engines = _mysql(monkeypatch, primary_error=_mysql_error(code, msg))
     with pytest.raises(Exception) as ei:
-        c.test_connection()
+        c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert engines["fallback"].connects == 0
     assert msg in str(ei.value)
-    assert c.bypassed_database is None
-
-
-def test_mysql_nothing_bypassed_when_database_is_reachable(monkeypatch):
-    c, engines = _mysql(monkeypatch)
-    assert c.test_connection() is None
-    assert engines["fallback"].connects == 0
-    assert c.bypassed_database is None

@@ -100,21 +100,6 @@ def _resolve(db: Session, ds: DataSource, team: Team | None, remedy: str) -> Cre
 _REMEDY = "请联系该团队的团队管理员在「我的团队 → 团队取数账号」中登记账号"
 
 
-def db_permission_note(database: str) -> str:
-    """「账号能登录,但进不去数据源配的默认库」时给用户的那句话。
-
-    住在服务层而不是连接器里:连接器只报事实(哪个库被绕开了,见 DataSourceConnector
-    .bypassed_database),「该怎么办」是产品口径 —— 与 _REMEDY 同一类文案,理应同一处维护。
-    「绕开」而不是「换 default」:Hive 换的是 default 库、MySQL 换的是「不带默认库」,
-    不必替用户区分这种引擎细节,说清后果与出路就够了。
-    """
-    return (
-        f"账号可登录,但没有库「{database}」的访问权限(平台已绕开它继续连接)。"
-        f"该库下不写库名的 SQL 会失败 —— 任务 SQL 请写全限定表名(如 {database}.表名),"
-        "或找数仓管理员为这个账号授权。"
-    )
-
-
 def for_template(db: Session, tmpl: SqlTemplate) -> Credential:
     """任务运行(含更新枚举候选值)使用的身份 = 任务所属团队的账号。
 
@@ -242,27 +227,25 @@ def upsert(
     return cred, password_changed
 
 
-def probe(ds: DataSource, credential: Credential) -> str | None:
-    """用某个身份连一次目标库,失败转成可读错误。**返回被绕开的库名**(通常是 None)。
+def probe(ds: DataSource, credential: Credential) -> list[str]:
+    """用某个身份连一次目标库,失败转成可读错误;**返回这个账号能访问的库名列表**。
 
     团队凭证测通(verify)与管理员测数据源连通性(routes/datasources)共用这一处,
     否则两边的错误文案会各自漂移 —— 而开发者手册的报错速查表是按这个前缀写的。
 
-    返回值的来历:连接器允许「默认库进不去就绕开它」(见 connectors/hive.py::_connect),
-    那种连接算连通、但账号确实缺着库权限。这个事实必须一路带到点按钮的人面前 ——
-    否则团队管理员只看到一个纯粹的「连接成功」,永远不知道有这个缺口。
+    返回值的用处:团队管理员配完账号最想知道的就是「它到底能取什么数」。而这个问题
+    与数据源上配的默认库无关(那只是不写库名时的解析起点),故连接器刻意不依赖它 ——
+    见 DataSourceConnector.test_connection 的契约。
     """
-    connector = get_connector(ds, credential)
     try:
-        connector.test_connection()
+        return get_connector(ds, credential).test_connection()
     except Exception as e:  # noqa: BLE001 -- 引擎/驱动异常一律转可读 400
         raise RubicError(f"连接失败:{str(e)[:400]}") from e
-    return connector.bypassed_database
 
 
 def verify(db: Session, cred: TeamDataSourceCredential) -> str | None:
     """用这套凭证真连一次目标库(**自愿的自检,不是上线前置条件**)。
-    成功记 last_verified_at,失败记原因并清空测通状态;返回 probe 给的「被绕开的库名」。
+    成功记 last_verified_at,失败记原因并清空测通状态;返回 probe 给的「可访问库列表」。
 
     这条链路的价值是「让团队管理员当场知道账号填对没」,而不是给平台一个卡点 ——
     测通只代表那一刻连得上,库侧权限随时会变(见模块 docstring)。
@@ -271,7 +254,9 @@ def verify(db: Session, cred: TeamDataSourceCredential) -> str | None:
     """
     ds = _load_datasource(db, cred.datasource_id)
     try:
-        bypassed = probe(ds, Credential(cred.username, cred.password, owner_team_id=cred.team_id))
+        databases = probe(
+            ds, Credential(cred.username, cred.password, owner_team_id=cred.team_id)
+        )
     except RubicError as e:
         cred.last_verified_at = None
         # 落库保留原文(团队管理员要靠它自查);对普通成员的遮挡在读出口做 —— 见 _cell
@@ -281,9 +266,9 @@ def verify(db: Session, cred: TeamDataSourceCredential) -> str | None:
     cred.last_verified_at = datetime.now()  # 与 enum_cache_service 同一应用时钟
     cred.last_verify_error = None
     db.commit()
-    # 刻意**不落库**:它和 last_verified_at 一样只对这一刻成立,而库侧权限随时会变
+    # 库列表刻意**不落库**:它和 last_verified_at 一样只对这一刻成立,而库侧权限随时会变
     # (见模块 docstring)。留在库里会变成一条越来越旧的断言,不如每次点按钮时现算。
-    return bypassed
+    return databases
 
 
 def delete(db: Session, team_id: int, datasource_id: int) -> TeamDataSourceCredential | None:

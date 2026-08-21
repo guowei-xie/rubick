@@ -56,14 +56,14 @@ class TeamCredentialStatusOut(CredentialCellOut):
 
 
 class CredentialVerifyOut(TeamCredentialStatusOut):
-    """「测试连接」的响应:状态行 + 这一次的附带提示。
+    """「测试连接」的响应:状态行 + 这个账号能访问的库。
 
-    单独一个类而不是给状态行加个可空字段:note 不落库,只有这一个端点产得出
+    单独一个类而不是给状态行加个字段:库列表不落库,只有这一个端点产得出
     (见 services/credential_service.probe),挂在共享的状态行上会让另外两个列表端点
     背一个恒为空的字段。
     """
 
-    note: str | None = None
+    databases: list[str] = []
 
 
 class DataSourceBriefOut(BaseModel):

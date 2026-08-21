@@ -123,7 +123,5 @@ def test_datasource(ds_id: int, db: Session = Depends(get_db), _: User = Depends
         raise NotFoundError("数据源不存在")
     # 显式用数据源自带的公共账号(本页配的就是它);个人凭证的连通性测试走
     # /credentials/mine/{ds_id}/test,两者共用 probe 以免错误文案各自漂移
-    # 连上了但数据源配的默认库进不去(账号能登录,缺的是库权限)时,带一句提示回去
-    bypassed = credential_service.probe(ds, ds.public_credential)
-    note = credential_service.db_permission_note(bypassed) if bypassed else None
-    return {"ok": True, "note": note}
+    # 顺带把这个公共账号能访问的库带回去 —— 与数据源上配的默认库无关(见 probe)
+    return {"ok": True, "databases": credential_service.probe(ds, ds.public_credential)}

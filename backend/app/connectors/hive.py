@@ -10,6 +10,7 @@ LDAP / CUSTOM 会带上密码。**KERBEROS 需要额外的 kerberos/gssapi 依�
 
 默认库:数据源上配的 database 是**首选**而不是**前提** —— pyhive 建连时就执行 `USE <db>`,
 进不去就绕开它、改连 default(见 _connect),成败交还给任务 SQL。
+「测试连接」反过来:先连中立的 default,压根不依赖那个配的库(见 test_connection)。
 """
 from __future__ import annotations
 
@@ -19,9 +20,13 @@ from contextlib import contextmanager
 from typing import Any
 
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
+from app.core.logging_setup import get_logger
 
-# 绕开原库时改连的库。Hive 的 default 库一定存在,且通常对所有账号开放
-_FALLBACK_DATABASE = "default"
+logger = get_logger(__name__)
+
+# 中立库:Hive 的 default 一定存在,且通常对所有账号开放。取数时它是绕开原库后的落脚点,
+# 测试连接时它是首选 —— 两处都靠它把「能不能登进数仓」与「进不进得去某个具体库」解耦。
+_NEUTRAL_DATABASE = "default"
 
 
 def _hive_error_text(exc: Exception) -> str:
@@ -84,6 +89,15 @@ def _hive_error_message(exc: Exception) -> str:
     return _user_message(_hive_error_text(exc))
 
 
+def _candidates(*databases: str | None) -> list[str]:
+    """候选库列表:按给定顺序去空、去重(两个候选常常是同一个库,不能连两次)。"""
+    out: list[str] = []
+    for db in databases:
+        if db and db not in out:
+            out.append(db)
+    return out
+
+
 @contextmanager
 def _readable_errors(action: str):
     """把这段代码里冒出的原始 Thrift 异常换成一句可读的 `Hive <action>:…`。
@@ -123,8 +137,28 @@ class HiveConnector(DataSourceConnector):
             auth=auth,
         )
 
+    def _open_first(self, candidates: list[str]) -> tuple[Any, str]:
+        """按候选顺序连,返回 (连接, 用上的库)。
+
+        只有**鉴权拒绝**才继续试下一个候选:密码错、库不存在、网络不可达一律当场抛 ——
+        那是配置或故障,换个库重试只会把它们藏起来。全都失败则抛**第一个**错误,
+        因为第一个候选才是调用方本来想连的库。
+        """
+        first: Exception | None = None
+        for database in candidates:
+            try:
+                return self._open(database), database
+            except Exception as e:  # noqa: BLE001 -- 原始 Thrift 异常转一句可读信息
+                text = _hive_error_text(e)
+                if not _is_permission_denied(text):
+                    raise RuntimeError(f"Hive 连接失败:{_user_message(text)}") from e
+                first = first or e
+        raise RuntimeError(
+            f"Hive 连接失败:{_user_message(_hive_error_text(first))}"
+        ) from first
+
     def _connect(self):
-        """建连。**注意 pyhive 在这一步就执行了 `USE <database>`**,所以库级鉴权失败
+        """取数用的建连。**注意 pyhive 在这一步就执行了 `USE <database>`**,所以库级鉴权失败
         (HiveAccessControlException:没有 [USE] 权限)发生在建连期、不在执行期。这带来两件事:
 
         1. 这里必须与执行期一样做错误提炼(见 _readable_errors);
@@ -132,24 +166,15 @@ class HiveConnector(DataSourceConnector):
            把成败交还给任务 SQL —— 一条写了全限定表名的 SQL 本就不需要那个库的 USE 权限,
            平台不该凭空给它加一道门槛(否则「试跑通过即代表上线能跑」这条承诺是反向破的:
            试跑挂在 USE 上,而上线后那条 SQL 其实跑得动)。
-
-        绕开只认鉴权拒绝:密码错、库不存在、网络不可达一律原样抛,那是配置或故障,
-        换个库重试只会把它们藏起来。两次都失败则报**第一次**的原因 —— 作者关心的是
-        数据源上那个库进不去,而不是 default 也进不去这条派生事实。
         """
-        self.bypassed_database = None
-        database = self.config.database or _FALLBACK_DATABASE
-        try:
-            return self._open(database)
-        except Exception as e:  # noqa: BLE001
-            text = _hive_error_text(e)
-            if database == _FALLBACK_DATABASE or not _is_permission_denied(text):
-                raise RuntimeError(f"Hive 连接失败:{_user_message(text)}") from e
-            try:
-                conn = self._open(_FALLBACK_DATABASE)
-            except Exception:  # noqa: BLE001 -- 兜底库也进不去:仍报第一次的原因
-                raise RuntimeError(f"Hive 连接失败:{_user_message(text)}") from e
-        self.bypassed_database = database
+        preferred = self.config.database or _NEUTRAL_DATABASE
+        conn, used = self._open_first(_candidates(preferred, _NEUTRAL_DATABASE))
+        if used != preferred:
+            # 绕开是要能查的事实:它解释了「为什么这个任务里不写库名的表突然找不到了」
+            logger.warning(
+                "hive: 账号 %s 进不去库 %s,已绕开改连 %s;不写库名的 SQL 会解析不到表",
+                self.config.username, preferred, used,
+            )
         return conn
 
     def execute(
@@ -227,17 +252,20 @@ class HiveConnector(DataSourceConnector):
         ):
             raise RuntimeError(f"Hive 查询未成功(operationState={state})")
 
-    def test_connection(self) -> None:
-        """验「这个账号能不能登进数仓」:`SELECT 1`,不碰任何业务表。
+    def test_connection(self) -> list[str]:
+        """验身份 + 列出账号能访问的库。**不依赖数据源配的默认库**(见基类的契约说明)。
 
-        默认库进不去时会被绕开(见 _connect),那仍算连通;事实留在 bypassed_database。
-        库 / 表权限的真正答案在试跑 —— 那才与上线后的取数同一套身份、同一条 SQL。
+        候选顺序与 _connect 相反:先连中立的 default;只有极严的授权策略把 default 也关了,
+        才退到数据源配的那个库 —— 否则那种集群会让一个完全可用的账号被判成「连不上」。
         """
-        conn = self._connect()
+        conn, _ = self._open_first(
+            _candidates(_NEUTRAL_DATABASE, self.config.database)
+        )
         try:
             cur = conn.cursor()
             with _readable_errors("执行失败"):
-                cur.execute("SELECT 1")
-                cur.fetchone()
+                cur.execute("SHOW DATABASES")
+                rows = cur.fetchall()
         finally:
             conn.close()
+        return [str(r[0]) for r in rows if r and r[0] is not None]

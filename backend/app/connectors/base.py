@@ -59,10 +59,6 @@ class DataSourceConnector(ABC):
 
     def __init__(self, config: ConnectionConfig):
         self.config = config
-        # 本次建连是否绕开了 config.database(账号进不去它),值为被绕开的库名。
-        # 契约:每次建连开头清空,只在**绕开成功后**置上 —— 连接器只报这个事实,
-        # 面向用户的说法由服务层给(services/credential_service.db_permission_note)。
-        self.bypassed_database: str | None = None
 
     @abstractmethod
     def execute(
@@ -76,9 +72,12 @@ class DataSourceConnector(ABC):
         """执行只读参数化查询。params 使用 :name 命名占位符。"""
 
     @abstractmethod
-    def test_connection(self) -> None:
-        """连通性检查,失败抛异常。
+    def test_connection(self) -> list[str]:
+        """验「这个账号能不能登进库」,并返回它能访问的库名列表(拿不到就空列表)。
 
-        「连上了、但配的默认库进不去」不算失败 —— 那种账号照样能取数(SQL 写全限定表名即可),
-        调用方从 bypassed_database 拿这个事实。
+        **刻意不依赖数据源配的默认库**:那个库(线上是个不常用的应用库)进不去,不代表账号
+        不可用 —— 任务 SQL 写全限定表名照样能跑。所以这里连一个中立的库、只跑 SHOW DATABASES,
+        不碰任何业务表;能访问哪些库这件事本身就是团队管理员配账号时最想知道的答案。
+
+        库 / 表级权限的完整答案仍在试跑 —— 那才与上线后的取数同一套身份、同一条 SQL。
         """

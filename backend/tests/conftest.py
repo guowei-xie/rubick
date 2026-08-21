@@ -226,15 +226,12 @@ def spy_connector(monkeypatch):
     """
 
     def install(
-        *, rows=((1,),), fail: str | None = None, bypassed_database: str | None = None
+        *, rows=((1,),), fail: str | None = None, databases: list[str] | None = None
     ) -> list:
         seen: list = []
-        bypassed = bypassed_database  # 局部别名:类体里同名赋值会遮住外层参数
+        dbs = list(databases or [])  # 局部别名:类体里同名赋值会遮住外层参数
 
         class FakeConnector:
-            # 真连接器在「配的默认库进不去、已绕开」时置上库名(见 connectors/base.py)
-            bypassed_database = bypassed
-
             def execute(self, sql, params=None, *, timeout_seconds, max_rows):
                 if fail:
                     raise RuntimeError(fail)
@@ -245,6 +242,8 @@ def spy_connector(monkeypatch):
             def test_connection(self):
                 if fail:
                     raise RuntimeError(fail)
+                # 真连接器返回「这个账号能访问的库」(见 connectors/base.py 的契约)
+                return dbs
 
         def fake_get_connector(ds, credential):
             seen.append(credential)

@@ -142,7 +142,7 @@ export const deleteDatasource = (id: number) =>
 export const testDatasource = (id: number) =>
   http
     .post(`/datasources/${id}/test`)
-    .then((r) => r.data as { ok: boolean; note?: string | null });
+    .then((r) => r.data as { ok: boolean; databases?: string[] });
 
 // ---- teams(团队与成员)----
 // 团队是任务的归属边界与取数身份边界:任务必属一个团队,同团队互相可见,
@@ -240,9 +240,18 @@ export interface TeamCredentialStatus {
   updated_by_name?: string | null;
   updated_at?: string | null;
 }
-/** 「测试连接」的响应:状态行 + 这一次的附带提示(账号能登录但进不去数据源配的默认库时非空)。 */
+/** 「测试连接」成功后的提示:连通只是底线,真正有用的是「这个账号能取哪些库的数」。
+ *  库多时只列前几个 —— 提示条塞不下几百个库名,给出个数与样例就够定位问题了。 */
+export const connectOkMsg = (databases?: string[]): string => {
+  const dbs = databases ?? [];
+  if (!dbs.length) return "连接成功,账号可登录(未能列出可访问的库)";
+  const head = dbs.slice(0, 6).join("、");
+  return `连接成功。该账号可访问 ${dbs.length} 个库:${head}${dbs.length > 6 ? " 等" : ""}`;
+};
+
+/** 「测试连接」的响应:状态行 + 这个账号能访问的库(与数据源配的默认库无关)。 */
 export interface TeamCredentialVerify extends TeamCredentialStatus {
-  note?: string | null;
+  databases?: string[];
 }
 export interface NotReadyTemplate {
   template_id: number;

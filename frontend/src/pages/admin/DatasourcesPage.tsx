@@ -5,6 +5,7 @@ import {
   deleteDatasource,
   errMsg,
   listDatasources,
+  connectOkMsg,
   testDatasource,
   updateDatasource,
 } from "../../api";
@@ -74,9 +75,7 @@ export default function DatasourcesPage() {
     try {
       const r = await testDatasource(id);
       hide();
-      // note = 账号登得进去,但数据源配的默认库进不去 —— 连通了,但这个缺口得说出来
-      if (r.note) message.warning(r.note, 8);
-      else message.success("连接成功");
+      message.success(connectOkMsg(r.databases), 8);
     } catch (e: any) {
       hide();
       message.error(errMsg(e, "连接失败"));

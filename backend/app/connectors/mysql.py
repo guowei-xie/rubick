@@ -5,6 +5,7 @@ Engine(连接池)按「连接身份」缓存复用,详见 _get_engine。
 
 默认库:数据源上配的 database 写进 DSN,是**首选**而不是**前提** —— 账号进不去它(MySQL 1044)
 时绕开它、不带默认库再连一次(见 _connect),成败交还给任务 SQL。
+「测试连接」压根不带默认库(见 test_connection),故与那个库无关。
 """
 from __future__ import annotations
 
@@ -17,6 +18,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
+from app.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 # 按连接身份缓存 Engine,复用连接池;否则每次取数都新建池、每查都付一次 TCP+鉴权握手。
 #
@@ -94,13 +98,12 @@ class MySQLConnector(DataSourceConnector):
         return _get_engine(_url(self.config, database), self._connect_timeout).connect()
 
     def _connect(self):
-        """取一条连接。默认库进不去(MySQL 1044)时绕开它、不带默认库再连一次。
+        """取数用的建连。默认库进不去(MySQL 1044)时绕开它、不带默认库再连一次。
 
         与 Hive 同一个理由和同一套取舍,完整论证见 connectors/hive.py::_connect。
         MySQL 侧的区别只有两点:绕开的方式是「不带默认库」而不是换 default;
         判定认的是 1044 —— 1045(密码错)、1049(库不存在)原样抛。
         """
-        self.bypassed_database = None
         database = self.config.database
         try:
             return self._open(database)
@@ -111,7 +114,11 @@ class MySQLConnector(DataSourceConnector):
                 conn = self._open(None)
             except Exception:  # noqa: BLE001 -- 不带默认库也连不上:仍报第一次的原因
                 raise e from None
-        self.bypassed_database = database
+        # 绕开是要能查的事实:它解释了「为什么这个任务里不写库名的表突然找不到了」
+        logger.warning(
+            "mysql: 账号 %s 进不去库 %s,已绕开改为不带默认库;不写库名的 SQL 会解析不到表",
+            self.config.username, database,
+        )
         return conn
 
     def execute(
@@ -138,10 +145,12 @@ class MySQLConnector(DataSourceConnector):
             meta={"duration_ms": int((time.perf_counter() - start) * 1000)},
         )
 
-    def test_connection(self) -> None:
-        """验「这个账号能不能登进库」:`SELECT 1`,不碰任何业务表。
+    def test_connection(self) -> list[str]:
+        """验身份 + 列出账号能访问的库。**不依赖数据源配的默认库**(见基类的契约说明)。
 
-        默认库进不去时会被绕开(见 _connect),那仍算连通;事实留在 bypassed_database。
+        刻意不走 _connect:那是取数的口径(优先配的库)。这里压根不带默认库 ——
+        身份对了就一定连得上,与任何具体库无关。
         """
-        with self._connect() as conn:
-            conn.exec_driver_sql("SELECT 1")
+        with self._open(None) as conn:
+            rows = conn.exec_driver_sql("SHOW DATABASES").fetchall()
+        return [str(r[0]) for r in rows if r and r[0] is not None]

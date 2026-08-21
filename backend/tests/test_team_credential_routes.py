@@ -275,28 +275,31 @@ def test_deleting_datasource_cascades_team_credentials(db, team, t_admin, admin,
     assert row.detail["revoked_credentials"] == 1
 
 
-# ---------------------------------------------------------------- 「进不去那个库」这个事实
+# ---------------------------------------------------------------- 「这个账号能取哪些库」
 
 
-def test_verify_carries_the_bypassed_database_note(db, ds, team, t_admin, spy_connector):
-    """连上了但账号进不去数据源配的默认库时:响应带一句提示,审计留下库名。
+def test_verify_reports_the_accessible_databases(db, ds, team, t_admin, spy_connector):
+    """「测试连接」除了报连通,还要告诉团队管理员这个账号能访问哪些库。
 
-    否则团队管理员只看到一个纯粹的「连接成功」,永远不会知道有这个缺口;而这个事实刻意
-    不落库(见 credential_service.verify),审计就是它唯一的持久痕迹。
-    审计记的是**库名**而不是那句话:文案一改,历史审计行就分成两拨了。
+    这是配完账号最该确认的事,而它**与数据源上配的默认库无关**(那只是不写库名时的解析
+    起点,线上那个 business_analysis 本就不是常用库)。库列表刻意不落库,审计只记个数。
     """
-    spy_connector(bypassed_database="business_analysis")
+    spy_connector(databases=["default", "finance_bp"])
     _configure(db, team, ds, t_admin)
     since = max_audit_id(db)
     out = verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
-    assert out["note"] == credential_service.db_permission_note("business_analysis")
-    assert out["verified"] is True  # 绕开算连通:任务写全限定表名照样能跑
-    assert one_audit_row(db, since).detail["bypassed_database"] == "business_analysis"
+    assert out["databases"] == ["default", "finance_bp"]
+    assert out["verified"] is True
+    assert one_audit_row(db, since).detail["visible_databases"] == 2
 
 
-def test_verify_has_no_note_normally(db, ds, team, t_admin, spy_connector):
+def test_verify_tolerates_an_engine_that_cannot_list_databases(
+    db, ds, team, t_admin, spy_connector
+):
+    """列不出库不算失败:连得上就是连得上,列表为空只是少一条信息。"""
     spy_connector()
     _configure(db, team, ds, t_admin)
     since = max_audit_id(db)
-    assert verify_team_credential(team.id, ds.id, db, t_admin, ip=None)["note"] is None
-    assert "bypassed_database" not in one_audit_row(db, since).detail
+    out = verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
+    assert out["databases"] == [] and out["verified"] is True
+    assert "visible_databases" not in one_audit_row(db, since).detail
