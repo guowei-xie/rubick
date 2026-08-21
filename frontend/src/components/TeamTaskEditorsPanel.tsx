@@ -84,9 +84,10 @@ export default function TeamTaskEditorsPanel({
           {
             title: "操作",
             width: 110,
+            // 「管理」而非「授予」:撤销也在同一个弹窗里,叫「授予编辑权」会让人以为撤不了
             render: (_: any, t: any) => (
               <Button type="link" size="small" onClick={() => setOpen(t)}>
-                授予编辑权
+                管理编辑权
               </Button>
             ),
           },
@@ -104,9 +105,9 @@ export default function TeamTaskEditorsPanel({
         description={
           <>
             团队成员互相看得到彼此的任务，但默认只能编辑自己建的。需要让某人改某个任务时，
-            由<b>团队管理员</b>在这里按任务授予编辑权。
+            由<b>团队管理员</b>在这里按任务授予编辑权，<b>撤销也在同一处</b>。
             <br />
-            团队管理员本人对本团队<b>全部</b>任务天然可编辑，无需授权；成员被移出团队后，
+            团队管理员本人对本团队<b>全部</b>任务天然可编辑，无需授权，也无从撤销；成员被移出团队后，
             已授予的编辑权自动失效并清除。
           </>
         }
