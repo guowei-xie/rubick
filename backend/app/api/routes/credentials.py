@@ -159,7 +159,8 @@ def verify_team_credential(  # 刻意不叫 test_*:那样会被 pytest 当成测
                 **({} if cred.verified else {"error": (cred.last_verify_error or "")[:200]}),
                 # 记「这个账号能进几个库」这个数,不记库名清单:清单可能上百条,
                 # 会把审计 detail 撑成一堆噪音,而治理要答的是「测通时它有没有数据权限」。
-                **({"visible_databases": len(databases)} if databases else {}),
+                # 恒记(哪怕是 0):缺了这个键就分不清「一个库都进不去」和「压根没查出来」。
+                "visible_databases": len(databases),
             },
         )
     # 库列表 = 这个账号能取到哪些库的数据(与数据源配的默认库无关),前端据此展示给管理员

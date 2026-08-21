@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
+import { connectOkMsg } from "../../format";
 import { Button, Card, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Table, Tag } from "antd";
 import {
   createDatasource,
   deleteDatasource,
   errMsg,
   listDatasources,
-  connectOkMsg,
   testDatasource,
   updateDatasource,
 } from "../../api";

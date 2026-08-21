@@ -6,11 +6,10 @@ import {
   errMsg,
   listTeamCredentials,
   saveTeamCredential,
-  connectOkMsg,
   testTeamCredential,
 } from "../api";
 import CredentialTag from "./CredentialTag";
-import { dash, fmtTime } from "../format";
+import { connectOkMsg, dash, fmtTime } from "../format";
 
 /**
  * 「团队取数账号」面板 —— 团队页的一个 Tab。

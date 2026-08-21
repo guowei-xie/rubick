@@ -5,7 +5,7 @@ Engine(连接池)按「连接身份」缓存复用,详见 _get_engine。
 
 默认库:数据源上配的 database 写进 DSN,是**首选**而不是**前提** —— 账号进不去它(MySQL 1044)
 时绕开它、不带默认库再连一次(见 _connect),成败交还给任务 SQL。
-「测试连接」压根不带默认库(见 test_connection),故与那个库无关。
+「测试连接」压根不带默认库(见 test_connection),故与那个库无关 —— 契约见 connectors/base.py。
 """
 from __future__ import annotations
 
@@ -16,11 +16,9 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
+from sqlalchemy.pool import NullPool
 
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
-from app.core.logging_setup import get_logger
-
-logger = get_logger(__name__)
 
 # 按连接身份缓存 Engine,复用连接池;否则每次取数都新建池、每查都付一次 TCP+鉴权握手。
 #
@@ -31,7 +29,8 @@ logger = get_logger(__name__)
 _ENGINE_CACHE: "OrderedDict[str, Any]" = OrderedDict()
 # 身份数 = 团队数 × MySQL 数据源数(比按人隔离时小一个量级),上限要盖得住,
 # 否则每次 miss 都要重付一次 TCP + 鉴权握手(5-50ms);与之配套的是把每个身份的池开得很小。
-# 注:进不去默认库的身份会额外占一条「不带默认库」的缓存项(见 _connect 的绕开),但那是少数。
+# 注:真被绕开过默认库的身份会额外占一条「不带默认库」的缓存项(见 _connect),但那是少数
+# —— 「测试连接」刻意不进这个缓存(见 test_connection),否则每个被测过的身份都要多占一格。
 _ENGINE_CACHE_MAX = 64
 # 单个身份的池:取数是低频长查询,常驻 1 条热连接足够;overflow 应付并发试跑
 _POOL_SIZE = 1
@@ -114,11 +113,7 @@ class MySQLConnector(DataSourceConnector):
                 conn = self._open(None)
             except Exception:  # noqa: BLE001 -- 不带默认库也连不上:仍报第一次的原因
                 raise e from None
-        # 绕开是要能查的事实:它解释了「为什么这个任务里不写库名的表突然找不到了」
-        logger.warning(
-            "mysql: 账号 %s 进不去库 %s,已绕开改为不带默认库;不写库名的 SQL 会解析不到表",
-            self.config.username, database,
-        )
+        self.warn_bypassed(database, "不带默认库的连接")
         return conn
 
     def execute(
@@ -146,15 +141,24 @@ class MySQLConnector(DataSourceConnector):
         )
 
     def test_connection(self) -> list[str]:
-        """验身份 + 列出账号能访问的库。**不依赖数据源配的默认库**(见基类的契约说明)。
+        """验身份 + 列出账号能访问的库(契约见基类)。刻意不走 _connect —— 那是取数口径。
 
-        刻意不走 _connect:那是取数的口径(优先配的库)。这里压根不带默认库 ——
-        身份对了就一定连得上,与任何具体库无关。
+        连接即用即弃(NullPool),不进 _ENGINE_CACHE:一次人工点击换来一条**永不复用**的
+        常驻 Engine 与空闲连接,会把缓存位挤给取数路径的热 Engine,那才是真代价;
+        多付一次握手(5-50ms)在一个按钮上根本看不出来。
         """
-        with self._open(None) as conn:
-            try:
-                rows = conn.exec_driver_sql("SHOW DATABASES").fetchall()
-            except Exception as e:  # noqa: BLE001 -- 列不出就算了,连接本身已证明身份可用
-                logger.warning("mysql: SHOW DATABASES 失败(连接本身是好的):%s", e)
-                return []
-        return [str(r[0]) for r in rows if r and r[0] is not None]
+        eng = create_engine(
+            _url(self.config, None),
+            poolclass=NullPool,
+            connect_args={"connect_timeout": self._connect_timeout},
+        )
+        try:
+            with eng.connect() as conn:
+                try:
+                    rows = conn.exec_driver_sql("SHOW DATABASES").fetchall()
+                except Exception as e:  # noqa: BLE001 -- 列不出不算连不上
+                    self.warn_unlistable(str(e)[:200])
+                    return []
+                return self.first_column(rows)
+        finally:
+            eng.dispose()

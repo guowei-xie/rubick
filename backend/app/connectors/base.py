@@ -9,6 +9,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.logging_setup import get_logger
+
+log = get_logger(__name__)
+
 
 @dataclass
 class QueryResult:
@@ -73,11 +77,37 @@ class DataSourceConnector(ABC):
 
     @abstractmethod
     def test_connection(self) -> list[str]:
-        """验「这个账号能不能登进库」,并返回它能访问的库名列表(拿不到就空列表)。
+        """验「这个账号能不能登进库」,失败抛异常;返回它能访问的库名列表。
 
-        **刻意不依赖数据源配的默认库**:那个库(线上是个不常用的应用库)进不去,不代表账号
-        不可用 —— 任务 SQL 写全限定表名照样能跑。所以这里连一个中立的库、只跑 SHOW DATABASES,
-        不碰任何业务表;能访问哪些库这件事本身就是团队管理员配账号时最想知道的答案。
+        三条契约(**怎么实现是各引擎自己的事**,别把某个引擎的做法写进这里):
+
+        1. **不得依赖 config.database**。那个库进不去不代表账号不可用 —— 任务 SQL 写全限定
+           表名照样能跑,拿它当门槛会把可用的账号判成连不上(线上配的就是个不常用的应用库);
+        2. 不碰任何业务表;
+        3. **列不出库不算连不上**,返回空列表即可(引擎不支持、或账号没有列库权限)。
 
         库 / 表级权限的完整答案仍在试跑 —— 那才与上线后的取数同一套身份、同一条 SQL。
         """
+
+    # ------------------------------------------------ 各引擎共用的小工具
+
+    @staticmethod
+    def first_column(rows) -> list[str]:
+        """行集 → 第一列的字符串列表(SHOW DATABASES 之类的单列结果)。"""
+        return [str(r[0]) for r in rows if r and r[0] is not None]
+
+    def warn_unlistable(self, detail: str) -> None:
+        """列不出库时留一条线索。文案共用一份:两个引擎各写一句迟早漂移。
+
+        detail 由调用方给 —— 把引擎异常变成人话恰恰是各连接器自己的活。
+        """
+        log.warning("%s: 列出库失败(连接本身是好的):%s", self.engine, detail)
+
+    def warn_bypassed(self, configured: str, used: str) -> None:
+        """绕开了 config.database 时留一条线索 —— 它解释了「为什么这个任务里不写库名的表
+        突然找不到了」。取数路径唯一的痕迹,故不能省(测试连接压根不碰那个库,不会走到这)。
+        """
+        log.warning(
+            "%s: 账号 %s 进不去库 %s,已绕开改用 %s;不写库名的 SQL 会解析不到表",
+            self.engine, self.config.username, configured, used,
+        )

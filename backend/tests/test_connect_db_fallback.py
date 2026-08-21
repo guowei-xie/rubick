@@ -47,36 +47,31 @@ class _FakeHive:
 
 
 class _FakeConn:
+    """既当连接又当游标 —— 被测代码只用 cursor()/close() 和游标那几个方法。"""
+
+    description = [("c",)]
+
     def __init__(self, show_fails=False):
-        self.show_fails = show_fails
+        self._show_fails = show_fails
 
     def cursor(self):
-        return _FakeCursor(self.show_fails)
+        return self
 
     def close(self):
         pass
 
-
-class _FakeCursor:
-    description = [("c",)]
-
-    def __init__(self, show_fails=False):
-        self._show = False
-        self._show_fails = show_fails
-
     def execute(self, sql, *a, **kw):
-        self._show = "SHOW DATABASES" in sql
-        if self._show and self._show_fails:
+        if self._show_fails and "SHOW DATABASES" in sql:
             raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
 
     def fetchall(self):
-        return [(d,) for d in VISIBLE] if self._show else [(1,)]
+        return [(d,) for d in VISIBLE]  # 只有 SHOW DATABASES 走到这:取数走 fetchmany
 
     def fetchmany(self, n):
         return [(1,)]
 
     def poll(self):
-        """异步提交后 execute() 会轮询状态 —— 直接报「已完成」。"""
+        """异步提交后会轮询状态 —— 直接报「已完成」。"""
         from TCLIService.ttypes import TOperationState
 
         return type("R", (), {"operationState": TOperationState.FINISHED_STATE})()
@@ -155,6 +150,10 @@ class _FakeEngine:
     def __init__(self, error=None):
         self.error = error
         self.connects = 0
+        self.disposed = False
+
+    def dispose(self):
+        self.disposed = True
 
     def connect(self):
         self.connects += 1
@@ -186,14 +185,20 @@ def _mysql_error(code: int, msg: str):
     return OperationalError("SELECT 1", {}, Exception(code, msg))
 
 
-def _mysql(monkeypatch, *, primary_error=None, fallback_error=None):
+def _mysql(monkeypatch, *, primary_error=None):
+    """假掉两条取连接的路:查询走 _get_engine(带缓存),测试连接走 create_engine(即用即弃)。"""
     from app.connectors import mysql as mysql_mod
 
-    engines = {"primary": _FakeEngine(primary_error), "fallback": _FakeEngine(fallback_error)}
+    engines = {
+        "primary": _FakeEngine(primary_error),  # 带默认库(查询首选)
+        "fallback": _FakeEngine(),  # 不带默认库(查询被拒后绕开用)
+        "throwaway": _FakeEngine(),  # 测试连接:不进缓存
+    }
     monkeypatch.setattr(
         mysql_mod, "_get_engine",
         lambda url, ct: engines["primary" if url.database else "fallback"],
     )
+    monkeypatch.setattr(mysql_mod, "create_engine", lambda url, **kw: engines["throwaway"])
     conn = mysql_mod.MySQLConnector(ConnectionConfig(
         host="h", port=3306, database=DB, username="team_acct", password="p", extra={},
     ))
@@ -201,13 +206,17 @@ def _mysql(monkeypatch, *, primary_error=None, fallback_error=None):
 
 
 def test_mysql_test_connection_never_uses_the_configured_database(monkeypatch):
-    """MySQL 侧更直接:测试连接压根不带默认库,身份对了就连得上。"""
+    """MySQL 侧更直接:测试连接压根不带默认库,身份对了就连得上。
+
+    且它用的是即用即弃的连接,不碰共享的 Engine 缓存 —— 否则每个被测过的身份都会在缓存里
+    常驻一条永不复用的 Engine 与空闲连接,把缓存位挤给取数路径的热 Engine。
+    """
     c, engines = _mysql(monkeypatch, primary_error=_mysql_error(
         1044, "Access denied for user 'team_acct'@'10.0.0.5' to database 'business_analysis'"
     ))
     assert c.test_connection() == VISIBLE
-    assert engines["primary"].connects == 0  # 带库的那条连接根本没用上
-    assert engines["fallback"].connects == 1
+    assert engines["throwaway"].connects == 1
+    assert engines["primary"].connects == 0 and engines["fallback"].connects == 0
 
 
 def test_mysql_query_bypasses_when_denied_to_database(monkeypatch):

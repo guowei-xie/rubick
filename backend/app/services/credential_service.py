@@ -243,7 +243,7 @@ def probe(ds: DataSource, credential: Credential) -> list[str]:
         raise RubicError(f"连接失败:{str(e)[:400]}") from e
 
 
-def verify(db: Session, cred: TeamDataSourceCredential) -> str | None:
+def verify(db: Session, cred: TeamDataSourceCredential) -> list[str]:
     """用这套凭证真连一次目标库(**自愿的自检,不是上线前置条件**)。
     成功记 last_verified_at,失败记原因并清空测通状态;返回 probe 给的「可访问库列表」。
 

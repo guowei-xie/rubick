@@ -20,13 +20,13 @@ from contextlib import contextmanager
 from typing import Any
 
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
-from app.core.logging_setup import get_logger
-
-logger = get_logger(__name__)
 
 # 中立库:Hive 的 default 一定存在,且通常对所有账号开放。取数时它是绕开原库后的落脚点,
 # 测试连接时它是首选 —— 两处都靠它把「能不能登进数仓」与「进不进得去某个具体库」解耦。
 _NEUTRAL_DATABASE = "default"
+# 列库的超时预算。它只是元数据查询,又卡在一个有人在等的同步请求上,不该按取数的
+# 长超时(Hive 默认 3600s)来等 —— 超了就当「列不出来」,不影响连通性判定。
+_LIST_TIMEOUT_SECONDS = 15
 
 
 def _hive_error_text(exc: Exception) -> str:
@@ -89,28 +89,6 @@ def _hive_error_message(exc: Exception) -> str:
     return _user_message(_hive_error_text(exc))
 
 
-def _database_names(cursor) -> list[str]:
-    """`SHOW DATABASES` 的结果。**列不出来不算连不上**:建连本身(认证 + USE)已经证明了
-    身份可用,列表只是附加信息 —— 让它抛异常会把可用的账号判成连不上,那正是要避免的事。
-    """
-    try:
-        cursor.execute("SHOW DATABASES")
-        rows = cursor.fetchall()
-    except Exception as e:  # noqa: BLE001 -- 列不出就算了,只留一条线索
-        logger.warning("hive: SHOW DATABASES 失败(连接本身是好的):%s", _hive_error_message(e))
-        return []
-    return [str(r[0]) for r in rows if r and r[0] is not None]
-
-
-def _candidates(*databases: str | None) -> list[str]:
-    """候选库列表:按给定顺序去空、去重(两个候选常常是同一个库,不能连两次)。"""
-    out: list[str] = []
-    for db in databases:
-        if db and db not in out:
-            out.append(db)
-    return out
-
-
 @contextmanager
 def _readable_errors(action: str):
     """把这段代码里冒出的原始 Thrift 异常换成一句可读的 `Hive <action>:…`。
@@ -150,25 +128,22 @@ class HiveConnector(DataSourceConnector):
             auth=auth,
         )
 
-    def _open_first(self, candidates: list[str]) -> tuple[Any, str]:
-        """按候选顺序连,返回 (连接, 用上的库)。
+    def _open_first(self, *candidates: str | None) -> tuple[Any, str]:
+        """按候选顺序连,返回 (连接, 用上的库)。空值与重复候选自动跳过。
 
-        只有**鉴权拒绝**才继续试下一个候选:密码错、库不存在、网络不可达一律当场抛 ——
+        只有**鉴权拒绝**才继续试下一个:密码错、库不存在、网络不可达一律当场抛 ——
         那是配置或故障,换个库重试只会把它们藏起来。全都失败则抛**第一个**错误,
         因为第一个候选才是调用方本来想连的库。
         """
         first: Exception | None = None
-        for database in candidates:
+        for database in dict.fromkeys(d for d in candidates if d):  # 去重且保序
             try:
                 return self._open(database), database
             except Exception as e:  # noqa: BLE001 -- 原始 Thrift 异常转一句可读信息
-                text = _hive_error_text(e)
-                if not _is_permission_denied(text):
-                    raise RuntimeError(f"Hive 连接失败:{_user_message(text)}") from e
+                if not _is_permission_denied(_hive_error_text(e)):
+                    raise RuntimeError(f"Hive 连接失败:{_hive_error_message(e)}") from e
                 first = first or e
-        raise RuntimeError(
-            f"Hive 连接失败:{_user_message(_hive_error_text(first))}"
-        ) from first
+        raise RuntimeError(f"Hive 连接失败:{_hive_error_message(first)}") from first
 
     def _connect(self):
         """取数用的建连。**注意 pyhive 在这一步就执行了 `USE <database>`**,所以库级鉴权失败
@@ -181,13 +156,9 @@ class HiveConnector(DataSourceConnector):
            试跑挂在 USE 上,而上线后那条 SQL 其实跑得动)。
         """
         preferred = self.config.database or _NEUTRAL_DATABASE
-        conn, used = self._open_first(_candidates(preferred, _NEUTRAL_DATABASE))
+        conn, used = self._open_first(preferred, _NEUTRAL_DATABASE)
         if used != preferred:
-            # 绕开是要能查的事实:它解释了「为什么这个任务里不写库名的表突然找不到了」
-            logger.warning(
-                "hive: 账号 %s 进不去库 %s,已绕开改连 %s;不写库名的 SQL 会解析不到表",
-                self.config.username, preferred, used,
-            )
+            self.warn_bypassed(preferred, used)
         return conn
 
     def execute(
@@ -271,10 +242,18 @@ class HiveConnector(DataSourceConnector):
         候选顺序与 _connect 相反:先连中立的 default;只有极严的授权策略把 default 也关了,
         才退到数据源配的那个库 —— 否则那种集群会让一个完全可用的账号被判成「连不上」。
         """
-        conn, _ = self._open_first(
-            _candidates(_NEUTRAL_DATABASE, self.config.database)
-        )
+        conn, _ = self._open_first(_NEUTRAL_DATABASE, self.config.database)
         try:
-            return _database_names(conn.cursor())
+            cursor = conn.cursor()
+            try:
+                # 异步提交 + 轮询,与取数同一套超时机制:SHOW DATABASES 是元数据扫描,
+                # 库多时可能很慢,而这是个有人在等的同步请求,不能没有上限地占着工作线程。
+                cursor.execute("SHOW DATABASES", async_=True)
+                self._await_completion(cursor, _LIST_TIMEOUT_SECONDS)
+                rows = cursor.fetchall()
+            except Exception as e:  # noqa: BLE001 -- 列不出(含超时)不算连不上
+                self.warn_unlistable(_hive_error_message(e))
+                return []
+            return self.first_column(rows)
         finally:
             conn.close()

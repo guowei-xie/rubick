@@ -13,3 +13,13 @@ export function fmtTime(t?: string | null, withSeconds = true): string {
 export function dash(v: unknown): string {
   return v === null || v === undefined || v === "" ? "-" : String(v);
 }
+
+
+/** 「测试连接」成功后的提示:连通只是底线,真正有用的是「这个账号能取哪些库的数」。
+ *  库多时只列前几个 —— 提示条塞不下几百个库名,给出个数与样例就够定位问题了。 */
+export const connectOkMsg = (databases: string[] = []): string =>
+  databases.length
+    ? `连接成功。该账号可访问 ${databases.length} 个库:${databases
+        .slice(0, 6)
+        .join("、")}${databases.length > 6 ? " 等" : ""}`
+    : "连接成功,账号可登录(未能列出可访问的库)";

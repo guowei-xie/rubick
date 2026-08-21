@@ -302,4 +302,5 @@ def test_verify_tolerates_an_engine_that_cannot_list_databases(
     since = max_audit_id(db)
     out = verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
     assert out["databases"] == [] and out["verified"] is True
-    assert "visible_databases" not in one_audit_row(db, since).detail
+    # 恒记这个数(哪怕是 0):缺了它就分不清「一个库都进不去」和「压根没查出来」
+    assert one_audit_row(db, since).detail["visible_databases"] == 0
