@@ -183,6 +183,29 @@ def one_audit_row(db, since_id: int) -> AuditLog:
     return rows[0]
 
 
+# HiveServer2 开了鉴权时的报错原文:消息只在 infoMessages 里,errorMessage 是空的
+HIVE_PERM_DENIED = (
+    "*org.apache.hive.service.cli.HiveSQLException:Error while compiling statement: "
+    "FAILED: HiveAccessControlException Permission denied: user [team_acct] does not "
+    "have [USE] privilege on [business_analysis]:28:27"
+)
+
+
+def hive_thrift_error(*, error_message=None, info_messages=()):
+    """造一个与 pyhive 真实抛出等价的异常:args[0] 是带 TStatus 的响应对象。
+
+    放在 conftest 而不是各测试文件里:「pyhive 的异常长什么样」这件事只该写一遍,
+    否则驱动升级要改好几处(见 connectors/hive.py::_hive_error_text 的说明)。
+    """
+    from pyhive.exc import OperationalError
+    from TCLIService.ttypes import TExecuteStatementResp, TStatus
+
+    status = TStatus(
+        statusCode=3, errorMessage=error_message, infoMessages=list(info_messages)
+    )
+    return OperationalError(TExecuteStatementResp(status=status))
+
+
 def assert_never_public(seen, public_username: str = "public_acct") -> None:
     """断言这批取数身份里没有数据源公共账号。
 
@@ -202,10 +225,16 @@ def spy_connector(monkeypatch):
     故逐个 patch。集中一处:`get_connector` 签名再变时只改这里。
     """
 
-    def install(*, rows=((1,),), fail: str | None = None) -> list:
+    def install(
+        *, rows=((1,),), fail: str | None = None, bypassed_database: str | None = None
+    ) -> list:
         seen: list = []
+        bypassed = bypassed_database  # 局部别名:类体里同名赋值会遮住外层参数
 
         class FakeConnector:
+            # 真连接器在「配的默认库进不去、已绕开」时置上库名(见 connectors/base.py)
+            bypassed_database = bypassed
+
             def execute(self, sql, params=None, *, timeout_seconds, max_rows):
                 if fail:
                     raise RuntimeError(fail)

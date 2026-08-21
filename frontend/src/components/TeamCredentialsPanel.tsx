@@ -100,8 +100,12 @@ export default function TeamCredentialsPanel({
   const test = async (row: TeamCredentialStatus) => {
     setTestingId(row.datasource_id);
     try {
-      replaceRow(await testTeamCredential(teamId, row.datasource_id));
-      message.success("连接成功,账号没问题");
+      const r = await testTeamCredential(teamId, row.datasource_id);
+      replaceRow(r);
+      // note = 账号登得进数仓,但数据源配的默认库进不去。这仍算连通(任务只要写全限定表名
+      // 就能跑),但缺口要当场说清楚,否则一句「连接成功」会让人以为权限齐了。
+      if (r.note) message.warning(r.note, 8);
+      else message.success("连接成功,账号没问题");
     } catch (e: any) {
       // 失败时后端也写了状态(清空测通 + 记原因),重拉把原因带出来
       message.error(errMsg(e, "连接失败"));

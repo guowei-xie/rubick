@@ -59,6 +59,10 @@ class DataSourceConnector(ABC):
 
     def __init__(self, config: ConnectionConfig):
         self.config = config
+        # 本次建连是否绕开了 config.database(账号进不去它),值为被绕开的库名。
+        # 契约:每次建连开头清空,只在**绕开成功后**置上 —— 连接器只报这个事实,
+        # 面向用户的说法由服务层给(services/credential_service.db_permission_note)。
+        self.bypassed_database: str | None = None
 
     @abstractmethod
     def execute(
@@ -73,4 +77,8 @@ class DataSourceConnector(ABC):
 
     @abstractmethod
     def test_connection(self) -> None:
-        """连通性检查,失败抛异常。"""
+        """连通性检查,失败抛异常。
+
+        「连上了、但配的默认库进不去」不算失败 —— 那种账号照样能取数(SQL 写全限定表名即可),
+        调用方从 bypassed_database 拿这个事实。
+        """

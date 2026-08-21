@@ -32,6 +32,7 @@ from app.models.user import User
 from app.schemas.credential import (
     CredentialIn,
     CredentialOverviewOut,
+    CredentialVerifyOut,
     TeamCredentialStatusOut,
 )
 from app.services import audit_service, credential_service, permission_service, team_service
@@ -128,7 +129,7 @@ def upsert_team_credential(
     return _one(db, team, ds_id, cred)
 
 
-@router.post("/teams/{team_id}/{ds_id}/test", response_model=TeamCredentialStatusOut)
+@router.post("/teams/{team_id}/{ds_id}/test", response_model=CredentialVerifyOut)
 def verify_team_credential(  # 刻意不叫 test_*:那样会被 pytest 当成测试函数收集
     team_id: int,
     ds_id: int,
@@ -145,8 +146,9 @@ def verify_team_credential(  # 刻意不叫 test_*:那样会被 pytest 当成测
     cred = credential_service.get(db, team.id, ds_id)
     if cred is None:
         raise NotFoundError("本团队尚未配置该数据源的取数账号")
+    bypassed = None
     try:
-        credential_service.verify(db, cred)
+        bypassed = credential_service.verify(db, cred)
     finally:
         # verify 成功/失败都会先把状态落库,所以 ok 直接读 cred 即可,不必靠控制流分叉
         _audit(
@@ -155,9 +157,15 @@ def verify_team_credential(  # 刻意不叫 test_*:那样会被 pytest 当成测
                 "db_username": cred.username,
                 "ok": cred.verified,
                 **({} if cred.verified else {"error": (cred.last_verify_error or "")[:200]}),
+                # 「连上了但进不去数据源配的库」也是要能查的治理事实,而它刻意不落库
+                # (见 credential_service.verify),审计是它唯一的持久痕迹。记库名这个
+                # **事实**而不是那句给用户看的话:文案一改,历史审计行就分成两拨了。
+                **({"bypassed_database": bypassed} if bypassed else {}),
             },
         )
-    return _one(db, team, ds_id, cred)
+    # bypassed 非空 = 连上了但默认库进不去,前端据此在「连接成功」之外再给一句黄字提醒
+    note = credential_service.db_permission_note(bypassed) if bypassed else None
+    return {**_one(db, team, ds_id, cred), "note": note}
 
 
 @router.delete("/teams/{team_id}/{ds_id}")

@@ -72,9 +72,11 @@ export default function DatasourcesPage() {
   const test = async (id: number) => {
     const hide = message.loading("连接测试中…", 0);
     try {
-      await testDatasource(id);
+      const r = await testDatasource(id);
       hide();
-      message.success("连接成功");
+      // note = 账号登得进去,但数据源配的默认库进不去 —— 连通了,但这个缺口得说出来
+      if (r.note) message.warning(r.note, 8);
+      else message.success("连接成功");
     } catch (e: any) {
       hide();
       message.error(errMsg(e, "连接失败"));

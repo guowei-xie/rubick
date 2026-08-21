@@ -140,7 +140,9 @@ export const updateDatasource = (id: number, data: any) =>
 export const deleteDatasource = (id: number) =>
   http.delete(`/datasources/${id}`).then((r) => r.data);
 export const testDatasource = (id: number) =>
-  http.post(`/datasources/${id}/test`).then((r) => r.data);
+  http
+    .post(`/datasources/${id}/test`)
+    .then((r) => r.data as { ok: boolean; note?: string | null });
 
 // ---- teams(团队与成员)----
 // 团队是任务的归属边界与取数身份边界:任务必属一个团队,同团队互相可见,
@@ -238,6 +240,10 @@ export interface TeamCredentialStatus {
   updated_by_name?: string | null;
   updated_at?: string | null;
 }
+/** 「测试连接」的响应:状态行 + 这一次的附带提示(账号能登录但进不去数据源配的默认库时非空)。 */
+export interface TeamCredentialVerify extends TeamCredentialStatus {
+  note?: string | null;
+}
 export interface NotReadyTemplate {
   template_id: number;
   template_name: string;
@@ -275,7 +281,7 @@ export const saveTeamCredential = (
   data: { username: string; password?: string }
 ) => http.put(`/credentials/teams/${teamId}/${dsId}`, data).then((r) => r.data as TeamCredentialStatus);
 export const testTeamCredential = (teamId: number, dsId: number) =>
-  http.post(`/credentials/teams/${teamId}/${dsId}/test`).then((r) => r.data as TeamCredentialStatus);
+  http.post(`/credentials/teams/${teamId}/${dsId}/test`).then((r) => r.data as TeamCredentialVerify);
 export const deleteTeamCredential = (teamId: number, dsId: number) =>
   http.delete(`/credentials/teams/${teamId}/${dsId}`).then((r) => r.data);
 export const credentialOverview = () =>

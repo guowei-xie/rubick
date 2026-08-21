@@ -21,7 +21,8 @@ from app.models import audit as A
 from app.models.datasource import DataSource
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER
 from app.schemas.credential import CredentialIn
-from tests.conftest import max_audit_id, new_audit_rows
+from app.services import credential_service
+from tests.conftest import max_audit_id, new_audit_rows, one_audit_row
 
 pytestmark = pytest.mark.usefixtures("clean_credentials")
 
@@ -272,3 +273,30 @@ def test_deleting_datasource_cascades_team_credentials(db, team, t_admin, admin,
     row = new_audit_rows(db, since)[0]
     assert row.action == A.ACTION_DATASOURCE_DELETE
     assert row.detail["revoked_credentials"] == 1
+
+
+# ---------------------------------------------------------------- 「进不去那个库」这个事实
+
+
+def test_verify_carries_the_bypassed_database_note(db, ds, team, t_admin, spy_connector):
+    """连上了但账号进不去数据源配的默认库时:响应带一句提示,审计留下库名。
+
+    否则团队管理员只看到一个纯粹的「连接成功」,永远不会知道有这个缺口;而这个事实刻意
+    不落库(见 credential_service.verify),审计就是它唯一的持久痕迹。
+    审计记的是**库名**而不是那句话:文案一改,历史审计行就分成两拨了。
+    """
+    spy_connector(bypassed_database="business_analysis")
+    _configure(db, team, ds, t_admin)
+    since = max_audit_id(db)
+    out = verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
+    assert out["note"] == credential_service.db_permission_note("business_analysis")
+    assert out["verified"] is True  # 绕开算连通:任务写全限定表名照样能跑
+    assert one_audit_row(db, since).detail["bypassed_database"] == "business_analysis"
+
+
+def test_verify_has_no_note_normally(db, ds, team, t_admin, spy_connector):
+    spy_connector()
+    _configure(db, team, ds, t_admin)
+    since = max_audit_id(db)
+    assert verify_team_credential(team.id, ds.id, db, t_admin, ip=None)["note"] is None
+    assert "bypassed_database" not in one_audit_row(db, since).detail
