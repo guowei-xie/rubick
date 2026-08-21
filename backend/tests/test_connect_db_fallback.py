@@ -11,6 +11,8 @@
 
 绕开只认鉴权拒绝:密码错、库不存在、网络不通都要原样报出来,否则真故障会被藏成一次静默重试。
 """
+import contextlib
+
 import pytest
 
 from app.connectors.base import ConnectionConfig
@@ -24,51 +26,68 @@ VISIBLE = ["default", "finance_bp", DB]
 
 
 class _FakeHive:
-    """假 pyhive 模块:记录每次尝试的库名,并按库名决定抛什么。
+    """假 pyhive 模块。`Connection` 是**类**(真 pyhive 也是),因为连接器会去继承它。"""
 
-    模拟的是 pyhive 的真实行为 —— `USE <db>` 在 Connection() 构造期执行,所以库权限
-    不足时连对象都拿不到(见 pyhive/hive.py 的 Connection.__init__)。
-    """
+    def __init__(self, *, denied=(), error=None, show_fails=False, visible=None):
+        self.denied = set(denied)  # 这些库在 `USE` 时被鉴权拒
+        self.error = error  # 非 None:OpenSession 阶段就失败(传输层/认证故障)
+        self.show_fails = show_fails  # SHOW DATABASES 被拒
+        self.visible = VISIBLE if visible is None else visible
+        self.opened: list[str] = []  # OpenSession 到过的库(建连尝试)
+        self.used: list[str] = []  # 真正执行过 `USE` 的库
+        rec = self
 
-    def __init__(self, *, denied=(), error=None, show_fails=False):
-        self.denied = set(denied)  # 这些库会以「鉴权拒绝」失败
-        self.error = error  # 非 None 时:任何库都抛这个(模拟传输层/认证故障)
-        self.show_fails = show_fails  # SHOW DATABASES 被拒(有些集群不给列库权限)
-        self.attempts: list[str] = []
+        class Connection:
+            """照搬 pyhive 的构造顺序:OpenSession 成功后再执行 `USE <db>`。
 
-    def Connection(self, **kwargs):  # noqa: N802 -- 对齐 pyhive 的类名
-        db = kwargs["database"]
-        self.attempts.append(db)
-        if self.error is not None:
-            raise self.error
-        if db in self.denied:
-            raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
-        return _FakeConn(self.show_fails)
+            这个顺序是本轮的关键 —— 「登得进数仓」与「进得去某个库」是两件事,
+            测试连接靠跳过后者来验前者(见 hive.py::_open_without_use)。
+            """
+
+            def __init__(self, **kwargs):
+                self.rec = rec
+                db = kwargs["database"]
+                rec.opened.append(db)
+                if rec.error is not None:
+                    raise rec.error
+                with contextlib.closing(self.cursor()) as cur:
+                    cur.execute(f"USE `{db}`")
+
+            def cursor(self):
+                return _FakeCursor(rec)
+
+            def close(self):
+                pass
+
+        self.Connection = Connection
 
 
-class _FakeConn:
-    """既当连接又当游标 —— 被测代码只用 cursor()/close() 和游标那几个方法。"""
-
+class _FakeCursor:
     description = [("c",)]
 
-    def __init__(self, show_fails=False):
-        self._show_fails = show_fails
-
-    def cursor(self):
-        return self
-
-    def close(self):
-        pass
+    def __init__(self, rec):
+        self.rec = rec
+        self._rows: list[tuple] = [(1,)]
 
     def execute(self, sql, *a, **kw):
-        if self._show_fails and "SHOW DATABASES" in sql:
-            raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
+        if sql.startswith("USE `"):
+            db = sql[len("USE `"):-1]
+            self.rec.used.append(db)
+            if db in self.rec.denied:
+                raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
+        elif "SHOW DATABASES" in sql:
+            if self.rec.show_fails:
+                raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
+            self._rows = [(d,) for d in self.rec.visible]
 
     def fetchall(self):
-        return [(d,) for d in VISIBLE]  # 只有 SHOW DATABASES 走到这:取数走 fetchmany
+        return self._rows
 
     def fetchmany(self, n):
         return [(1,)]
+
+    def close(self):
+        pass
 
     def poll(self):
         """异步提交后会轮询状态 —— 直接报「已完成」。"""
@@ -87,25 +106,29 @@ def _hive(**kw):
     return conn
 
 
-def test_test_connection_never_touches_the_configured_database():
-    """「测试连接」只连中立库,压根不碰数据源配的那个库,并列出账号可访问的库。"""
-    c = _hive(denied=[DB])  # 配的库进不去也无所谓 —— 它不参与
+def test_test_connection_enters_no_database_at_all():
+    """「测试连接」压根不 `USE` 任何库:它只验「登得进数仓」+ 列出能访问的库。"""
+    c = _hive()
     assert c.test_connection() == VISIBLE
-    assert c._hive.attempts == ["default"]
+    assert c._hive.used == []  # 一次 USE 都没做
 
 
-def test_test_connection_falls_back_when_even_default_is_denied():
-    """极严策略把 default 也关了才退到配的库 —— 否则可用的账号会被判成连不上。"""
-    c = _hive(denied=["default"])
-    assert c.test_connection() == VISIBLE
-    assert c._hive.attempts == ["default", DB]
+def test_test_connection_works_when_every_database_is_denied():
+    """线上 dongyi7 的处境:default 与数据源配的库都没有 USE 权限。
+
+    它**能**登进数仓(报错是 HiveSQLException,说明 OpenSession 已成功),也确实有别的库的
+    权限,却因为 pyhive 建连时那句 USE 被判成「连不上」—— 而且没法通过平台知道自己能进哪个库
+    (要连上才知道、要知道才连得上)。跳过 USE 后这个死循环就解开了:测试连接直接告诉他能进哪些库。
+    """
+    c = _hive(denied=["default", DB], visible=["finance_bp", "dw_finance"])
+    assert c.test_connection() == ["finance_bp", "dw_finance"]
+    assert c._hive.used == []
 
 
 def test_listing_failure_does_not_fail_the_connection_test():
-    """列不出库不算连不上:建连本身(认证 + USE)已经证明身份可用,列表只是附加信息。"""
+    """列不出库不算连不上:OpenSession 已经证明身份可用,列表只是附加信息。"""
     c = _hive(show_fails=True)
     assert c.test_connection() == []
-    assert c._hive.attempts == ["default"]
 
 
 def test_query_prefers_the_configured_database_then_bypasses_it():
@@ -113,14 +136,14 @@ def test_query_prefers_the_configured_database_then_bypasses_it():
     c = _hive(denied=[DB])
     res = c.execute("SELECT 1 FROM business_analysis.t", None, timeout_seconds=5, max_rows=10)
     assert res.columns == ["c"]
-    assert c._hive.attempts == [DB, "default"]
+    assert c._hive.opened == [DB, "default"]
 
 
 def test_query_connects_once_when_the_database_is_reachable():
     """有权限的场景必须完全不变:只连一次。"""
     c = _hive()
     c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    assert c._hive.attempts == [DB]
+    assert c._hive.opened == [DB]
 
 
 def test_reports_the_first_database_when_both_are_denied():
@@ -129,7 +152,7 @@ def test_reports_the_first_database_when_both_are_denied():
     with pytest.raises(RuntimeError) as ei:
         c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     msg = str(ei.value)
-    assert c._hive.attempts == [DB, "default"]
+    assert c._hive.opened == [DB, "default"]
     assert "TExecuteStatementResp" not in msg  # 不泄 Thrift repr
     assert f"[USE] privilege on [{DB}]" in msg
     # 一个库都进不去时,报错必须解释「Hive 建连必须先进入某个库」并给出路 ——
@@ -137,12 +160,21 @@ def test_reports_the_first_database_when_both_are_denied():
     assert "default" in msg and "请数仓为这个账号授权" in msg
 
 
-def test_transport_failure_does_not_try_another_database():
-    """网络/认证类故障不换库重试:那只会把真故障藏起来,且白付一次握手。"""
+def test_transport_failure_still_fails_the_connection_test():
+    """OpenSession 都失败(网络不通 / 认证错)才是真的连不上,必须如实报错。"""
     c = _hive(error=OSError("Could not connect to h:10000"))
     with pytest.raises(RuntimeError) as ei:
         c.test_connection()
-    assert c._hive.attempts == ["default"]  # 只试了一次
+    assert len(c._hive.opened) == 1  # 只开一次会话,不换库重试
+    assert "Could not connect" in str(ei.value)
+
+
+def test_query_path_does_not_try_another_database_on_transport_failure():
+    """取数路径同理:网络/认证故障不换库重试,那只会把真故障藏起来、白付一次握手。"""
+    c = _hive(error=OSError("Could not connect to h:10000"))
+    with pytest.raises(RuntimeError) as ei:
+        c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
+    assert c._hive.opened == [DB]
     assert "Could not connect" in str(ei.value)
 
 
@@ -260,7 +292,7 @@ def test_credential_entry_database_wins_over_the_datasource():
     conn = get_connector(ds, Credential("team_acct", None, entry_database="finance_bp"))
     conn._hive = _FakeHive(denied=[DB])  # 数据源那个库进不去也无所谓:压根不试它
     conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    assert conn._hive.attempts == ["finance_bp"]
+    assert conn._hive.opened == ["finance_bp"]
 
 
 def test_datasource_default_used_when_no_entry_database():
@@ -276,4 +308,4 @@ def test_datasource_default_used_when_no_entry_database():
     conn = get_connector(ds, Credential("team_acct", None))
     conn._hive = _FakeHive()
     conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    assert conn._hive.attempts == [DB]
+    assert conn._hive.opened == [DB]

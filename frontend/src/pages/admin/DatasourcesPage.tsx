@@ -70,12 +70,13 @@ export default function DatasourcesPage() {
     }
   };
 
-  const test = async (id: number) => {
+  const test = async (row: any) => {
     const hide = message.loading("连接测试中…", 0);
     try {
-      const r = await testDatasource(id);
+      const r = await testDatasource(row.id);
       hide();
-      message.success(connectOkMsg(r.databases), 8);
+      const m = connectOkMsg(r.databases, row.database);
+      message[m.level](m.text, 8);
     } catch (e: any) {
       hide();
       message.error(errMsg(e, "连接失败"));
@@ -112,7 +113,7 @@ export default function DatasourcesPage() {
       width: 240,
       render: (_: any, r: any) => (
         <Space size={0}>
-          <Button type="link" size="small" onClick={() => test(r.id)}>
+          <Button type="link" size="small" onClick={() => test(r)}>
             测试连接
           </Button>
           <Button type="link" size="small" onClick={() => openEdit(r)}>

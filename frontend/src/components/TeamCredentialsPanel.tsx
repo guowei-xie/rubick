@@ -112,8 +112,9 @@ export default function TeamCredentialsPanel({
     try {
       const r = await testTeamCredential(teamId, row.datasource_id);
       replaceRow(r);
-      // 连通只是底线:把这个账号能访问的库一并说出来 —— 那才是配完账号最该确认的事
-      message.success(connectOkMsg(r.databases), 8);
+      // 连通只是底线:把这个账号能访问的库、以及入口库填得对不对一并说出来
+      const m = connectOkMsg(r.databases, r.entry_database || r.database);
+      message[m.level](m.text, 8);
     } catch (e: any) {
       // 失败时后端也写了状态(清空测通 + 记原因),重拉把原因带出来
       message.error(errMsg(e, "连接失败"));

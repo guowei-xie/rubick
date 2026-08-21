@@ -246,13 +246,48 @@ class HiveConnector(DataSourceConnector):
         ):
             raise RuntimeError(f"Hive 查询未成功(operationState={state})")
 
-    def test_connection(self) -> list[str]:
-        """验身份 + 列出账号能访问的库。**不依赖数据源配的默认库**(见基类的契约说明)。
+    def _open_without_use(self):
+        """开一个**不做 `USE`** 的会话。
 
-        候选顺序与 _connect 相反:先连中立的 default;只有极严的授权策略把 default 也关了,
-        才退到数据源配的那个库 —— 否则那种集群会让一个完全可用的账号被判成「连不上」。
+        pyhive 在 Connection.__init__ 里无条件执行 `USE <db>`(pyhive/hive.py:282),而
+        HiveServer2 的 OpenSession 本身不需要它 —— 「账号能不能登进数仓」与「它能进哪个库」
+        本是两件事。线上就撞上了区别:dongyi7 的报错是 HiveSQLException,说明会话**已经建立**、
+        认证通过,只是随后那句 USE 被鉴权拒了;于是一个能登录、也确实有别的库权限的账号,
+        被判成了「连不上」,而且没法通过平台知道自己能进哪个库(要连上才知道、要知道才连得上)。
+
+        实现:构造期 pyhive 只会取一次游标(就为那句 USE),把**那一次**的 execute 变成空操作
+        即可,之后取的游标都是正常的。比自己拿 TCLIService 重写一遍开会话流程稳妥得多;
+        万一将来 pyhive 改了构造流程,最坏结果是那句 USE 照旧执行 —— 退回今天的行为,不会更糟。
         """
-        conn, _ = self._open_first(_NEUTRAL_DATABASE, self.config.database)
+
+        class _NoUseConnection(self._hive.Connection):
+            def cursor(self, *args, **kwargs):
+                cur = super().cursor(*args, **kwargs)
+                if not getattr(self, "_use_skipped", False):
+                    self._use_skipped = True
+                    cur.execute = lambda *a, **k: None  # 只吞构造期那一次 USE
+                return cur
+
+        auth = self.config.extra.get("auth", "NONE")
+        return _NoUseConnection(
+            host=self.config.host,
+            port=self.config.port,
+            # 跳过 USE 后这个值用不上;仍给一个合法库名,好让「万一没跳成」退回今天的行为
+            database=self.config.database or _NEUTRAL_DATABASE,
+            username=self.config.username,
+            password=self.config.password if auth in ("LDAP", "CUSTOM") else None,
+            auth=auth,
+        )
+
+    def test_connection(self) -> list[str]:
+        """验身份 + 列出账号能访问的库。**压根不进入任何库**(见基类的契约说明)。
+
+        「能登进数仓」= OpenSession 成功;「能取什么数」= SHOW DATABASES 的结果(Ranger 下它
+        只返回该账号有权限的库)。两件事都不需要先进入某个具体库,所以这里不做 USE ——
+        它给团队管理员的正是配「入口库」时缺的那条信息。
+        """
+        with _readable_errors("连接失败"):
+            conn = self._open_without_use()
         try:
             cursor = conn.cursor()
             try:
