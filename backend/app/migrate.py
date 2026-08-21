@@ -428,6 +428,9 @@ def main() -> None:
     # 增量索引:审计按时间范围检索 + 分页 COUNT(全库写入量最大的表,无索引会全表扫)
     _ensure_index(tbl("audit_logs"), f"ix_{tbl('audit_logs')}_created_at", "created_at")
     # 增量列:本次取数实际使用的库身份(= 任务所属团队的团队账号),存量行留空
+    # 团队凭证的「入口库」:覆盖数据源的 Database(见 models/credential.py 的说明)
+    _ensure_column(tbl("team_datasource_credentials"), "entry_database", "VARCHAR(128)")
+
     _ensure_column(tbl("query_jobs"), "run_as_team_id", "BIGINT")
     _ensure_column(tbl("query_jobs"), "run_as_username", "VARCHAR(128)")
     # 增量列 + 索引:任务所属团队(可见性边界 + 取数身份来源)。

@@ -132,6 +132,9 @@ def test_reports_the_first_database_when_both_are_denied():
     assert c._hive.attempts == [DB, "default"]
     assert "TExecuteStatementResp" not in msg  # 不泄 Thrift repr
     assert f"[USE] privilege on [{DB}]" in msg
+    # 一个库都进不去时,报错必须解释「Hive 建连必须先进入某个库」并给出路 ——
+    # 否则读起来像平台莫名其妙要某个库的权限(线上因此反复重试了 8 次)
+    assert "default" in msg and "请数仓为这个账号授权" in msg
 
 
 def test_transport_failure_does_not_try_another_database():
@@ -239,3 +242,38 @@ def test_mysql_does_not_bypass_on_bad_credentials_or_missing_db(monkeypatch, cod
         c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert engines["fallback"].connects == 0
     assert msg in str(ei.value)
+
+
+# ---------------------------------------------------------------- 入口库覆盖数据源默认库
+
+
+def test_credential_entry_database_wins_over_the_datasource():
+    """凭证指定了入口库就进它 —— 数据源说「连哪台机器」,凭证说「进哪个库」。"""
+    from app.connectors import get_connector
+    from app.connectors.base import Credential
+    from app.models.datasource import DataSource
+
+    ds = DataSource(
+        name="hive", engine="hive", host="h", port=10000, database=DB,
+        username="public_acct", password=None, extra={},
+    )
+    conn = get_connector(ds, Credential("team_acct", None, entry_database="finance_bp"))
+    conn._hive = _FakeHive(denied=[DB])  # 数据源那个库进不去也无所谓:压根不试它
+    conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
+    assert conn._hive.attempts == ["finance_bp"]
+
+
+def test_datasource_default_used_when_no_entry_database():
+    """绝大多数团队不填入口库,行为必须与从前完全一致。"""
+    from app.connectors import get_connector
+    from app.connectors.base import Credential
+    from app.models.datasource import DataSource
+
+    ds = DataSource(
+        name="hive", engine="hive", host="h", port=10000, database=DB,
+        username="public_acct", password=None, extra={},
+    )
+    conn = get_connector(ds, Credential("team_acct", None))
+    conn._hive = _FakeHive()
+    conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
+    assert conn._hive.attempts == [DB]

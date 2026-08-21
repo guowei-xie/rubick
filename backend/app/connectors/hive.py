@@ -78,7 +78,7 @@ def _user_message(text: str) -> str:
     鉴权报错不给出路,用户只会反复重试 —— 而这是平台改不动的外部授权。
     """
     hint = (
-        "(该团队取数账号缺少这个库/表的权限,需数仓管理员为账号授权,平台侧改配置绕不过去)"
+        "(该团队取数账号缺少这个库/表的权限,需数仓管理员为它授权)"
         if _is_permission_denied(text) else ""
     )
     return (text[:500] or "未知错误") + hint
@@ -136,14 +136,24 @@ class HiveConnector(DataSourceConnector):
         因为第一个候选才是调用方本来想连的库。
         """
         first: Exception | None = None
+        tried: list[str] = []
         for database in dict.fromkeys(d for d in candidates if d):  # 去重且保序
+            tried.append(database)
             try:
                 return self._open(database), database
             except Exception as e:  # noqa: BLE001 -- 原始 Thrift 异常转一句可读信息
                 if not _is_permission_denied(_hive_error_text(e)):
                     raise RuntimeError(f"Hive 连接失败:{_hive_error_message(e)}") from e
                 first = first or e
-        raise RuntimeError(f"Hive 连接失败:{_hive_error_message(first)}") from first
+        # 一个都进不去:这时**光看报错会以为平台莫名其妙要某个库的权限**,所以要把
+        # 「Hive 建连必须先进入一个库」这条机制和出路一起说出来 —— 否则团队管理员只会
+        # 反复重试(线上就这么试了 8 次)。
+        raise RuntimeError(
+            f"Hive 连接失败:{_hive_error_message(first)}。"
+            f"Hive 建连必须先进入某个库,平台依次试了 {'、'.join(tried)} 都被拒 —— "
+            "请数仓为这个账号授权其中任一个库(有 USE 权限即可),"
+            "或告知它能进入哪个库以便配置。"
+        ) from first
 
     def _connect(self):
         """取数用的建连。**注意 pyhive 在这一步就执行了 `USE <database>`**,所以库级鉴权失败

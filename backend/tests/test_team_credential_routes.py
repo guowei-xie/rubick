@@ -304,3 +304,58 @@ def test_verify_tolerates_an_engine_that_cannot_list_databases(
     assert out["databases"] == [] and out["verified"] is True
     # 恒记这个数(哪怕是 0):缺了它就分不清「一个库都进不去」和「压根没查出来」
     assert one_audit_row(db, since).detail["visible_databases"] == 0
+
+
+# ---------------------------------------------------------------- 入口库(进哪个库)
+
+
+def test_entry_database_overrides_the_datasource_default(db, ds, team, t_admin, spy_connector):
+    """入口库跟着**凭证**走:一个数据源被多团队共用时,各团队账号能进的库本就不同。
+
+    线上就撞上了:商分团队的账号进得去 business_analysis,财务BP 团队的进不去(连 default
+    也没 USE 权限),于是后者压根连不上 —— 而 Hive 建连必须先进入某个库。
+    """
+    seen = spy_connector()
+    upsert_team_credential(
+        team.id, ds.id,
+        CredentialIn(username=ACCT, password=SECRET, entry_database="finance_bp"),
+        db, t_admin, ip=None,
+    )
+    verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
+    assert seen[-1].entry_database == "finance_bp"  # 解析出的身份带着它
+
+
+def test_entry_database_blank_falls_back_to_the_datasource(db, ds, team, t_admin, spy_connector):
+    """留空 = 用数据源配的 Database(绝大多数团队都是这样,不该被迫填)。"""
+    seen = spy_connector()
+    upsert_team_credential(
+        team.id, ds.id, CredentialIn(username=ACCT, password=SECRET, entry_database="  "),
+        db, t_admin, ip=None,
+    )
+    verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
+    assert seen[-1].entry_database is None
+
+
+def test_changing_the_entry_database_clears_the_verified_mark(db, ds, team, t_admin, spy_connector):
+    """改入口库 = 换了「这套凭证怎么连」,那条测通痕迹随之失效(与改用户名/密码同理)。"""
+    spy_connector()
+    _configure(db, team, ds, t_admin)
+    verify_team_credential(team.id, ds.id, db, t_admin, ip=None)
+    assert credential_service.get(db, team.id, ds.id).last_verified_at is not None
+    out = upsert_team_credential(
+        team.id, ds.id, CredentialIn(username=ACCT, entry_database="finance_bp"),
+        db, t_admin, ip=None,
+    )
+    assert out["verified"] is False and out["entry_database"] == "finance_bp"
+
+
+def test_entry_database_is_audited(db, ds, team, t_admin, spy_connector):
+    """改入口库等于改取数行为(换了进哪个库),治理上要能查。"""
+    spy_connector()
+    since = max_audit_id(db)
+    upsert_team_credential(
+        team.id, ds.id,
+        CredentialIn(username=ACCT, password=SECRET, entry_database="finance_bp"),
+        db, t_admin, ip=None,
+    )
+    assert one_audit_row(db, since).detail["entry_database"] == "finance_bp"

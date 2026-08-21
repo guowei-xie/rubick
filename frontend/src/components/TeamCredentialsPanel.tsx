@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Form, Input, message, Modal, Popconfirm, Space, Table, Tag } from "antd";
+import { Alert, Button, Form, Input, message, Modal, Popconfirm, Space, Table, Tag, Tooltip } from "antd";
 import {
   TeamCredentialStatus,
   deleteTeamCredential,
@@ -52,7 +52,11 @@ export default function TeamCredentialsPanel({
 
   const openEdit = (row: TeamCredentialStatus) => {
     form.resetFields();
-    form.setFieldsValue({ username: row.username || "", password: "" });
+    form.setFieldsValue({
+      username: row.username || "",
+      password: "",
+      entry_database: row.entry_database || "",
+    });
     setEditing(row);
   };
 
@@ -61,7 +65,11 @@ export default function TeamCredentialsPanel({
     setRows((rs) => rs.map((r) => (r.datasource_id === updated.datasource_id ? updated : r)));
 
   /** 返回是否保存成功 —— 「保存并测试」要据此决定还测不测。 */
-  const doSave = async (v: { username: string; password?: string }): Promise<boolean> => {
+  const doSave = async (v: {
+    username: string;
+    password?: string;
+    entry_database?: string;
+  }): Promise<boolean> => {
     if (!editing) return false;
     setSaving(true);
     try {
@@ -70,6 +78,8 @@ export default function TeamCredentialsPanel({
           username: v.username,
           // 留空 = 保留原密码(与数据源编辑同一约定)
           password: v.password || undefined,
+          // 留空 = 用数据源配的默认库
+          entry_database: v.entry_database?.trim() || null,
         })
       );
       message.success("已保存");
@@ -128,8 +138,24 @@ export default function TeamCredentialsPanel({
     { title: "引擎", dataIndex: "engine", render: (e: string) => <Tag>{e}</Tag> },
     {
       title: "地址",
+      render: (_: any, r: TeamCredentialStatus) => (r.host ? `${r.host}:${r.port}` : "—"),
+    },
+    // 显示这套账号**实际进哪个库**:自己指定了就用它(标「本团队」),否则继承数据源的默认库。
+    // 独立成列而不是拼进「地址」:它是账号授权范围的事,不是「连哪台机器」。
+    {
+      title: (
+        <Tooltip title="这套账号建连时进入的库。留空则继承数据源的默认库;它只是不写库名时的解析起点,写全限定表名可跨库取数">
+          <span>入口库 ⓘ</span>
+        </Tooltip>
+      ),
       render: (_: any, r: TeamCredentialStatus) =>
-        r.host ? `${r.host}:${r.port}/${r.database || ""}` : "—",
+        r.entry_database ? (
+          <>
+            {r.entry_database} <Tag>本团队</Tag>
+          </>
+        ) : (
+          dash(r.database)
+        ),
     },
     // 库用户名只有团队管理员/平台管理员拿得到(后端按 reveal_username 分级返回)
     { title: "团队账号", dataIndex: "username", render: dash },
@@ -254,6 +280,17 @@ export default function TeamCredentialsPanel({
             rules={[{ required: true, message: "请填写数据库用户名" }]}
           >
             <Input placeholder="本团队在该库上的账号" autoComplete="off" />
+          </Form.Item>
+          <Form.Item
+            name="entry_database"
+            label="入口库"
+            extra={
+              "留空则用数据源的默认库。Hive 建连时必须先进入某个库,而**能进哪个库取决于这套账号" +
+              "的授权范围** —— 账号进不去数据源那个默认库时(比如它只有本部门库的权限),在这里" +
+              "填一个它能进的库即可。它不改变 SQL 怎么写:写全限定表名(库名.表名)照样能跨库取数。"
+            }
+          >
+            <Input placeholder="如 finance_bp;留空=用数据源默认库" autoComplete="off" />
           </Form.Item>
           <Form.Item
             name="password"

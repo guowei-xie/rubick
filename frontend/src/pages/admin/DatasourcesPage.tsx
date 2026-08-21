@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { connectOkMsg } from "../../format";
-import { Button, Card, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Table, Tag } from "antd";
+import { connectOkMsg, dash } from "../../format";
+import { Button, Card, Form, Input, InputNumber, message, Modal, Popconfirm, Select, Space, Table, Tag, Tooltip } from "antd";
 import {
   createDatasource,
   deleteDatasource,
@@ -95,7 +95,17 @@ export default function DatasourcesPage() {
   const columns = [
     { title: "名称", dataIndex: "name" },
     { title: "引擎", dataIndex: "engine", render: (e: string) => <Tag>{e}</Tag> },
-    { title: "地址", render: (_: any, r: any) => `${r.host}:${r.port}/${r.database || ""}` },
+    { title: "地址", render: (_: any, r: any) => `${r.host}:${r.port}` },
+    // 默认库单独一列:混在「地址」里(host:port/db)会让人以为平台就连这个库,
+    // 而它只是不写库名时的解析起点,「测试连接」压根不用它
+    {
+      title: (
+        <Tooltip title="不写库名时的解析起点(取数用)。「测试连接」不使用它 —— 那只验账号能否登进数仓">
+          <span>默认库 ⓘ</span>
+        </Tooltip>
+      ),
+      render: (_: any, r: any) => dash(r.database),
+    },
     { title: "账号", dataIndex: "username" },
     {
       title: "操作",

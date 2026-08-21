@@ -45,6 +45,15 @@ class TeamDataSourceCredential(Base, TimestampMixin):
     # 落库前透明加密(EncryptedText),读取时自动解密;API 永不回传
     password: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
 
+    # **进哪个库**。空 = 用数据源上配的 Database。
+    #
+    # 为什么这个字段住在凭证上而不是数据源上:Hive 建连时驱动必须先 `USE <库>`,而**能进哪个库
+    # 取决于这套账号的授权范围**,不取决于数据源。一个数据源被多个团队共用时,各团队账号的
+    # 权限范围本就不同 —— 线上就撞上了:商分团队的账号进得去 business_analysis,财务BP 团队的
+    # 进不去(连 default 也没有 USE 权限),于是后者压根连不上,与 SQL 怎么写无关。
+    # 数据源说「连哪台机器」,凭证说「进哪个库」,各自表达自己知道的那件事。
+    entry_database: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     # 最近一次连通性测试**通过**的时间。None = 从未测通。
     # **不是卡点,只是自检痕迹**:测试连接是非必选项,未测通的账号照样能上线、能取数
     # (见 credential_service 模块 docstring)。改过用户名/密码时清空它

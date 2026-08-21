@@ -111,7 +111,8 @@ def upsert_team_credential(
     user: User = Depends(require_task_author),
     ip: str | None = Depends(client_ip),
 ):
-    """登记/修改本团队在该数据源上的取数账号。password 留空表示保留原密码。
+    """登记/修改本团队在该数据源上的取数账号。password 留空表示保留原密码,
+    entry_database 留空表示用数据源配的 Database。
 
     改动后 verified 会被重置为 false —— 那条测通记录只对被换掉的那套凭证成立。
     **这不影响任务能不能跑**:测试连接是非必选项(见 services/credential_service),
@@ -120,11 +121,16 @@ def upsert_team_credential(
     team = team_service.require_team_admin(db, user, team_id)
     cred, password_changed = credential_service.upsert(
         db, team_id=team.id, datasource_id=ds_id,
-        username=data.username, password=data.password, updated_by=user.id,
+        username=data.username, password=data.password,
+        entry_database=data.entry_database, updated_by=user.id,
     )
     _audit(
         db, user, ip, ACTION_CREDENTIAL_UPSERT, team, ds_id,
-        {"db_username": cred.username, "password_changed": password_changed},
+        {
+            "db_username": cred.username, "password_changed": password_changed,
+            # 入口库决定这套账号进哪个库,改它等于改取数行为 —— 治理上要能查
+            "entry_database": cred.entry_database,
+        },
     )
     return _one(db, team, ds_id, cred)
 

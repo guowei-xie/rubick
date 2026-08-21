@@ -28,7 +28,9 @@ def get_connector(ds: DataSource, credential: Credential) -> DataSourceConnector
     config = ConnectionConfig(
         host=ds.host,
         port=ds.port,
-        database=ds.database,
+        # 地址取自数据源,**进哪个库**优先听凭证的:能进哪个库是账号授权范围的事
+        # (见 models/credential.py::entry_database)。空则回落到数据源配的默认库。
+        database=credential.entry_database or ds.database,
         username=credential.username,
         password=credential.password,
         extra=ds.extra or {},
