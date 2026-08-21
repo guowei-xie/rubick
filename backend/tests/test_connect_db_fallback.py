@@ -30,9 +30,10 @@ class _FakeHive:
     不足时连对象都拿不到(见 pyhive/hive.py 的 Connection.__init__)。
     """
 
-    def __init__(self, *, denied=(), error=None):
+    def __init__(self, *, denied=(), error=None, show_fails=False):
         self.denied = set(denied)  # 这些库会以「鉴权拒绝」失败
         self.error = error  # 非 None 时:任何库都抛这个(模拟传输层/认证故障)
+        self.show_fails = show_fails  # SHOW DATABASES 被拒(有些集群不给列库权限)
         self.attempts: list[str] = []
 
     def Connection(self, **kwargs):  # noqa: N802 -- 对齐 pyhive 的类名
@@ -42,12 +43,15 @@ class _FakeHive:
             raise self.error
         if db in self.denied:
             raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
-        return _FakeConn()
+        return _FakeConn(self.show_fails)
 
 
 class _FakeConn:
+    def __init__(self, show_fails=False):
+        self.show_fails = show_fails
+
     def cursor(self):
-        return _FakeCursor()
+        return _FakeCursor(self.show_fails)
 
     def close(self):
         pass
@@ -56,11 +60,14 @@ class _FakeConn:
 class _FakeCursor:
     description = [("c",)]
 
-    def __init__(self):
+    def __init__(self, show_fails=False):
         self._show = False
+        self._show_fails = show_fails
 
     def execute(self, sql, *a, **kw):
         self._show = "SHOW DATABASES" in sql
+        if self._show and self._show_fails:
+            raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
 
     def fetchall(self):
         return [(d,) for d in VISIBLE] if self._show else [(1,)]
@@ -97,6 +104,13 @@ def test_test_connection_falls_back_when_even_default_is_denied():
     c = _hive(denied=["default"])
     assert c.test_connection() == VISIBLE
     assert c._hive.attempts == ["default", DB]
+
+
+def test_listing_failure_does_not_fail_the_connection_test():
+    """列不出库不算连不上:建连本身(认证 + USE)已经证明身份可用,列表只是附加信息。"""
+    c = _hive(show_fails=True)
+    assert c.test_connection() == []
+    assert c._hive.attempts == ["default"]
 
 
 def test_query_prefers_the_configured_database_then_bypasses_it():

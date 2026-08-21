@@ -152,5 +152,9 @@ class MySQLConnector(DataSourceConnector):
         身份对了就一定连得上,与任何具体库无关。
         """
         with self._open(None) as conn:
-            rows = conn.exec_driver_sql("SHOW DATABASES").fetchall()
+            try:
+                rows = conn.exec_driver_sql("SHOW DATABASES").fetchall()
+            except Exception as e:  # noqa: BLE001 -- 列不出就算了,连接本身已证明身份可用
+                logger.warning("mysql: SHOW DATABASES 失败(连接本身是好的):%s", e)
+                return []
         return [str(r[0]) for r in rows if r and r[0] is not None]

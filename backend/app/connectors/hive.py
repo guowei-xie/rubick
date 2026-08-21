@@ -89,6 +89,19 @@ def _hive_error_message(exc: Exception) -> str:
     return _user_message(_hive_error_text(exc))
 
 
+def _database_names(cursor) -> list[str]:
+    """`SHOW DATABASES` 的结果。**列不出来不算连不上**:建连本身(认证 + USE)已经证明了
+    身份可用,列表只是附加信息 —— 让它抛异常会把可用的账号判成连不上,那正是要避免的事。
+    """
+    try:
+        cursor.execute("SHOW DATABASES")
+        rows = cursor.fetchall()
+    except Exception as e:  # noqa: BLE001 -- 列不出就算了,只留一条线索
+        logger.warning("hive: SHOW DATABASES 失败(连接本身是好的):%s", _hive_error_message(e))
+        return []
+    return [str(r[0]) for r in rows if r and r[0] is not None]
+
+
 def _candidates(*databases: str | None) -> list[str]:
     """候选库列表:按给定顺序去空、去重(两个候选常常是同一个库,不能连两次)。"""
     out: list[str] = []
@@ -262,10 +275,6 @@ class HiveConnector(DataSourceConnector):
             _candidates(_NEUTRAL_DATABASE, self.config.database)
         )
         try:
-            cur = conn.cursor()
-            with _readable_errors("执行失败"):
-                cur.execute("SHOW DATABASES")
-                rows = cur.fetchall()
+            return _database_names(conn.cursor())
         finally:
             conn.close()
-        return [str(r[0]) for r in rows if r and r[0] is not None]
