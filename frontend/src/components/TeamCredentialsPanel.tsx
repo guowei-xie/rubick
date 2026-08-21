@@ -52,11 +52,7 @@ export default function TeamCredentialsPanel({
 
   const openEdit = (row: TeamCredentialStatus) => {
     form.resetFields();
-    form.setFieldsValue({
-      username: row.username || "",
-      password: "",
-      entry_database: row.entry_database || "",
-    });
+    form.setFieldsValue({ username: row.username || "", password: "" });
     setEditing(row);
   };
 
@@ -65,11 +61,7 @@ export default function TeamCredentialsPanel({
     setRows((rs) => rs.map((r) => (r.datasource_id === updated.datasource_id ? updated : r)));
 
   /** 返回是否保存成功 —— 「保存并测试」要据此决定还测不测。 */
-  const doSave = async (v: {
-    username: string;
-    password?: string;
-    entry_database?: string;
-  }): Promise<boolean> => {
+  const doSave = async (v: { username: string; password?: string }): Promise<boolean> => {
     if (!editing) return false;
     setSaving(true);
     try {
@@ -78,8 +70,6 @@ export default function TeamCredentialsPanel({
           username: v.username,
           // 留空 = 保留原密码(与数据源编辑同一约定)
           password: v.password || undefined,
-          // 留空 = 用数据源配的默认库
-          entry_database: v.entry_database?.trim() || null,
         })
       );
       message.success("已保存");
@@ -112,8 +102,8 @@ export default function TeamCredentialsPanel({
     try {
       const r = await testTeamCredential(teamId, row.datasource_id);
       replaceRow(r);
-      // 连通只是底线:把这个账号能访问的库、以及入口库填得对不对一并说出来
-      const m = connectOkMsg(r.databases, r.entry_database || r.database);
+      // 连通只是底线:把这个账号能访问的库、以及裸表名还解析不解析得到一并说出来
+      const m = connectOkMsg(r.databases, r.database);
       message[m.level](m.text, 8);
     } catch (e: any) {
       // 失败时后端也写了状态(清空测通 + 记原因),重拉把原因带出来
@@ -141,22 +131,15 @@ export default function TeamCredentialsPanel({
       title: "地址",
       render: (_: any, r: TeamCredentialStatus) => (r.host ? `${r.host}:${r.port}` : "—"),
     },
-    // 显示这套账号**实际进哪个库**:自己指定了就用它(标「本团队」),否则继承数据源的默认库。
-    // 独立成列而不是拼进「地址」:它是账号授权范围的事,不是「连哪台机器」。
+    // 默认库单独一列:混在「地址」里(host:port/db)会让人以为平台就连这个库,而它只是
+    // 不写库名时的解析起点 —— 建会话压根不进入任何库(见 connectors/hive.py::_open_session)
     {
       title: (
-        <Tooltip title="这套账号建连时进入的库。留空则继承数据源的默认库;它只是不写库名时的解析起点,写全限定表名可跨库取数">
-          <span>入口库 ⓘ</span>
+        <Tooltip title="不写库名时的解析起点(取数用)。建立连接并不需要进入它,「测试连接」也不使用它">
+          <span>默认库 ⓘ</span>
         </Tooltip>
       ),
-      render: (_: any, r: TeamCredentialStatus) =>
-        r.entry_database ? (
-          <>
-            {r.entry_database} <Tag>本团队</Tag>
-          </>
-        ) : (
-          dash(r.database)
-        ),
+      render: (_: any, r: TeamCredentialStatus) => dash(r.database),
     },
     // 库用户名只有团队管理员/平台管理员拿得到(后端按 reveal_username 分级返回)
     { title: "团队账号", dataIndex: "username", render: dash },
@@ -281,17 +264,6 @@ export default function TeamCredentialsPanel({
             rules={[{ required: true, message: "请填写数据库用户名" }]}
           >
             <Input placeholder="本团队在该库上的账号" autoComplete="off" />
-          </Form.Item>
-          <Form.Item
-            name="entry_database"
-            label="入口库"
-            extra={
-              "留空则用数据源的默认库。Hive 建连时必须先进入某个库,而**能进哪个库取决于这套账号" +
-              "的授权范围** —— 账号进不去数据源那个默认库时(比如它只有本部门库的权限),在这里" +
-              "填一个它能进的库即可。它不改变 SQL 怎么写:写全限定表名(库名.表名)照样能跨库取数。"
-            }
-          >
-            <Input placeholder="如 finance_bp;留空=用数据源默认库" autoComplete="off" />
           </Form.Item>
           <Form.Item
             name="password"

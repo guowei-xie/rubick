@@ -40,9 +40,6 @@ class Credential:
     username: str
     password: str | None = None
     owner_team_id: int | None = None
-    # 这套账号该**进哪个库**(空 = 用数据源配的 Database)。它属于身份而非地址:
-    # 能进哪个库取决于账号的授权范围 —— 见 models/credential.py::entry_database
-    entry_database: str | None = None
 
     @property
     def is_team_account(self) -> bool:

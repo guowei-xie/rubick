@@ -33,6 +33,7 @@ class _FakeHive:
         self.error = error  # 非 None:OpenSession 阶段就失败(传输层/认证故障)
         self.show_fails = show_fails  # SHOW DATABASES 被拒
         self.visible = VISIBLE if visible is None else visible
+        self.use_error = None  # 非 None:`USE` 抛这个(用来造非鉴权类失败)
         self.opened: list[str] = []  # OpenSession 到过的库(建连尝试)
         self.used: list[str] = []  # 真正执行过 `USE` 的库
         rec = self
@@ -73,6 +74,8 @@ class _FakeCursor:
         if sql.startswith("USE `"):
             db = sql[len("USE `"):-1]
             self.rec.used.append(db)
+            if self.rec.use_error is not None:
+                raise self.rec.use_error
             if db in self.rec.denied:
                 raise hive_thrift_error(info_messages=[HIVE_PERM_DENIED])
         elif "SHOW DATABASES" in sql:
@@ -131,12 +134,28 @@ def test_listing_failure_does_not_fail_the_connection_test():
     assert c.test_connection() == []
 
 
-def test_query_prefers_the_configured_database_then_bypasses_it():
-    """取数反过来:先配的库(不写库名的老 SQL 靠它解析),被鉴权拒才绕开。"""
+def test_query_survives_a_denied_use_on_the_configured_database():
+    """取数:会话开好后**尽力**进一次配的库,被鉴权拒也不算失败 —— 会话本身可用。
+
+    平台不该因为一个「裸表名的解析起点」把整条链路判死:写全限定表名的 SQL 本就不需要它。
+    这正是线上那次故障的形状(试跑挂在 USE 上,而那条 SQL 其实跑得动)。
+    """
     c = _hive(denied=[DB])
     res = c.execute("SELECT 1 FROM business_analysis.t", None, timeout_seconds=5, max_rows=10)
     assert res.columns == ["c"]
-    assert c._hive.opened == [DB, "default"]
+    assert c._hive.opened == [DB]  # 只开一次会话
+    assert c._hive.used == [DB]  # 尝试过进那个库(失败了,但不影响取数)
+
+
+def test_query_raises_when_the_configured_database_does_not_exist():
+    """非鉴权的 USE 失败(库名写错等)照旧抛:那是配置错,悄悄放过只会让人对着「找不到表」猜。"""
+    c = _hive()
+    c._hive.use_error = hive_thrift_error(
+        error_message="Error while compiling statement: FAILED: Database 'typo_db' not found"
+    )
+    with pytest.raises(RuntimeError) as ei:
+        c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
+    assert "not found" in str(ei.value)
 
 
 def test_query_connects_once_when_the_database_is_reachable():
@@ -144,20 +163,6 @@ def test_query_connects_once_when_the_database_is_reachable():
     c = _hive()
     c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert c._hive.opened == [DB]
-
-
-def test_reports_the_first_database_when_both_are_denied():
-    """两个库都进不去时报**第一个候选**的原因 —— 那才是调用方本来想连的库。"""
-    c = _hive(denied=[DB, "default"])
-    with pytest.raises(RuntimeError) as ei:
-        c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    msg = str(ei.value)
-    assert c._hive.opened == [DB, "default"]
-    assert "TExecuteStatementResp" not in msg  # 不泄 Thrift repr
-    assert f"[USE] privilege on [{DB}]" in msg
-    # 一个库都进不去时,报错必须解释「Hive 建连必须先进入某个库」并给出路 ——
-    # 否则读起来像平台莫名其妙要某个库的权限(线上因此反复重试了 8 次)
-    assert "default" in msg and "请数仓为这个账号授权" in msg
 
 
 def test_transport_failure_still_fails_the_connection_test():
@@ -274,38 +279,3 @@ def test_mysql_does_not_bypass_on_bad_credentials_or_missing_db(monkeypatch, cod
         c.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
     assert engines["fallback"].connects == 0
     assert msg in str(ei.value)
-
-
-# ---------------------------------------------------------------- 入口库覆盖数据源默认库
-
-
-def test_credential_entry_database_wins_over_the_datasource():
-    """凭证指定了入口库就进它 —— 数据源说「连哪台机器」,凭证说「进哪个库」。"""
-    from app.connectors import get_connector
-    from app.connectors.base import Credential
-    from app.models.datasource import DataSource
-
-    ds = DataSource(
-        name="hive", engine="hive", host="h", port=10000, database=DB,
-        username="public_acct", password=None, extra={},
-    )
-    conn = get_connector(ds, Credential("team_acct", None, entry_database="finance_bp"))
-    conn._hive = _FakeHive(denied=[DB])  # 数据源那个库进不去也无所谓:压根不试它
-    conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    assert conn._hive.opened == ["finance_bp"]
-
-
-def test_datasource_default_used_when_no_entry_database():
-    """绝大多数团队不填入口库,行为必须与从前完全一致。"""
-    from app.connectors import get_connector
-    from app.connectors.base import Credential
-    from app.models.datasource import DataSource
-
-    ds = DataSource(
-        name="hive", engine="hive", host="h", port=10000, database=DB,
-        username="public_acct", password=None, extra={},
-    )
-    conn = get_connector(ds, Credential("team_acct", None))
-    conn._hive = _FakeHive()
-    conn.execute("SELECT 1", None, timeout_seconds=5, max_rows=10)
-    assert conn._hive.opened == [DB]

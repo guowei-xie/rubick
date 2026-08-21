@@ -8,12 +8,14 @@ LDAP / CUSTOM 会带上密码。**KERBEROS 需要额外的 kerberos/gssapi 依�
 
 超时:Hive 没有语句级超时,故异步提交后轮询状态,到点主动 cursor.cancel()(见 _await_completion)。
 
-默认库:数据源上配的 database 是**首选**而不是**前提** —— pyhive 建连时就执行 `USE <db>`,
-进不去就绕开它、改连 default(见 _connect),成败交还给任务 SQL。
-「测试连接」反过来:先连中立的 default,压根不依赖那个配的库(见 test_connection)。
+默认库:**建会话从不依赖任何库**。pyhive 在 Connection.__init__ 里无条件执行 `USE <db>`,
+而 HiveServer2 的 OpenSession 并不需要它 —— 「能登进数仓」与「能进哪个库」是两件事。
+故一律跳过那句 USE(见 _open_session),取数时再**尽力**进一次配的库(见 _connect):
+进得去,不写库名的 SQL 照旧解析;进不去,会话依然可用,任务 SQL 写全限定表名即可。
 """
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from contextlib import contextmanager
@@ -21,8 +23,8 @@ from typing import Any
 
 from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
 
-# 中立库:Hive 的 default 一定存在,且通常对所有账号开放。取数时它是绕开原库后的落脚点,
-# 测试连接时它是首选 —— 两处都靠它把「能不能登进数仓」与「进不进得去某个具体库」解耦。
+# 跳过 USE 后这个值用不上,但 pyhive 的构造函数要一个合法库名;给它 default(恒存在),
+# 好让「万一将来 pyhive 改了构造流程、USE 没跳成」时退回从前的行为,而不是报个怪错。
 _NEUTRAL_DATABASE = "default"
 # 列库的超时预算。它只是元数据查询,又卡在一个有人在等的同步请求上,不该按取数的
 # 长超时(Hive 默认 3600s)来等 —— 超了就当「列不出来」,不影响连通性判定。
@@ -117,58 +119,61 @@ class HiveConnector(DataSourceConnector):
             ) from e
         self._hive = hive
 
-    def _open(self, database: str):
-        auth = self.config.extra.get("auth", "NONE")  # NONE / LDAP / KERBEROS ...
-        return self._hive.Connection(
-            host=self.config.host,
-            port=self.config.port,
-            database=database,
-            username=self.config.username,
-            password=self.config.password if auth in ("LDAP", "CUSTOM") else None,
-            auth=auth,
-        )
+    def _open_session(self):
+        """开一个 HiveServer2 会话,**不进入任何库**。
 
-    def _open_first(self, *candidates: str | None) -> tuple[Any, str]:
-        """按候选顺序连,返回 (连接, 用上的库)。空值与重复候选自动跳过。
+        pyhive 在 Connection.__init__ 里无条件执行 `USE <db>`(pyhive/hive.py:282),于是
+        「进不去某个库」被混成了「连不上」。线上就撞上了这个区别:dongyi7 的报错是
+        HiveSQLException —— 说明会话**已经建立**、认证通过,只是随后那句 USE 被鉴权拒了;
+        而它确实有别的库的权限。把库从建连里摘出去,「登得进数仓」才成为一件能单独验证的事。
 
-        只有**鉴权拒绝**才继续试下一个:密码错、库不存在、网络不可达一律当场抛 ——
-        那是配置或故障,换个库重试只会把它们藏起来。全都失败则抛**第一个**错误,
-        因为第一个候选才是调用方本来想连的库。
+        实现:构造期 pyhive 只取一次游标(就为那句 USE),把**那一次**的 execute 变成空操作
+        即可,之后取的游标都是正常的。比自己拿 TCLIService 重写开会话流程稳妥得多;
+        万一将来 pyhive 改了构造流程,最坏结果是那句 USE 照旧执行 —— 退回从前的行为,不会更糟。
         """
-        first: Exception | None = None
-        tried: list[str] = []
-        for database in dict.fromkeys(d for d in candidates if d):  # 去重且保序
-            tried.append(database)
-            try:
-                return self._open(database), database
-            except Exception as e:  # noqa: BLE001 -- 原始 Thrift 异常转一句可读信息
-                if not _is_permission_denied(_hive_error_text(e)):
-                    raise RuntimeError(f"Hive 连接失败:{_hive_error_message(e)}") from e
-                first = first or e
-        # 一个都进不去:这时**光看报错会以为平台莫名其妙要某个库的权限**,所以要把
-        # 「Hive 建连必须先进入一个库」这条机制和出路一起说出来 —— 否则团队管理员只会
-        # 反复重试(线上就这么试了 8 次)。
-        raise RuntimeError(
-            f"Hive 连接失败:{_hive_error_message(first)}。"
-            f"Hive 建连必须先进入某个库,平台依次试了 {'、'.join(tried)} 都被拒 —— "
-            "请数仓为这个账号授权其中任一个库(有 USE 权限即可),"
-            "或告知它能进入哪个库以便配置。"
-        ) from first
+
+        class _NoUseConnection(self._hive.Connection):
+            def cursor(self, *args, **kwargs):
+                cur = super().cursor(*args, **kwargs)
+                if not getattr(self, "_use_skipped", False):
+                    self._use_skipped = True
+                    cur.execute = lambda *a, **k: None  # 只吞构造期那一次 USE
+                return cur
+
+        auth = self.config.extra.get("auth", "NONE")  # NONE / LDAP / KERBEROS ...
+        with _readable_errors("连接失败"):
+            return _NoUseConnection(
+                host=self.config.host,
+                port=self.config.port,
+                database=self.config.database or _NEUTRAL_DATABASE,  # 跳过 USE 后用不上
+                username=self.config.username,
+                password=self.config.password if auth in ("LDAP", "CUSTOM") else None,
+                auth=auth,
+            )
 
     def _connect(self):
-        """取数用的建连。**注意 pyhive 在这一步就执行了 `USE <database>`**,所以库级鉴权失败
-        (HiveAccessControlException:没有 [USE] 权限)发生在建连期、不在执行期。这带来两件事:
+        """取数用的会话:开好之后**尽力**进一次数据源配的库。
 
-        1. 这里必须与执行期一样做错误提炼(见 _readable_errors);
-        2. 数据源上配的默认库只能是**首选**,不能是**前提**。进不去就绕开它连 default,
-           把成败交还给任务 SQL —— 一条写了全限定表名的 SQL 本就不需要那个库的 USE 权限,
-           平台不该凭空给它加一道门槛(否则「试跑通过即代表上线能跑」这条承诺是反向破的:
-           试跑挂在 USE 上,而上线后那条 SQL 其实跑得动)。
+        进得去 → 不写库名的 SQL 照旧按那个库解析(与从前完全一致);
+        进不去(鉴权拒绝)→ 不当失败:会话本身可用,任务 SQL 写全限定表名照样取数。
+        平台不该因为一个「解析起点」把整条链路判死 —— 那正是线上那次故障的形状。
+
+        鉴权之外的失败(库不存在等)照旧抛:那是配置错,悄悄放过只会让人对着
+        「找不到表」猜半天。
         """
-        preferred = self.config.database or _NEUTRAL_DATABASE
-        conn, used = self._open_first(preferred, _NEUTRAL_DATABASE)
-        if used != preferred:
-            self.warn_bypassed(preferred, used)
+        conn = self._open_session()
+        database = self.config.database
+        if not database:
+            return conn
+        try:
+            with contextlib.closing(conn.cursor()) as cur:
+                cur.execute(f"USE `{database}`")
+        except Exception as e:  # noqa: BLE001
+            text = _hive_error_text(e)
+            if not _is_permission_denied(text):
+                conn.close()
+                raise RuntimeError(f"Hive 连接失败:{_user_message(text)}") from e
+            self.warn_bypassed(database, "无默认库的会话")
         return conn
 
     def execute(
@@ -246,48 +251,15 @@ class HiveConnector(DataSourceConnector):
         ):
             raise RuntimeError(f"Hive 查询未成功(operationState={state})")
 
-    def _open_without_use(self):
-        """开一个**不做 `USE`** 的会话。
-
-        pyhive 在 Connection.__init__ 里无条件执行 `USE <db>`(pyhive/hive.py:282),而
-        HiveServer2 的 OpenSession 本身不需要它 —— 「账号能不能登进数仓」与「它能进哪个库」
-        本是两件事。线上就撞上了区别:dongyi7 的报错是 HiveSQLException,说明会话**已经建立**、
-        认证通过,只是随后那句 USE 被鉴权拒了;于是一个能登录、也确实有别的库权限的账号,
-        被判成了「连不上」,而且没法通过平台知道自己能进哪个库(要连上才知道、要知道才连得上)。
-
-        实现:构造期 pyhive 只会取一次游标(就为那句 USE),把**那一次**的 execute 变成空操作
-        即可,之后取的游标都是正常的。比自己拿 TCLIService 重写一遍开会话流程稳妥得多;
-        万一将来 pyhive 改了构造流程,最坏结果是那句 USE 照旧执行 —— 退回今天的行为,不会更糟。
-        """
-
-        class _NoUseConnection(self._hive.Connection):
-            def cursor(self, *args, **kwargs):
-                cur = super().cursor(*args, **kwargs)
-                if not getattr(self, "_use_skipped", False):
-                    self._use_skipped = True
-                    cur.execute = lambda *a, **k: None  # 只吞构造期那一次 USE
-                return cur
-
-        auth = self.config.extra.get("auth", "NONE")
-        return _NoUseConnection(
-            host=self.config.host,
-            port=self.config.port,
-            # 跳过 USE 后这个值用不上;仍给一个合法库名,好让「万一没跳成」退回今天的行为
-            database=self.config.database or _NEUTRAL_DATABASE,
-            username=self.config.username,
-            password=self.config.password if auth in ("LDAP", "CUSTOM") else None,
-            auth=auth,
-        )
-
     def test_connection(self) -> list[str]:
         """验身份 + 列出账号能访问的库。**压根不进入任何库**(见基类的契约说明)。
 
         「能登进数仓」= OpenSession 成功;「能取什么数」= SHOW DATABASES 的结果(Ranger 下它
-        只返回该账号有权限的库)。两件事都不需要先进入某个具体库,所以这里不做 USE ——
-        它给团队管理员的正是配「入口库」时缺的那条信息。
+        只返回该账号有权限的库)。两件事都不需要先进入某个具体库,所以这里不做 USE。
+
+        这份清单是团队管理员配完账号最想要的答案:它到底能取什么数。
         """
-        with _readable_errors("连接失败"):
-            conn = self._open_without_use()
+        conn = self._open_session()
         try:
             cursor = conn.cursor()
             try:

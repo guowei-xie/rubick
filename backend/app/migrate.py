@@ -96,9 +96,14 @@ def _retired_columns() -> list[tuple]:
     INSERT 在 MySQL 严格模式下直接失败(1364 Field 'x' doesn't have a default value),
     而错误落在写入端、与业务代码无关,极难从现象倒推。
     """
+    from app.models.credential import TeamDataSourceCredential
     from app.models.query_job import QueryJob
 
     return [
+        # 「入口库」只活了几个小时:它是为「账号进不去数据源那个库就连不上」准备的补丁,
+        # 而随后 Hive 建会话改成压根不进入任何库(见 connectors/hive.py::_open_session),
+        # 这个配置项就没有存在的理由了。线上两行的值都是 NULL,删掉无损。
+        (TeamDataSourceCredential.__table__, "entry_database"),
         # d4d4961 取消「变量正/反选」后 modes 成为死列,当时漏了迁移:
         # 线上 rubick_query_jobs.modes 残留为 json NOT NULL,自 8/3 起阻断了全部取数入队。
         (QueryJob.__table__, "modes"),
@@ -428,9 +433,6 @@ def main() -> None:
     # 增量索引:审计按时间范围检索 + 分页 COUNT(全库写入量最大的表,无索引会全表扫)
     _ensure_index(tbl("audit_logs"), f"ix_{tbl('audit_logs')}_created_at", "created_at")
     # 增量列:本次取数实际使用的库身份(= 任务所属团队的团队账号),存量行留空
-    # 团队凭证的「入口库」:覆盖数据源的 Database(见 models/credential.py 的说明)
-    _ensure_column(tbl("team_datasource_credentials"), "entry_database", "VARCHAR(128)")
-
     _ensure_column(tbl("query_jobs"), "run_as_team_id", "BIGINT")
     _ensure_column(tbl("query_jobs"), "run_as_username", "VARCHAR(128)")
     # 增量列 + 索引:任务所属团队(可见性边界 + 取数身份来源)。

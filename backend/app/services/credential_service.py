@@ -93,8 +93,7 @@ def _resolve(db: Session, ds: DataSource, team: Team | None, remedy: str) -> Cre
     # 刻意不看 cred.verified:测试连接是自愿的自检,不是取数的前置条件(见模块 docstring)。
     # 账号真的连不上时,由引擎在本次取数里报错 —— 那条报错同样指名团队与补救路径。
     return Credential(
-        username=cred.username, password=cred.password, owner_team_id=cred.team_id,
-        entry_database=cred.entry_database,
+        username=cred.username, password=cred.password, owner_team_id=cred.team_id
     )
 
 
@@ -185,15 +184,12 @@ def upsert(
     datasource_id: int,
     username: str,
     password: str | None,
-    entry_database: str | None = None,
     updated_by: int | None,
 ) -> tuple[TeamDataSourceCredential, bool]:
     """按 (team_id, datasource_id) 覆盖写,返回 (凭证行, 密码是否被改动)。
 
     password 传空表示保留原密码(与数据源编辑同一约定,见 routes/datasources.py)。
-    entry_database 传空 = 用数据源配的 Database(见 models/credential.py::entry_database);
-    它与用户名同属「这套凭证怎么连」,故变动时同样要清掉测通痕迹。
-    用户名、密码或入口库有变动即清空 last_verified_at:那条记录是「**这套**凭证连通过」的凭据,
+    用户名或密码有变动即清空 last_verified_at:那条记录是「**这套**凭证连通过」的凭据,
     换了凭证它就失效了,继续挂着只会误导团队管理员。清空**不影响任务能不能跑** ——
     测试连接是非必选项(见模块 docstring),所以这里也不需要前端做什么二次确认。
     """
@@ -204,7 +200,6 @@ def upsert(
 
     cred = get(db, team_id, datasource_id)
     new_password = password or None  # 空串等同于「没填」
-    entry = (entry_database or "").strip() or None  # 空串等同于「用数据源的默认库」
 
     if cred is None:
         cred = TeamDataSourceCredential(
@@ -212,7 +207,6 @@ def upsert(
             datasource_id=datasource_id,
             username=username,
             password=new_password,
-            entry_database=entry,
             updated_by=updated_by,
         )
         db.add(cred)
@@ -221,13 +215,12 @@ def upsert(
         return cred, new_password is not None
 
     password_changed = new_password is not None and new_password != cred.password
-    if username != cred.username or password_changed or entry != cred.entry_database:
+    if username != cred.username or password_changed:
         cred.last_verified_at = None
         cred.last_verify_error = None
     cred.username = username
     if new_password is not None:
         cred.password = new_password
-    cred.entry_database = entry
     cred.updated_by = updated_by
     db.commit()
     db.refresh(cred)
@@ -263,10 +256,7 @@ def verify(db: Session, cred: TeamDataSourceCredential) -> list[str]:
     try:
         databases = probe(
             ds,
-            Credential(
-                cred.username, cred.password, owner_team_id=cred.team_id,
-                entry_database=cred.entry_database,
-            ),
+            Credential(cred.username, cred.password, owner_team_id=cred.team_id),
         )
     except RubicError as e:
         cred.last_verified_at = None
@@ -366,8 +356,6 @@ def _cell(datasource_id: int, cred, *, reveal_username: bool) -> dict:
         # `Access denied for user 'team_acct'@...`,里面就带着库账号名。只挡 username 而放它
         # 过去,等于从后门把半机密漏给普通成员(见模块 docstring)。
         "last_verify_error": getattr(cred, "last_verify_error", None) if reveal_username else None,
-        # 这套账号进哪个库(空 = 用数据源的 Database)。不属半机密:它是库名,不是凭证
-        "entry_database": getattr(cred, "entry_database", None),
         "updated_by": getattr(cred, "updated_by", None),
         "updated_at": getattr(cred, "updated_at", None),
     }

@@ -21,8 +21,6 @@ class CredentialIn(BaseModel):
 
     username: str
     password: str | None = None
-    # 这套账号进哪个库;留空 = 用数据源配的 Database。见 models/credential.py::entry_database
-    entry_database: str | None = None
 
 
 class CredentialCellOut(BaseModel):
@@ -34,8 +32,6 @@ class CredentialCellOut(BaseModel):
     verified: bool = False  # 最近一次连接测试是否通过。纯提示,不影响能否上线/运行
     last_verified_at: datetime | None = None
     last_verify_error: str | None = None
-    # 这套账号进哪个库(空 = 用数据源的 Database)。库名不是凭证,故不受 reveal_username 管
-    entry_database: str | None = None
     # 上次是谁改的。团队账号是共享的,而团队管理员读不到审计日志(/audit 是 require_admin),
     # 所以这条治理事实必须由业务接口给出
     updated_by: int | None = None

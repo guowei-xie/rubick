@@ -236,8 +236,6 @@ export interface TeamCredentialStatus {
   verified: boolean; // 最近一次连接测试是否通过。纯提示 —— 不影响任务能否上线/运行
   last_verified_at?: string | null;
   last_verify_error?: string | null;
-  /** 这套账号建连时进入的库;空 = 继承数据源的 database。 */
-  entry_database?: string | null;
   updated_by?: number | null;
   updated_by_name?: string | null;
   updated_at?: string | null;
@@ -280,7 +278,7 @@ export const listTeamCredentials = (teamId: number) =>
 export const saveTeamCredential = (
   teamId: number,
   dsId: number,
-  data: { username: string; password?: string; entry_database?: string | null }
+  data: { username: string; password?: string }
 ) => http.put(`/credentials/teams/${teamId}/${dsId}`, data).then((r) => r.data as TeamCredentialStatus);
 export const testTeamCredential = (teamId: number, dsId: number) =>
   http.post(`/credentials/teams/${teamId}/${dsId}/test`).then((r) => r.data as TeamCredentialVerify);
