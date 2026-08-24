@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# 拉比克一键部署 / 滚动更新脚本(单机)。
+# 拉比克一键部署 / 更新脚本(单机)。update 不是无停机滚动更新:先停旧进程再起新的。
 #
 # 用法:
 #   ./deploy.sh init      首次部署:建 venv、装依赖、建表、构建前端、启动服务
-#   ./deploy.sh update    滚动更新:git pull、装依赖、建表、重建前端、重启服务
+#   ./deploy.sh update    一键更新:git pull、装依赖、建表、重建前端、停旧起新、健康检查
 #   ./deploy.sh start     启动后端 API + worker(nohup 后台)
 #   ./deploy.sh stop      停止后端 API + worker
 #   ./deploy.sh restart   重启
 #   ./deploy.sh status    查看运行状态
+#   ./deploy.sh logs [N]  跟踪 API / worker 日志(从末 N 行起,默认 100)
 #
 # 进程管理有两种模式,脚本自动识别:
 #   systemd 托管(线上):存在 rubick-api.service / rubick-worker.service 时,
@@ -84,25 +85,29 @@ _alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 start() {
   ensure_config
-  if systemd_managed; then
-    info "systemd 托管:启动 $API_UNIT / $WORKER_UNIT"
-    $SUDO systemctl start "$API_UNIT" "$WORKER_UNIT"
-    sleep 1
-    status
-    return
-  fi
   local host port
   host="$(cd "$BACKEND" && read_cfg BACKEND_HOST)"
   port="$(cd "$BACKEND" && read_cfg BACKEND_PORT)"
+  if systemd_managed; then
+    info "systemd 托管:启动 $API_UNIT / $WORKER_UNIT"
+    $SUDO systemctl start "$API_UNIT" "$WORKER_UNIT"
+    # 闸门对 systemd 路径**更要紧**:Type=simple 的 systemctl start 立刻返回,
+    # 而 Restart=always 会把一个起不来的进程反复拉起,is-active 看着像好的。
+    health_gate "$port"
+    status
+    return
+  fi
 
   if _alive "$API_PID"; then
     warn "API 已在运行 (pid $(cat "$API_PID"))"
   else
     info "启动后端 API  ->  http://$host:$port"
+    # 走 app.serve 而不是直接给 uvicorn 传 --host/--port:监听地址只有 config.ini 一份真相
+    # (systemd unit 也走同一个入口),否则两处早晚对不上而且不报错。
     # 子 shell 忽略 HUP 后 exec 目标进程:$! 即真实进程 PID(不受 nohup fork 行为影响),
     # 再 disown 使父脚本退出时不向其发 SIGHUP。
-    ( cd "$BACKEND" && trap '' HUP && exec "$VENV/bin/uvicorn" app.main:app \
-        --host "$host" --port "$port" >"$LOG_DIR/api.log" 2>&1 </dev/null ) &
+    ( cd "$BACKEND" && trap '' HUP && exec "$PY" -m app.serve \
+        >"$LOG_DIR/api.log" 2>&1 </dev/null ) &
     echo $! >"$API_PID"; disown %% 2>/dev/null || true
   fi
 
@@ -114,8 +119,26 @@ start() {
         >"$LOG_DIR/worker.log" 2>&1 </dev/null ) &
     echo $! >"$WORKER_PID"; disown %% 2>/dev/null || true
   fi
-  sleep 1
+  health_gate "$port"
   status
+}
+
+# 启起来了 ≠ 起对了。不请求一次 /health 的话,「配置写错 → uvicorn 导入期就退出 →
+# systemd Restart=always 无限重启」会被报成"完成":那一秒的 is-active 很可能还是
+# activating,脚本打印成功,人就走了,而站点是全站 502。
+health_gate() {
+  local url i tries=20
+  url="http://127.0.0.1:$1/health"
+  for i in $(seq 1 "$tries"); do
+    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+      info "健康检查通过($url,第 ${i} 次)"
+      return 0
+    fi
+    sleep 1
+  done
+  echo
+  die "健康检查失败:${tries} 秒内 $url 没有返回 200。服务没起来,最后 40 行日志:
+$(tail -n 40 "$LOG_DIR/api.log" 2>/dev/null)"
 }
 
 stop() {
@@ -134,7 +157,8 @@ stop() {
     rm -f "$pidf"
   done
   # 兜底:清掉可能残留的本项目进程与端口占用(单机单实例场景安全)
-  pkill -f "uvicorn app.main:app" 2>/dev/null || true
+  pkill -f "\-m app.serve" 2>/dev/null || true
+  pkill -f "uvicorn app.main:app" 2>/dev/null || true  # 旧式启动命令的残留,过渡期保留
   pkill -f "\-m app.worker" 2>/dev/null || true
   if [ -f "$BACKEND/config.ini" ]; then
     local port; port="$(cd "$BACKEND" && read_cfg BACKEND_PORT 2>/dev/null || true)"
@@ -159,6 +183,12 @@ status() {
   echo "  日志  : $LOG_DIR/api.log  |  $LOG_DIR/worker.log"
 }
 
+logs() {
+  local n="${1:-100}"
+  info "跟踪日志(Ctrl-C 退出):$LOG_DIR/api.log 与 $LOG_DIR/worker.log,末 $n 行起"
+  tail -n "$n" -F "$LOG_DIR/api.log" "$LOG_DIR/worker.log"
+}
+
 case "${1:-}" in
   init)
     ensure_config
@@ -178,14 +208,15 @@ case "${1:-}" in
     info "重启服务"
     stop || true
     start
-    info "滚动更新完成。"
+    info "更新完成(已通过健康检查)。"
     ;;
   start)   start ;;
   stop)    stop ;;
   restart) stop || true; start ;;
   status)  status ;;
+  logs)    logs "${2:-}" ;;
   *)
-    echo "用法: $0 {init|update|start|stop|restart|status}"
+    echo "用法: $0 {init|update|start|stop|restart|status|logs}"
     exit 1
     ;;
 esac

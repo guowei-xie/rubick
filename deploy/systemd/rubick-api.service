@@ -8,9 +8,9 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/rubick/backend
-# 监听地址/端口的唯一来源是 backend/config.ini(BACKEND_HOST/BACKEND_PORT);
-# 若在 config.ini 改了端口,这里必须同步改并 daemon-reload。
-ExecStart=/opt/rubick/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18091
+# 监听地址/端口的唯一来源是 backend/config.ini(BACKEND_HOST/BACKEND_PORT)——
+# app.serve 直接读它,所以这里**不再重复写一份端口**,改配置重启即可生效。
+ExecStart=/opt/rubick/backend/.venv/bin/python -m app.serve
 Restart=always
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1

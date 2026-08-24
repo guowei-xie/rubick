@@ -55,7 +55,7 @@
 
 - 后端:FastAPI + SQLAlchemy + MySQL(平台元数据 / 业务库)
 - 前端:React + Vite + Ant Design(构建为静态文件)
-- 异步取数:独立 DB 轮询 worker(**不依赖 Redis/Celery**)
+- 异步取数:独立 DB 轮询 worker(**不依赖 Redis/Celery**),并发度由 `WORKER_CONCURRENCY` 决定
 - 结果存储:本地文件系统(**不依赖 MinIO/对象存储**)
 - **无需 Docker**
 
@@ -122,10 +122,19 @@ cp backend/config.example.ini backend/config.ini
 
 ```bash
 ./deploy.sh status     # 查看 API / worker 运行状态
+./deploy.sh logs       # 跟踪 api.log 与 worker.log(可带行数,默认 100)
 ./deploy.sh restart    # 重启
 ./deploy.sh stop       # 停止
-./deploy.sh update     # 滚动更新:git pull → 装依赖 → 建表 → 重建前端 → 重启
+./deploy.sh update     # 一键更新:git pull → 装依赖 → 建表 → 重建前端 → 停旧起新 → 健康检查
 ```
+
+> `update` **不是无停机滚动更新**:它先停旧进程再起新的,重启期间有几秒到十几秒不可用,
+> 请避开取数高峰。
+>
+> `start` / `restart` / `update` 拉起进程后会连续请求 `/health`(最多 20 次、每次间隔 1 秒),
+> 不通就红字退出并贴出 `api.log` 末 40 行 —— 不做这一步的话,一个因配置写错而反复重启的服务
+> 会被报成"完成"。**注意闸门失败时站点是停着的**:旧进程已经停了、新进程没起来,该做的是照
+> 那 40 行改配置或回滚上一版,不是"等等看"。
 
 ### 5. 开机自启(长期运行的机器建议开)
 
@@ -139,8 +148,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rubick-api.service rubick-worker.service
 ```
 
-装好后上面那些 `./deploy.sh` 命令**自动改走 systemctl**(不再 nohup),用法不变；细节与注意事项
-(端口需与 `config.ini` 同步、日志轮转)见 [deploy/systemd/README.md](deploy/systemd/README.md)。
+装好后上面那些 `./deploy.sh` 命令**自动改走 systemctl**(不再 nohup),用法不变。unit 的
+`ExecStart` 走 `python -m app.serve`,监听地址直接读 `config.ini`,改端口无需动 unit;
+细节(日志轮转、常用命令)见 [deploy/systemd/README.md](deploy/systemd/README.md)。
 
 ### 6. 访问应用
 
