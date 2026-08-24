@@ -437,8 +437,12 @@ export default function TaskEditor({
       footer={[
         // 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
         // 「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
+        // 但这句承诺只在**取数身份**这一维上成立:试跑还有一道 180 秒的前台上限
+        // (template_service.TEST_RUN_TIMEOUT_CEILING_SECONDS),不写出来的话,一个配了 30 分钟
+        // 的任务在试跑里被砍,作者会以为 SQL 不行而去改一条本来没问题的任务。
         <Typography.Text key="note" type="secondary" style={{ float: "left", fontSize: 12 }}>
-          试跑与业务正式取数使用同一套团队账号 —— 试跑通过即代表上线后能跑
+          试跑与业务正式取数使用同一套团队账号 —— 取数身份上试跑通过即代表上线后能跑;
+          但试跑最多只跑 180 秒,长查询以任务自己配的超时为准
         </Typography.Text>,
         <Button key="cancel" onClick={onClose}>取消</Button>,
         <Button key="preview" onClick={doPreviewSql}>SQL预览</Button>,

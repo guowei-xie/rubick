@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     RESULT_DIR: str = "data/results"
     # 下载签名链接有效期
     DOWNLOAD_URL_EXPIRE_SECONDS: int = 3600
-    # 结果文件保留天数,worker 定期清理过期文件
+    # 结果文件保留天数。worker 每小时清一次过期文件(启动时也先清一次)
     RESULT_RETENTION_DAYS: int = 7
 
     # ---- 取数资源治理 ----
@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     RUN_INLINE: bool = False
     # worker 轮询 queued 任务的间隔(秒)
     WORKER_POLL_INTERVAL: float = 2.0
+    # worker 同时能跑几个**异步取数**。取数几乎全程阻塞在等目标库回包上,所以线程就够;
+    # 串行的代价是一个 Hive 长任务(默认上限 1 小时)运行期间全平台的取数都排在它后面。
+    # 不含编辑器里的「测试运行」—— 那些跑在 API 进程里、不受这个数约束(见 template_service
+    # .test_run),所以目标库的连接数要按「这个数 + 同时可能试跑的人数」来备。
+    # 另受本机内存约束(每个结果最多 MAX_RESULT_ROWS 行进内存)。
+    WORKER_CONCURRENCY: int = 2
 
     # ---- 访问地址 / 端口(可配置)----
     # 后端监听地址与端口(部署脚本据此启动 uvicorn)

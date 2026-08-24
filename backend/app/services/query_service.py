@@ -9,6 +9,9 @@ RUN_INLINE=true 时 execute_job 在请求内同步执行(无需 worker,便于本
 """
 from __future__ import annotations
 
+from datetime import timedelta
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.connectors import get_connector
@@ -48,14 +51,32 @@ def _run_as_detail(job: QueryJob) -> dict:
     return {"run_as": {"team_id": job.run_as_team_id, "db_username": job.run_as_username}}
 
 
-def effective_timeout(tmpl: SqlTemplate, ds: DataSource) -> int:
+def effective_timeout(tmpl: SqlTemplate | None, ds: DataSource) -> int:
     """该任务生效的查询超时(秒):任务显式配置优先,否则按引擎默认
-    (Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)。"""
-    if tmpl.timeout_seconds:
+    (Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)。
+
+    tmpl 可空:编辑器里试跑一个**还没保存**的任务时没有任务行,那就只剩引擎默认这一档。
+    收在这里而不是让调用方各写一遍 —— 「这条 SQL 该给多少秒」只表述一次。
+    """
+    if tmpl is not None and tmpl.timeout_seconds:
         return tmpl.timeout_seconds
     if ds and ds.engine == ENGINE_HIVE:
         return settings.HIVE_QUERY_TIMEOUT_SECONDS
     return settings.QUERY_TIMEOUT_SECONDS
+
+
+def queue_ahead(db: Session, job: QueryJob) -> int:
+    """这条 queued 任务前面还排着几个(不含正在跑的)。
+
+    谓词「status=queued 且 id 更小」是对 worker 认领顺序的复述 —— _claim_next_job_id
+    按 id 升序认领。将来队列加优先级,这两处必须一起变,所以口径住在执行侧同一个模块,
+    不散在路由里;路由只决定「什么时候展示」。
+    """
+    return db.scalar(
+        select(func.count())
+        .select_from(QueryJob)
+        .where(QueryJob.status == JOB_QUEUED, QueryJob.id < job.id)
+    ) or 0
 
 
 def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | None = None) -> QueryJob:
@@ -135,7 +156,9 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
                 job.run_as_team_id = credential.owner_team_id
                 job.run_as_username = credential.username
             sql_text, bound = params_service.expand_list_params(version.sql_text, bound)  # 展开正选 IN
-            job.executed_sql = params_service.render_sql(sql_text, bound)  # 存下最终 SQL 供查阅
+            # 存下最终 SQL 供查阅。超长会被自动截断 —— 规则收在模型层
+            # (QueryJob 的 validates,见 clip_executed_sql),赋值即生效。
+            job.executed_sql = params_service.render_sql(sql_text, bound)
             db.commit()
             connector = get_connector(ds, credential)
             res = connector.execute(
@@ -184,6 +207,62 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             )
 
         notify_service.notify_job_done(db, job, failure)
+    finally:
+        db.close()
+
+
+# 一条 running 记录要「老」到什么程度才判定为孤儿。取库里所有可能的超时上限之上再加一段缓冲
+# —— 判早了会把还在正常跑的长任务打死,那比留一条孤儿糟得多。
+STALE_RECLAIM_GRACE_SECONDS = 600
+
+# 收回来的 job 写给用户看的原因。**面向发起人**,所以要说清「没结果」和「该怎么办」,
+# 而不是留一句技术描述让他自己猜。
+_RECLAIM_ERROR = (
+    "取数进程在本次运行期间被中断(服务重启或异常退出),这次运行没有产出结果,请重新运行。"
+)
+
+
+def stale_after_seconds(db: Session) -> int:
+    """running 超过这个秒数即视为孤儿。
+
+    盖住三个上限里最大的那个:全局默认、Hive 默认、以及**库里某个任务自己配的**超时
+    —— 只按全局默认算的话,一个配了 6 小时的任务会在正常运行途中被判死。
+    """
+    longest = db.scalar(select(func.max(SqlTemplate.timeout_seconds))) or 0
+    ceiling = max(
+        settings.QUERY_TIMEOUT_SECONDS, settings.HIVE_QUERY_TIMEOUT_SECONDS, int(longest)
+    )
+    return ceiling + STALE_RECLAIM_GRACE_SECONDS
+
+
+def reclaim_stale_jobs() -> int:
+    """把卡死在 running 的运行记录收回成 failed 并通知发起人。返回收回条数。
+
+    **为什么必须有**:worker 的停止处理只置一个标志、不打断进行中的查询,而 systemd 默认
+    90 秒后 SIGKILL。于是每次 `deploy.sh update`,只要有一个跑了 90 秒以上的取数,那条记录
+    就永久停在「运行中」——业务用户在抽屉里等到轮询窗口耗尽,然后那条记录再也不会变,
+    没有报警、没有重试、没人知道。这是由部署动作本身保证会发生的事,不是理论。
+
+    自管独立会话(同 execute_job):它由 worker 在请求之外调用。
+    时间比较全部取**库时钟**,不掺应用本地时钟 —— 跨时钟比较是这套代码里反复踩过的坑。
+    """
+    db = SessionLocal()
+    try:
+        cutoff = db.scalar(select(func.now())) - timedelta(seconds=stale_after_seconds(db))
+        stale = list(
+            db.scalars(
+                select(QueryJob).where(
+                    QueryJob.status == JOB_RUNNING, QueryJob.updated_at < cutoff
+                )
+            )
+        )
+        for job in stale:
+            job.status = JOB_FAILED
+            job.error = _RECLAIM_ERROR
+            db.commit()
+            # 必须通知:不通知等于把发起人继续晾着 —— 那正是这个函数要消灭的状态
+            notify_service.notify_job_done(db, job, RuntimeError(_RECLAIM_ERROR))
+        return len(stale)
     finally:
         db.close()
 

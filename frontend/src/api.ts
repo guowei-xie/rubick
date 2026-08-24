@@ -116,9 +116,18 @@ export const taskRunRecords = (id: number) =>
 export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((r) => r.data);
 
 // ---- query ----
+/** 一次运行的状态。queue_ahead 仅在 status=queued 时有值:排在前面还有几个。 */
+export interface Job {
+  id: number;
+  status: "queued" | "running" | "success" | "failed";
+  queue_ahead?: number | null;
+  row_count?: number | null;
+  error?: string | null;
+  executed_sql?: string | null;
+}
 export const runQuery = (template_id: number, values: any) =>
-  http.post("/run", { template_id, values }).then((r) => r.data);
-export const getJob = (jobId: number) => http.get(`/jobs/${jobId}`).then((r) => r.data);
+  http.post("/run", { template_id, values }).then((r) => r.data as Job);
+export const getJob = (jobId: number) => http.get(`/jobs/${jobId}`).then((r) => r.data as Job);
 export const downloadJob = (jobId: number) =>
   http.get(`/jobs/${jobId}/download`).then((r) => r.data);
 

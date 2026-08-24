@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Optional
 from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.core.database import Base, tbl
 from app.models.mixins import TimestampMixin
@@ -16,6 +16,30 @@ JOB_FAILED = "failed"
 # 运行来源:业务正式取数 vs 作者在编辑器里的试跑
 SOURCE_RUN = "run"
 SOURCE_TEST = "test"
+
+# executed_sql 落的是 Text 列(MySQL 上限 65535 **字节**),而它的内容直接由用户填的参数决定:
+# 业务方用「上传/粘贴列表」粘 5000 个 10 位 ID(前端 LIST_CAP 就是 5000),渲染出来是 70KB。
+# 严格模式下 MySQL 抛 1406,而那次 commit 发生在**把 SQL 发给目标库之前** —— 整次取数在还没
+# 查数时就失败,报错还与 SQL 本身毫无关系。SQLite 没有列长度限制,所以这个坑只在线上现形。
+# 这一列只是给人查阅的存档、不参与执行,故一律先截断,留 5535 字节余量给多字节边界与标记。
+EXECUTED_SQL_MAX_BYTES = 60000
+_CLIP_NOTE = "\n-- …(已截断,原文 {n} 字符,完整 SQL 见任务的该版本定义)"
+
+
+def clip_executed_sql(sql: str | None) -> str | None:
+    """按**字节**把最终 SQL 截到列装得下的长度;没超限的原样返回。
+
+    按字节而不是字符:候选值可能是中文(UTF-8 下 3 字节/字),按字符数算会低估两倍。
+    截断点用 errors="ignore" 落在字符边界上,免得切出半个多字节序列。
+    """
+    if sql is None:
+        return None
+    raw = sql.encode("utf-8")
+    if len(raw) <= EXECUTED_SQL_MAX_BYTES:
+        return sql
+    note = _CLIP_NOTE.format(n=len(sql))
+    keep = EXECUTED_SQL_MAX_BYTES - len(note.encode("utf-8"))
+    return raw[:keep].decode("utf-8", errors="ignore") + note
 
 
 class QueryJob(Base, TimestampMixin):
@@ -67,9 +91,15 @@ class QueryJob(Base, TimestampMixin):
     def user_name(self) -> Optional[str]:
         return self.user.name if self.user else None
 
+    @validates("executed_sql")
+    def _clip_executed_sql(self, _key: str, value: str | None) -> str | None:
+        """赋值即截断。两条写入路径(execute_job / test_run)从前靠调用方自觉先 clip,
+        第三条写入路径出现时必然忘 —— 收进模型层,让「装不下的值进不了这一列」成为结构保证。"""
+        return clip_executed_sql(value)
+
     @property
     def result_expired(self) -> bool:
-        """结果文件是否已过保留期(到期后由 worker 定期清理本地文件,见 result_service.cleanup_expired)。"""
+        """结果文件是否已过保留期(到期后由 worker 每小时清一次本地文件,见 result_service.cleanup_expired)。"""
         from datetime import datetime, timedelta
 
         from app.core.config import settings
