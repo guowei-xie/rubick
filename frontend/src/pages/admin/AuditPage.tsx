@@ -41,6 +41,14 @@ function asObj(d: any): any {
   return d;
 }
 
+/** 一次导出最多几行。
+ *
+ * 与后端 /audit/logs/export 的 limit 默认值同一个数,这里**显式传**而不是靠后端默认 ——
+ * 那样这个数字才只有一处、也才敢写进提示语。超出时后端只给按 id 倒序的最新那批,而 CSV 里
+ * 没有任何截断标记:把 5 万行当「这段时间的全部审计」交出去,是合规上会出事的误读。
+ */
+const EXPORT_MAX_ROWS = 50000;
+
 export default function AuditPage() {
   const [rows, setRows] = useState<AuditLogRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -103,9 +111,15 @@ export default function AuditPage() {
   };
 
   const doExport = async () => {
+    if (total > EXPORT_MAX_ROWS) {
+      message.warning(
+        `当前筛选共 ${total} 条,一次最多导出最新 ${EXPORT_MAX_ROWS} 条 —— 要全量请缩小时间范围分批导出`,
+        8,
+      );
+    }
     setExporting(true);
     try {
-      const blob = await exportAuditLogs(filters());
+      const blob = await exportAuditLogs({ ...filters(), limit: EXPORT_MAX_ROWS });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

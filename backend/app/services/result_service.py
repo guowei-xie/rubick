@@ -9,6 +9,7 @@ import codecs
 import csv
 import io
 import time
+from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
 
@@ -25,14 +26,49 @@ def _abs_path(object_key: str) -> Path:
     return p
 
 
-def to_csv_bytes(result: QueryResult) -> bytes:
+# 一次吐出多少行。攒批是为了别让每行都变成一个 HTTP chunk(那样开销全在协议头上),
+# 而不是为了缓存 —— 内存占用只与这个数字有关,与总行数无关。
+_CSV_CHUNK_ROWS = 500
+
+# UTF-8 BOM 便于 Excel 直接打开中文
+_BOM = b"\xef\xbb\xbf"
+
+
+def iter_csv_bytes(columns, rows) -> Iterator[bytes]:
+    """把列名 + 行迭代器**流式**序列化成 CSV 字节片。
+
+    唯一的 CSV 写法住在这里:to_csv_bytes 只是它的「全收进内存」版本。分成两个入口是因为
+    两类调用方的规模天差地别 —— 取数结果受 MAX_RESULT_ROWS 收口,而审计导出可以有二十万行、
+    每行还带着一段 SQL 原文,那种量级一次性拼装会把整个 API 进程(它同时还托管 SPA)撑爆。
+    """
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(result.columns)
-    for row in result.rows:
+
+    def flush() -> bytes:
+        """取出已写入的部分并清空缓冲 —— 缓冲里最多只压着 _CSV_CHUNK_ROWS 行。"""
+        chunk = buf.getvalue().encode("utf-8")
+        buf.seek(0)
+        buf.truncate(0)
+        return chunk
+
+    writer.writerow(columns)
+    yield _BOM + flush()
+
+    n = 0
+    for row in rows:
         writer.writerow(["" if v is None else v for v in row])
-    # UTF-8 BOM 便于 Excel 直接打开中文
-    return b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
+        n += 1
+        if n >= _CSV_CHUNK_ROWS:
+            yield flush()
+            n = 0
+    if n:
+        yield flush()
+
+
+def to_csv_bytes(result: QueryResult) -> bytes:
+    """整份 CSV 的字节串。行数受 MAX_RESULT_ROWS 收口的取数结果用它;
+    规模不可控的导出走 iter_csv_bytes。"""
+    return b"".join(iter_csv_bytes(result.columns, result.rows))
 
 
 def upload_csv(object_key: str, data: bytes) -> None:
@@ -67,7 +103,7 @@ def read_csv_preview(object_key: str, limit: int = 50) -> tuple[list[str], list[
 
 
 def cleanup_expired() -> int:
-    """删除超过保留期的结果文件,返回删除个数。worker 定期调用。"""
+    """删除超过保留期的结果文件,返回删除个数。worker 每小时调用一次(启动时也调一次)。"""
     base = settings.result_dir_path
     if not base.exists():
         return 0

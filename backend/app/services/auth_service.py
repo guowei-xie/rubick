@@ -1,7 +1,7 @@
 """登录:mock 或飞书 OAuth,统一产出平台 JWT。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -52,6 +52,15 @@ def apply_bootstrap_admins(db: Session) -> int:
     return promoted
 
 
+def _stamp_login(user: User) -> None:
+    """标记已登录 → 才会出现在用户管理。**本地墙钟**,不是 UTC:落的是不带时区的 DATETIME 列,
+    而全站展示口径是「朴素本地时间」(前端 format.ts 只切字符串、audit.py::_naive 同此)。
+    写 UTC 会让「最近登录」比真实时间差一个时区,而同表的「加入时间」(DB 时钟)却是对的。
+    两条登录路径(_upsert_user / mock_login)都走这里 —— 时钟口径只表述一次。
+    """
+    user.last_login_at = datetime.now()
+
+
 def _upsert_user(db: Session, profile: dict) -> User:
     user = user_service.upsert_user(db, profile)
 
@@ -65,7 +74,7 @@ def _upsert_user(db: Session, profile: dict) -> User:
     # tests/test_user_email.py::test_login_promotes_by_email_via_backfill 锁住这个顺序。
     _maybe_promote(user, _bootstrap_admins())  # 引导管理员:命中名单自动提升
 
-    user.last_login_at = datetime.now(timezone.utc)  # 标记已登录 → 才会出现在用户管理
+    _stamp_login(user)
     # 存 user_access_token(用于按本人可见范围搜通讯录);exp 用 naive UTC 便于比较
     if profile.get("access_token"):
         user.feishu_token = profile["access_token"]
@@ -102,7 +111,7 @@ def mock_login(db: Session, feishu_open_id: str) -> tuple[str, User]:
 
     _maybe_promote(user, _bootstrap_admins())  # 引导管理员:命中名单自动提升
 
-    user.last_login_at = datetime.now(timezone.utc)
+    _stamp_login(user)
     db.commit()
     db.refresh(user)
     return create_access_token(str(user.id)), user

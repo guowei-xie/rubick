@@ -335,18 +335,50 @@ def remove_member(db: Session, team: Team, user_id: int) -> tuple[User | None, l
     「仍在团队内」,残留行本身是惰性的;但不清掉的话,他重新入队时权限会**静默复活**,
     而且授权列表会长出一堆查不到主的行。
     """
-    from app.services import permission_service
-
-    row = db.scalar(
-        select(TeamMember).where(TeamMember.team_id == team.id, TeamMember.user_id == user_id)
-    )
-    if row is None:
-        raise NotFoundError("该用户不是本团队成员")
     target = db.get(User, user_id)
-    revoked = permission_service.revoke_edit_for_member(db, team_id=team.id, user_id=user_id)
-    db.delete(row)
+    revoked, deleted = _detach_member(db, team.id, user_id)
+    if not deleted:
+        # 未提交,连带撤销随本次会话一起丢弃 —— 「是不是成员」由 DELETE 的行数回答,
+        # 不再先 SELECT 一遍把同一组条件写两份
+        raise NotFoundError("该用户不是本团队成员")
     db.commit()
     return target, revoked
+
+
+def _detach_member(db: Session, team_id: int, user_id: int) -> tuple[list[int], int]:
+    """把一条成员关系连根拔掉:先撤该团队任务上的 edit 授权,再删成员行。
+    返回 (被撤的任务 id 列表, 删掉的成员行数);行数为 0 即「本来就不是成员」,由调用方定夺。
+
+    「离队会连带什么」只在这里表述一次 —— remove_member(单个团队)与
+    remove_from_all_teams(降级清队)都走它,否则日后加一条连带动作要改两处、漏一处。
+    不提交,跟随调用方事务。
+    """
+    from app.services import permission_service
+
+    revoked = permission_service.revoke_edit_for_member(db, team_id=team_id, user_id=user_id)
+    res = db.execute(
+        sa_delete(TeamMember).where(
+            TeamMember.team_id == team_id, TeamMember.user_id == user_id
+        )
+    )
+    return revoked, res.rowcount
+
+
+def remove_from_all_teams(db: Session, user: User) -> list[dict]:
+    """把某人清出他所在的**全部**团队,返回 [{team_id, team_name}](进审计 detail)。
+
+    **为什么需要它**:成员资格是数据边界本身 —— permission_service.is_insider 只看团队关系、
+    完全不看平台角色。所以「把开发者降成普通用户」如果不连带清队,他仍然看得到该团队全部任务
+    (含草稿与 SQL 原文)、跑得动、下得了别人的结果,而做这个动作的管理员以为权限已经收回。
+    add_member 那头只允许开发者进队,这里是与它对称的那个出口。
+
+    连带撤销他在这些团队任务上的「指定任务编辑权」,理由同 remove_member:
+    残留行本身是惰性的,但重新入队时权限会静默复活。不提交,跟随调用方事务。
+    """
+    teams = teams_of(db, user)  # 「他在哪些团队」只有 teams_of 这一份查法,别在这里再拼一次 join
+    for team in teams:
+        _detach_member(db, team.id, user.id)
+    return [{"team_id": t.id, "team_name": t.name} for t in teams]
 
 
 def set_team_admin(db: Session, team: Team, user_id: int, flag: bool) -> User | None:

@@ -1,11 +1,11 @@
-"""用户的 upsert(按飞书 open_id)与资料补齐。中立位置,供 auth 登录与授权选人实时搜索共用,
-避免相互 import 造成循环依赖。不提交,由调用方统一 commit。"""
+"""用户的 upsert(按飞书 open_id)、资料补齐与平台角色变更。中立位置,供 auth 登录、
+授权选人实时搜索与管理端共用,避免相互 import 造成循环依赖。不提交,由调用方统一 commit。"""
 from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.user import User
+from app.models.user import ROLE_USER, User
 from app.services import feishu_service
 
 
@@ -62,6 +62,24 @@ def sync_profiles_from_feishu(users: list[User]) -> int:
         apply_profile(user, profile)
         filled += 1
     return filled
+
+
+def change_role(db: Session, user: User, role: str) -> list[dict] | None:
+    """改平台角色,并做与之绑定的连带回收。不提交,由调用方统一 commit。
+
+    降成普通用户 = 一次实质的数据权限回收,必须连带清队 —— 团队成员资格本身就是数据边界,
+    只改角色的话他照样看得到并跑得动原团队的全部任务(permission_service.is_insider 只看
+    团队关系,不看平台角色)。只在降为 ROLE_USER 时清:提成管理员本就全通,清队没有意义
+    还会误伤。收在这里而不是路由里:将来任何一条改角色的路径(批量脚本、离职自动化)
+    都必须绕不开这条不变量。
+
+    返回值即审计要记的 removed_from_teams:清出的团队列表;[] = 清了队但他本来就不在
+    任何团队;None = 本次动作不涉及清队(提权 / 平调)。
+    """
+    from app.services import team_service  # 惰性引入,避免 service 间顶层循环依赖
+
+    user.role = role
+    return team_service.remove_from_all_teams(db, user) if role == ROLE_USER else None
 
 
 def name_or_email_like(q: str | None):

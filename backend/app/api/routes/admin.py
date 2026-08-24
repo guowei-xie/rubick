@@ -52,7 +52,9 @@ def set_role(
     if user is None:
         raise NotFoundError("用户不存在")
     old_role = user.role  # 必须在赋值之前取
-    user.role = data.role
+    # 赋角色 + 降级连带清队是一条不变量,住在 user_service.change_role —— 路由只做
+    # 解析、鉴权与审计,别让第二条改角色的路径有机会绕过清队
+    removed = user_service.change_role(db, user, data.role)
     db.commit()
     db.refresh(user)
     # 角色没变也照记:管理员执行过一次提权操作这件事本身就该留痕
@@ -63,6 +65,11 @@ def set_role(
             "role": {"from": old_role, "to": data.role},
             "target_user_name": user.name,
             "target_user_email": user.email,
+            # 恒有键、三个取值各有各的意思:团队列表 = 清出去的那些;`[]` = 清了队但他本来就
+            # 不在任何团队;`null` = 本次动作不涉及清队(提权 / 平调)。后两者必须分得开 ——
+            # 查审计的人会拿这一项反推「此人当时在哪些团队」,而缺键又会被读成「这个版本还
+            # 没这功能」。
+            "removed_from_teams": removed,
         },
         ip=ip,
     )
