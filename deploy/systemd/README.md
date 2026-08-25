@@ -9,6 +9,12 @@
 
 两者都是 `Restart=always`（3 秒重试）+ `WantedBy=multi-user.target`，所以**进程崩溃自动拉起、机器重启自动恢复**。
 
+> **worker 必须显式获准连线上库**：`backend/config.ini` 里要有 `WORKER_ALLOW_REMOTE_DB = true`。
+> 没有它 worker 会拒绝启动（默认 false 是为了让**开发机**连着线上库时起不来 —— 否则它会替线上
+> 认领并执行真实取数，结果文件落在开发机上，线上只剩一条「有记录、无结果」的运行）。
+> `deploy.sh` 的 `worker_gate` 会在每次 start/restart/update 后确认 worker 稳定运行，
+> 所以配漏了会当场红字失败，而不是悄悄让取数排队到天亮。
+
 ## 安装（一次性，root 执行）
 
 unit 里的路径按仓库部署在 `/opt/rubick`、虚拟环境在 `backend/.venv` 写死；换目录要同步改。

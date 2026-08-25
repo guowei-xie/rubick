@@ -239,6 +239,40 @@ def test_reaching_limit_auto_unsubscribes_with_trail_and_no_success_notice(
     assert any("已生成" in t for t in b_titles), b_titles
 
 
+def test_scheduled_success_notifies_only_subscribers_never_the_system_user(
+    db, author, sub_a, ds, team, task, system_user
+):
+    """2026-08-25 现场:一次成功的定时运行,「取数完成」落在了系统用户「定时运行」名下,
+    订阅者一条都没收到 —— 那台执行它的进程是旧代码,没走 subscribe 分派。
+
+    钉死两件事:收件人**只有订阅者**,且**任何通知都不会落到系统用户名下**
+    (后者由 _push 的出口兜底,即便上游又把发起人当成收件人)。
+    """
+    subscription_service.subscribe(db, task, sub_a)
+    job = _sub_job(db, system_user, task, ds, with_file=True)
+    note_floor = db.scalar(select(func.max(Notification.id))) or 0
+
+    notify_service.notify_job_done(db, job)
+
+    notes = list(db.scalars(select(Notification).where(Notification.id > note_floor)))
+    assert [n.user_id for n in notes] == [sub_a.id], [(n.user_id, n.title) for n in notes]
+    assert "已生成" in notes[0].title
+    assert not any(n.user_id == system_user.id for n in notes)
+
+
+def test_push_drops_notifications_addressed_to_the_system_user(db, task, system_user):
+    """出口兜底本身:系统用户登录不进来,给它的通知没有任何人会读到,所以直接丢弃。"""
+    note_floor = db.scalar(select(func.max(Notification.id))) or 0
+    assert (
+        notify_service._push(
+            db, user_id=system_user.id, title="取数完成", body="不该存在",
+            level="success", link="http://x/", job_id=None, template_id=task.id,
+        )
+        is None
+    )
+    assert db.scalar(select(func.count(Notification.id)).where(Notification.id > note_floor)) == 0
+
+
 # ---------------------------------------------------------------- worker 全链路
 
 

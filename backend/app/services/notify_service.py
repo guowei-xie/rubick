@@ -15,11 +15,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import CredentialRequiredError
+from app.core.logging_setup import get_logger
 from app.models.notification import Notification
 from app.models.query_job import JOB_SUCCESS, SOURCE_SUBSCRIBE, QueryJob
 from app.models.template import SqlTemplate
-from app.models.user import ROLE_ADMIN, User
+from app.models.user import ROLE_ADMIN, SYSTEM_SCHEDULER_OPEN_ID, User
 from app.services import feishu_service
+
+log = get_logger("rubick.notify")
 
 
 def _push(
@@ -32,14 +35,25 @@ def _push(
     link: str,
     job_id: int | None,
     template_id: int,
-) -> Notification:
+) -> Notification | None:
     """投递一条通知:先试飞书,再写站内记录(飞书失败也要留下站内那条)。
 
     所有通知都走这一个出口 —— 以后加 Notification 列、加限流、换飞书卡片模板,只改这里。
     job_id 可空:入队阶段就被拦下的取数根本没有运行记录行(见 notify_credential_blocked),
     而那条通知照样要发。
+
+    **系统用户(定时运行)永远收不到通知**:它不是人,登录不进来,给它的通知没有任何人会读到。
+    收件人算成了它,只可能是上游把「定时运行的发起人」当成了「该通知的人」—— 定时运行要通知的
+    是订阅者(见 on_scheduled_run_finished)。所以这里丢弃并告警,而不是静默写一条没人看的记录:
+    2026-08-25 就有一条这样的通知躺在系统用户名下,而订阅者什么都没收到。
     """
     user = db.get(User, user_id)
+    if user is not None and user.feishu_open_id == SYSTEM_SCHEDULER_OPEN_ID:
+        log.warning(
+            "收件人是系统用户(定时运行),已丢弃该通知:title=%s job_id=%s template_id=%s",
+            title, job_id, template_id,
+        )
+        return None
     sent = bool(user) and feishu_service.send_message(user.feishu_open_id, title, body, link)
     note = Notification(
         user_id=user_id,

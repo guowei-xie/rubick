@@ -94,6 +94,7 @@ start() {
     # 闸门对 systemd 路径**更要紧**:Type=simple 的 systemctl start 立刻返回,
     # 而 Restart=always 会把一个起不来的进程反复拉起,is-active 看着像好的。
     health_gate "$port"
+    worker_gate
     status
     return
   fi
@@ -120,6 +121,7 @@ start() {
     echo $! >"$WORKER_PID"; disown %% 2>/dev/null || true
   fi
   health_gate "$port"
+  worker_gate
   status
 }
 
@@ -139,6 +141,35 @@ health_gate() {
   echo
   die "健康检查失败:${tries} 秒内 $url 没有返回 200。服务没起来,最后 40 行日志:
 $(tail -n 40 "$LOG_DIR/api.log" 2>/dev/null)"
+}
+
+# /health 是 **API** 的,worker 起没起来它一个字都不说。而 worker 静默不起来的后果同样严重:
+# 排队的取数没人认领、订阅计划不再触发 —— 页面一切正常,谁都不会发现,直到有人问
+# 「我的取数怎么一直在排队」。2026-08-25 新增的 WORKER_ALLOW_REMOTE_DB 护栏更让
+# 「worker 起不来」变成一种**配置就能触发**的常态失败,必须有闸门看着。
+worker_gate() {
+  local i tries=8 restarts0 restarts1
+  if systemd_managed; then
+    restarts0="$($SUDO systemctl show -p NRestarts --value "$WORKER_UNIT" 2>/dev/null || echo 0)"
+    for i in $(seq 1 "$tries"); do sleep 1; done
+    restarts1="$($SUDO systemctl show -p NRestarts --value "$WORKER_UNIT" 2>/dev/null || echo 0)"
+    # 只看 is-active 不够:Restart=always 下一个反复自杀的进程,采样那一刻很可能正好是
+    # active。重启次数涨了就是在打转,和压根没起来一样糟。
+    if $SUDO systemctl is-active --quiet "$WORKER_UNIT" && [ "${restarts0:-0}" = "${restarts1:-0}" ]; then
+      info "worker 检查通过(active,${tries} 秒内没有重启)"
+      return 0
+    fi
+    die "worker 没能稳定运行($WORKER_UNIT:$($SUDO systemctl is-active "$WORKER_UNIT" 2>/dev/null),
+重启次数 ${restarts0:-0} -> ${restarts1:-0})。取数会一直排队、订阅计划不再触发。最后 40 行日志:
+$(tail -n 40 "$LOG_DIR/worker.log" 2>/dev/null)"
+  fi
+  for i in $(seq 1 "$tries"); do sleep 1; done
+  if _alive "$WORKER_PID"; then
+    info "worker 检查通过(pid $(cat "$WORKER_PID"))"
+    return 0
+  fi
+  die "worker 没起来。取数会一直排队、订阅计划不再触发。最后 40 行日志:
+$(tail -n 40 "$LOG_DIR/worker.log" 2>/dev/null)"
 }
 
 stop() {

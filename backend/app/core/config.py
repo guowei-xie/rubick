@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     # .test_run),所以目标库的连接数要按「这个数 + 同时可能试跑的人数」来备。
     # 另受本机内存约束(每个结果最多 MAX_RESULT_ROWS 行进内存)。
     WORKER_CONCURRENCY: int = 2
+    # 允许本进程连着**远端库**执行取数。默认 false —— 开发机的 config.ini 一旦指向线上库,
+    # worker(以及 RUN_INLINE 的 API)就拒绝启动。判据见 MAY_EXECUTE_JOBS。
+    # **线上必须显式打开**,否则线上 worker 起不来。
+    WORKER_ALLOW_REMOTE_DB: bool = False
 
     # ---- 任务订阅(定时自动运行)----
     # 订阅者连续多少个**成功**运行期未查看结果(下载或预览)后,自动取消其订阅并通知本人。
@@ -136,6 +140,39 @@ class Settings(BaseSettings):
                 "要么把 DATABASE_URL 换成本地库(sqlite 或 localhost 的 MySQL)。"
             )
         return self
+
+    @model_validator(mode="after")
+    def _guard_inline_run(self) -> "Settings":
+        """护栏:RUN_INLINE 让取数**跑在 API 进程里**,于是它和 worker 一样是「执行者」,
+        同受「开发机不许执行线上取数」这条约束。
+
+        单独在这里拦而不是等到真去执行:RUN_INLINE 是进程级的形态,启动时就知道,
+        不该留到某个业务用户点了取数才炸在他脸上。
+        """
+        if self.RUN_INLINE and not self.MAY_EXECUTE_JOBS:
+            raise ValueError(self.remote_executor_refusal("RUN_INLINE=true 的 API 进程"))
+        return self
+
+    @property
+    def MAY_EXECUTE_JOBS(self) -> bool:
+        """本进程可不可以执行取数(认领队列,或 RUN_INLINE 在请求内同步跑)。
+
+        连本地库随便跑,不需要任何配置;**连远端库必须显式打开 WORKER_ALLOW_REMOTE_DB**。
+        判据落在「库在不在本机」而不是「我是不是线上」:后者没有可靠的自证方式,
+        而前者恰好把唯一危险的组合(开发机 + 线上库)与全部安全组合分开。
+        """
+        return self.DATABASE_IS_LOCAL or self.WORKER_ALLOW_REMOTE_DB
+
+    def remote_executor_refusal(self, who: str) -> str:
+        """拒绝执行取数时给人看的话。**必须说清这是哪台机器、连的哪个库、怎么解**——
+        否则收到的人只会以为服务坏了。"""
+        return (
+            f"{who}连着远端库({self.database_display})却没有打开 WORKER_ALLOW_REMOTE_DB,"
+            "拒绝执行取数。开发机连线上库时,它会替线上认领并执行真实取数,结果文件写到本机、"
+            "线上只留一条「有记录、无结果」的运行 —— 2026-08-25 就这么发生过一次。"
+            "本机开发请把 DATABASE_URL 换成本地库;这台确实是线上机器的话,"
+            "在 config.ini 里写 WORKER_ALLOW_REMOTE_DB = true。"
+        )
 
     @property
     def DATABASE_IS_LOCAL(self) -> bool:
