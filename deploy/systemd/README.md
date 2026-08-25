@@ -9,6 +9,11 @@
 
 两者都是 `Restart=always`（3 秒重试）+ `WantedBy=multi-user.target`，所以**进程崩溃自动拉起、机器重启自动恢复**。
 
+worker 另有 `TimeoutStopSec=4h`：停它等于**排空**——SIGTERM 让它停止认领新任务、等在跑的取数
+跑完再退出。systemd 默认只等 90 秒就 SIGKILL，于是每次更新只要有一个跑了 90 秒以上的取数就会
+被打死（业务侧看到「运行中断，请重新运行」）。改过这个值要 `systemctl daemon-reload` 才生效；
+没同步到线上时 `deploy.sh` 排空前会黄字提醒（它读的是 `systemctl show -p TimeoutStopUSec`）。
+
 > **线上必须显式获准连线上库**：`backend/config.ini` 里要有 `ALLOW_REMOTE_DB = true`。
 > 没有它，API / worker / migrate **全都拒绝启动**（默认 false 是为了让**开发机**连着线上库时
 > 起不来 —— 否则那台机器上的 worker 会替线上认领并执行真实取数，结果文件落在开发机上，
@@ -32,6 +37,13 @@ systemctl enable --now rubick-api.service rubick-worker.service
 装好后 `./deploy.sh` 会自动识别 unit，`start/stop/restart/status`（以及 `update` 末尾的重启）
 一律改走 `systemctl`，不再 `nohup`/`pkill`；`logs` 在两种模式下都直接跟踪 `backend/logs/*.log`
 （unit 也把日志追加到同一处，所以内容一致）。`./deploy.sh update` 依旧是线上更新的唯一入口。
+
+**停机前有一道排空**：`update` / `restart` 在停进程之前先问一句「现在有没有正在跑的取数」
+（`python -m app.inflight`，判据是库里的 running 记录，与取数跑在哪个进程里无关）。有的话
+先停 worker 让它停止认领新任务，再等在跑的跑完；等待上限取「最长可能的查询超时 + 缓冲」
+（与孤儿回收同一口径）。**等不到就中止部署**——线上留在旧版本上、任务没被打断，而不是硬停。
+急着停就 `./deploy.sh update --force`，代价是那些取数变成「运行中断，请重新运行」。
+单独执行 `./deploy.sh stop` 不排空（那是操作人的明确决定），但会当场列出被打断的是谁。
 
 **启动后有一道健康闸门**：`start` / `restart` / `update` 在拉起进程之后会连续请求 `/health`
 （最多 20 次、每次间隔 1 秒），不通就打红字并以非零码退出、顺带贴出 `api.log` 末 40 行。

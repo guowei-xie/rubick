@@ -11,6 +11,11 @@ WorkingDirectory=/opt/rubick/backend
 ExecStart=/opt/rubick/backend/.venv/bin/python -m app.worker
 Restart=always
 RestartSec=3
+# 停 worker = 排空:SIGTERM 让它停止认领新任务,并等在跑的取数跑完(见 app/worker.py)。
+# 默认的 90 秒到点就 SIGKILL,于是每次 update 只要有一个跑了 90 秒以上的取数就会被打死
+# —— 那正是 deploy.sh 的排空要消灭的事。给到 4 小时:盖住 Hive 默认上限(3600s)与任务
+# 自己配的更长超时,同时仍是个有限值(卡死的进程不会永远拖着停机)。
+TimeoutStopSec=4h
 Environment=PYTHONUNBUFFERED=1
 Environment=LANG=C.UTF-8
 StandardOutput=append:/opt/rubick/backend/logs/worker.log

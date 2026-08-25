@@ -3,10 +3,14 @@
 #
 # 用法:
 #   ./deploy.sh init      首次部署:建 venv、装依赖、建表、构建前端、启动服务
-#   ./deploy.sh update    一键更新:git pull、装依赖、建表、重建前端、停旧起新、健康检查
+#   ./deploy.sh update    一键更新:git pull、装依赖、建表、重建前端、**排空**、停旧起新、健康检查
 #   ./deploy.sh start     启动后端 API + worker(nohup 后台)
-#   ./deploy.sh stop      停止后端 API + worker
-#   ./deploy.sh restart   重启
+#   ./deploy.sh stop      停止后端 API + worker(会打断在跑的取数,并当场告诉你打断了谁)
+#   ./deploy.sh restart   重启(同 update:先排空)
+#
+# 排空(update / restart 默认行为,见 drain_worker):**不打断正在跑的取数**。先让 worker
+# 停止认领新任务,再等在跑的跑完;等不到就中止本次部署,线上留在旧版本上。
+# 真要立刻停:加 --force,代价是那些取数变成「运行中断,请重新运行」。
 #   ./deploy.sh status    查看运行状态
 #   ./deploy.sh logs [N]  跟踪 API / worker 日志(从末 N 行起,默认 100)
 #
@@ -82,6 +86,89 @@ build_frontend() {
 }
 
 _alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+# ------------------------------------------------------------------ 排空(不打断在跑的取数)
+#
+# update / restart 都是「先停旧进程再起新的」,而停进程会打断在跑的查询 —— 那条运行记录会
+# 卡在 running 直到下次启动的孤儿回收把它标成失败,发起人只看到「运行中断,请重新运行」,
+# 而他可能已经等了半小时。**所以停之前先排空**:
+#
+#   1. 先只停 worker。SIGTERM 对它就是排空信号:停止认领新任务,已经在跑的等它们跑完
+#      (见 app/worker.py 的 pool.shutdown(wait=True))。顺序很要紧 —— 反过来「边等边让它
+#      继续认领」永远等不到零;
+#   2. 同时盯着库里的 running 记录,等它清零(见 app/inflight.py);
+#   3. 等不到就**中止部署**,而不是硬停:线上仍是旧版本、任务没被打断,操作人自己决定
+#      是等它跑完还是 --force。
+DRAIN_FORCE=0
+DRAIN_STOP_PID=""
+
+# 问一句「现在有没有在跑的取数」。退出码见 app/inflight.py:0=没有 3=有 2=--wait 等超时,
+# 其它=这条命令本身失败(配置错、连不上库、护栏拒绝)。**必须分开** —— 把「命令崩了」当成
+# 「有人在跑」会让部署按错误的理由中止或白等一场。
+inflight_run() { ( cd "$BACKEND" && "$PY" -m app.inflight "$@" ); }
+
+# 用法:inflight_or_die [--wait ...],结果放进 INFLIGHT_RC。命令自身失败就直接 die。
+# 刻意用全局变量而不是 echo 退出码 —— $(...) 会把等待期间的进度输出一起吞掉,那会让操作人
+# 对着一个「卡住不动」的脚本等一小时,而它其实每隔几秒都在说还剩几个。
+INFLIGHT_RC=0
+inflight_or_die() {
+  INFLIGHT_RC=0
+  inflight_run "$@" || INFLIGHT_RC=$?
+  case "$INFLIGHT_RC" in
+    0|2|3) return 0 ;;
+    *) die "问不出「现在有没有在跑的取数」(python -m app.inflight 退出码 $INFLIGHT_RC),本次操作中止。
+      先修好上面的报错 —— 在答案未知的情况下停机,等于赌线上没人在等结果。" ;;
+  esac
+}
+
+# systemd 的耐心由 unit 的 TimeoutStopSec 决定,它比我们的等待更早到点就白排空了
+# (systemd 会 SIGKILL,查询照样被打断)。不硬拦,但必须说出来 —— 这是配置能触发的失效。
+check_stop_timeout() {
+  systemd_managed || return 0
+  local usec; usec="$($SUDO systemctl show -p TimeoutStopUSec --value "$WORKER_UNIT" 2>/dev/null || true)"
+  case "$usec" in
+    ""|infinity|*y*|*month*|*w*|*d*|*h*) return 0 ;;  # 空/无限/天小时级都够用
+  esac
+  warn "$WORKER_UNIT 的 TimeoutStopSec 是 $usec —— 到点 systemd 会 SIGKILL,长查询仍会被打断。
+      请把 deploy/systemd/rubick-worker.service 里的 TimeoutStopSec 同步到线上并 daemon-reload。"
+}
+
+# 优雅停 worker。systemd 下必须走 systemctl stop(不能 kill:Restart=always 会立刻拉回来),
+# 而它会阻塞到进程退出,所以放后台跑,让排空的进度由本脚本来播报。
+stop_worker_graceful() {
+  if systemd_managed; then
+    $SUDO systemctl stop "$WORKER_UNIT" >/dev/null 2>&1 &
+    DRAIN_STOP_PID=$!
+    return
+  fi
+  if _alive "$WORKER_PID"; then
+    kill "$(cat "$WORKER_PID")" 2>/dev/null || true  # SIGTERM = 排空,不是打断
+  fi
+}
+
+drain_worker() {
+  if [ "$DRAIN_FORCE" = 1 ]; then
+    warn "--force:不等在跑的取数。它们会被打断,发起人会看到「运行中断,请重新运行」"
+    return 0
+  fi
+  inflight_or_die
+  if [ "$INFLIGHT_RC" = 0 ]; then
+    return 0  # 一个都没有在跑,直接停
+  fi
+  check_stop_timeout
+  info "先让 worker 停止认领新任务,再等在跑的取数自己跑完(不会打断它们)"
+  stop_worker_graceful
+  inflight_or_die --wait
+  if [ "$INFLIGHT_RC" != 0 ]; then
+    die "还有取数没跑完,本次 ${1:-操作} 已中止 —— 线上仍是旧版本,任务没被打断。
+      worker 已停止认领新任务,等这些跑完再执行一次即可(或 $0 ${1:-update} --force 明确接受打断)。
+      要现在就恢复接单:$0 start"
+  fi
+  if [ -n "$DRAIN_STOP_PID" ]; then
+    wait "$DRAIN_STOP_PID" 2>/dev/null || true
+  fi
+  return 0
+}
 
 start() {
   ensure_config
@@ -220,7 +307,15 @@ logs() {
   tail -n "$n" -F "$LOG_DIR/api.log" "$LOG_DIR/worker.log"
 }
 
-case "${1:-}" in
+CMD="${1:-}"
+shift || true
+for arg in "$@"; do
+  case "$arg" in
+    --force) DRAIN_FORCE=1 ;;
+  esac
+done
+
+case "$CMD" in
   init)
     ensure_config
     setup_backend
@@ -236,18 +331,28 @@ case "${1:-}" in
     setup_backend
     init_db
     build_frontend
+    # 装依赖、建表、构建前端都不打断任何人,所以排空放在最后一刻,线上停摆的窗口最短
+    drain_worker update
     info "重启服务"
     stop || true
     start
     info "更新完成(已通过健康检查)。"
     ;;
   start)   start ;;
-  stop)    stop ;;
-  restart) stop || true; start ;;
+  stop)
+    # 显式 stop 是操作人的明确决定,不替他排空;但该让他知道自己正在打断谁
+    inflight_or_die
+    if [ "$INFLIGHT_RC" != 0 ]; then
+      warn "上面这些取数会被这次 stop 打断(想等它们跑完:$0 restart,那条会先排空)"
+    fi
+    stop
+    ;;
+  restart) drain_worker restart; stop || true; start ;;
   status)  status ;;
-  logs)    logs "${2:-}" ;;
+  logs)    logs "${1:-}" ;;
   *)
-    echo "用法: $0 {init|update|start|stop|restart|status|logs}"
+    echo "用法: $0 {init|update|start|stop|restart|status|logs} [--force]"
+    echo "  update / restart 默认**等在跑的取数跑完**再停(不打断);--force 跳过等待。"
     exit 1
     ;;
 esac
