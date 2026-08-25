@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
-import { Button, Drawer, Form, message, Space, Typography } from "antd";
+import { Button, Collapse, Drawer, Form, message, Space, Typography } from "antd";
 import { downloadJob, errMsg, getJob, getTemplate, Job, ParamDef, previewJob, runQuery, withBase } from "../api";
+import { fmtTime } from "../format";
 import { ParamField } from "./ParamForm";
 import ResultPreviewTable from "./ResultPreviewTable";
+import RunRecordsPanel from "./RunRecordsPanel";
 import SqlModal from "./SqlModal";
+
+/** 「运行记录」折叠区块的开合记在本地:用户来这儿本就是为了少点几下,
+ * 展开过一次的人不该每开一个任务都再点一次。跨任务生效,故不随抽屉重置。 */
+const RECORDS_OPEN_KEY = "rubic_run_drawer_records_open";
+
+// 抽屉里两处小节标题(结果预览 / 运行记录)共用的字重与副标样式,免得隔着 30 行各写一份漂移。
+// #888 与 ParamForm 的 HINT 同源,比 --ink-secondary(#6b6880)浅一档,是既有观感,不动它。
+const SECTION_TITLE: React.CSSProperties = { fontWeight: 600, color: "var(--ink)" };
+const SECTION_HINT: React.CSSProperties = { fontWeight: 400, color: "#888", marginLeft: 8, fontSize: 13 };
 
 /** 等待期该显示哪句话。
  *
@@ -46,7 +57,17 @@ export default function RunDrawer({
   const [preview, setPreview] = useState<any>(null); // { columns, rows, row_count }(前 50 行)
   const [showSql, setShowSql] = useState(false);
   const [progress, setProgress] = useState<string | null>(null); // 等待期的实况,见 describeWait
+  // 历史运行记录:折叠区块的开合(读本地偏好)与「重拉一次」的计数器
+  const [recordsOpen, setRecordsOpen] = useState(
+    () => localStorage.getItem(RECORDS_OPEN_KEY) === "1"
+  );
+  const [recordsKey, setRecordsKey] = useState(0);
   const [form] = Form.useForm();
+
+  const toggleRecords = (next: boolean) => {
+    setRecordsOpen(next);
+    localStorage.setItem(RECORDS_OPEN_KEY, next ? "1" : "0");
+  };
 
   useEffect(() => {
     if (!open || !task) return;
@@ -102,6 +123,8 @@ export default function RunDrawer({
         const pv = await previewJob(j.id);
         setJob(j);
         setPreview(pv);
+        // 刚跑完的这次要立刻出现在展开着的运行记录里,不劳用户手动刷新
+        setRecordsKey((k) => k + 1);
         message.success(`取数完成,共 ${j.row_count} 行,请预览确认后下载`);
       } else if (j.status === "failed") {
         message.error(j.error || "取数失败");
@@ -207,9 +230,9 @@ export default function RunDrawer({
               marginBottom: 10,
             }}
           >
-            <span style={{ fontWeight: 600, color: "var(--ink)" }}>
+            <span style={SECTION_TITLE}>
               结果预览
-              <span style={{ fontWeight: 400, color: "#888", marginLeft: 8, fontSize: 13 }}>
+              <span style={SECTION_HINT}>
                 前 {preview.rows.length} 行 / 共 {preview.row_count} 行,下载为完整结果
               </span>
             </span>
@@ -222,6 +245,41 @@ export default function RunDrawer({
           <ResultPreviewTable columns={preview.columns} rows={preview.rows} scrollY={400} />
         </div>
       )}
+      {/* 历史运行记录:从前只能从卡片右上角 ⋮ 菜单进,想拿上次跑好的数据的人被迫绕一圈。
+          默认收起 —— 收起时 RunRecordsPanel 不发请求,点开卡片的人不为一份可能不看的
+          历史多打一次接口;折叠头上的「最后运行」读列表已有的 last_run_at,不额外取数。 */}
+      <Collapse
+        ghost
+        size="small"
+        style={{ marginTop: 12 }}
+        activeKey={recordsOpen ? ["records"] : []}
+        onChange={(k) => toggleRecords((k as string[]).length > 0)}
+        items={[
+          {
+            key: "records",
+            label: (
+              <span style={SECTION_TITLE}>
+                运行记录
+                {task?.last_run_at && (
+                  <span style={SECTION_HINT}>
+                    最后运行 {fmtTime(task.last_run_at, false)} · 可直接预览/导出
+                  </span>
+                )}
+              </span>
+            ),
+            children: (
+              <RunRecordsPanel
+                key={task?.id}
+                taskId={task?.id ?? null}
+                active={recordsOpen}
+                variant="compact"
+                refreshKey={recordsKey}
+              />
+            ),
+          },
+        ]}
+      />
+
       <SqlModal sql={showSql ? job?.executed_sql || "" : null} onClose={() => setShowSql(false)} />
     </Drawer>
   );

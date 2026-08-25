@@ -9,6 +9,33 @@ export function fmtTime(t?: string | null, withSeconds = true): string {
   return t.replace("T", " ").slice(0, withSeconds ? 19 : 16);
 }
 
+/** 窄表格里的时间:省掉年份(08-25 14:02)。年份要么看悬停,要么用 fmtTime。
+ *  切片放在这儿而不是调用处 —— 这一刀依赖 fmtTime 的输出恰好是 "YYYY-MM-DD HH:mm",
+ *  那是本模块自己的约定,换成 dayjs 或加时区后缀时要一起改的也只有这一处。 */
+export function fmtDayTime(t?: string | null): string {
+  if (!t) return "-";
+  return fmtTime(t, false).slice(5);
+}
+
+/**
+ * 毫秒 → 人读的耗时。分档而不是一律给毫秒:一次取数可能跑 300 毫秒,也可能跑 40 分钟,
+ * 「2412000 ms」没人读得出那是多久。空值(还在排队/失败/老数据没记)统一 "-"。
+ */
+export function fmtDuration(ms?: number | null): string {
+  if (ms == null || ms < 0) return "-";
+  if (ms < 1000) return `${Math.round(ms)} 毫秒`;
+  // 先四舍五入到一位小数再判断,免得 59.97 秒显示成「60.0 秒」
+  const sec1 = Math.round(ms / 100) / 10;
+  if (sec1 < 60) return `${sec1} 秒`;
+  const totalSec = Math.round(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return sec ? `${min} 分 ${sec} 秒` : `${min} 分`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
+}
+
 /** 表格里的空值占位:null/undefined/"" 都显示 "-"。 */
 export function dash(v: unknown): string {
   return v === null || v === undefined || v === "" ? "-" : String(v);

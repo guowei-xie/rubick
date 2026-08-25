@@ -86,6 +86,7 @@ cp backend/config.example.ini backend/config.ini
 编辑 `backend/config.ini`,至少修改:
 
 - `DATABASE_URL`:线上 MySQL 连接串,如 `mysql+pymysql://用户:密码@主机:3306/库名`
+- `ALLOW_REMOTE_DB = true`:**线上这台必须打开**。`DATABASE_URL` 指向本机以外的库时,API / worker / migrate 一律拒绝启动(默认 `false`,挡的是开发机连线上库 —— 那样的 worker 会替线上认领并执行真实取数,结果文件落在开发机上)。本机开发与测试用 sqlite(`DATABASE_URL = sqlite:///./rubick.db`)时不必管这一项
 - `JWT_SECRET`:改成随机长字符串(如 `openssl rand -hex 32`)
 - `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)。前面挂了反向代理时设成 `127.0.0.1`,不要用 `0.0.0.0` 把端口直接暴露到公网
 - `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;独占域名填 `https://rubick.example.com`;挂在网关子路径下则填到子路径为止(如 `https://htba.example.com/rubick`)。`FEISHU_REDIRECT_URI`、`FRONTEND_ORIGIN` 与前端构建的基路径都自动跟随它
@@ -125,11 +126,17 @@ cp backend/config.example.ini backend/config.ini
 ./deploy.sh logs       # 跟踪 api.log 与 worker.log(可带行数,默认 100)
 ./deploy.sh restart    # 重启
 ./deploy.sh stop       # 停止
-./deploy.sh update     # 一键更新:git pull → 装依赖 → 建表 → 重建前端 → 停旧起新 → 健康检查
+./deploy.sh update     # 一键更新:git pull → 装依赖 → 建表 → 重建前端 → 排空 → 停旧起新 → 健康检查
 ```
 
-> `update` **不是无停机滚动更新**:它先停旧进程再起新的,重启期间有几秒到十几秒不可用,
-> 请避开取数高峰。
+> `update` **不是无停机滚动更新**:它先停旧进程再起新的,重启期间有几秒到十几秒不可用。
+> 但**不会打断正在跑的取数**:`update` / `restart` 停进程之前先排空 —— 只停 worker
+> (SIGTERM 对它就是「停止认领新任务、等在跑的跑完」),同时播报还在等谁,清零了才继续。
+> **等不到就中止部署**:线上留在旧版本上、任务没被打断,由操作人决定再等还是
+> `./deploy.sh update --force`(强停的代价是那些取数变成「运行中断,请重新运行」)。
+> 单独 `./deploy.sh stop` 不排空(显式停机是操作人的明确决定),但会当场列出被打断的是谁。
+> 排空的等待上限与孤儿回收同一把尺;systemd 模式下还要求 `rubick-worker.service` 的
+> `TimeoutStopSec` 已同步到 `/etc/systemd/system/`(没同步时脚本会黄字提醒)。
 >
 > `start` / `restart` / `update` 拉起进程后会连续请求 `/health`(最多 20 次、每次间隔 1 秒),
 > 不通就红字退出并贴出 `api.log` 末 40 行 —— 不做这一步的话,一个因配置写错而反复重启的服务
