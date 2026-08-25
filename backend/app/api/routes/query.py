@@ -12,7 +12,7 @@ from app.core.security import verify_download_token
 from app.models.query_job import JOB_QUEUED, JOB_SUCCESS, QueryJob
 from app.models.user import User
 from app.schemas.query import JobOut, RunIn
-from app.services import permission_service, query_service, result_service
+from app.services import permission_service, query_service, result_service, subscription_service
 
 router = APIRouter(tags=["query"])
 
@@ -65,6 +65,10 @@ def download(job_id: int, request: Request, db: Session = Depends(get_db), user:
     if job is None:
         raise NotFoundError("运行记录不存在")
     url = query_service.get_download_url(db, user, job, ip=client_ip(request))
+    # 订阅消费打点:「下载或预览都算消费」这条口径的两个打点并排在路由层
+    # (与 preview 同层;/file 那一段只有签名 token、没有操作人,打不了)。
+    # 非订阅 job / 非订阅者零成本(见 subscription_service.mark_consumed)。
+    subscription_service.mark_consumed(db, user.id, job)
     return {"url": url, "filename": job.result_filename}
 
 
@@ -101,4 +105,6 @@ def preview(job_id: int, db: Session = Depends(get_db), user: User = Depends(get
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,无法预览"
         )
     columns, rows = result_service.read_csv_preview(job.result_object_key, 50)
+    # 订阅消费打点:预览与下载同算「消费」(需求口径),非订阅 job / 非订阅者零成本
+    subscription_service.mark_consumed(db, user.id, job)
     return {"columns": columns, "rows": rows, "row_count": job.row_count}

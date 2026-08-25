@@ -1,5 +1,6 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
 import {
+  ClockCircleOutlined,
   MoreOutlined,
   PlusOutlined,
   UserOutlined,
@@ -35,6 +36,8 @@ export type TaskCardHandlers = {
   onRecords: (r: any) => void;
   onPublish: (r: any) => void;
   onArchive: (r: any) => void;
+  onSubscribeToggle: (r: any) => void; // 订阅/退订(按 r.subscribed 二态)
+  onSubscribers: (r: any) => void; // 订阅者名单与订阅记录(can_manage)
 };
 
 export default function TaskCard({
@@ -56,6 +59,13 @@ export default function TaskCard({
   const moreItems: any[] = [
     { key: "records", label: "运行记录", onClick: () => h.onRecords(r) },
   ];
+  // 订阅/退订:已订阅的人永远能退订(哪怕任务已下线/权限被撤);未订阅的按服务端
+  // 算好的 can_subscribe 显示 —— 前端不自己算资格规则
+  if (r.subscribed) {
+    moreItems.push({ key: "unsubscribe", label: "退订", onClick: () => h.onSubscribeToggle(r) });
+  } else if (r.can_subscribe) {
+    moreItems.push({ key: "subscribe", label: "订阅本任务", onClick: () => h.onSubscribeToggle(r) });
+  }
   if (r.can_manage) {
     moreItems.push(
       { type: "divider" },
@@ -68,6 +78,13 @@ export default function TaskCard({
             onClick: () => h.onPublish(r),
           }
     );
+    if (r.subscribe_enabled) {
+      moreItems.push({
+        key: "subscribers",
+        label: "订阅者名单",
+        onClick: () => h.onSubscribers(r),
+      });
+    }
   }
 
   return (
@@ -84,8 +101,8 @@ export default function TaskCard({
       style={{
         background: "#fff",
         border: "1px solid #edf0f7",
-        borderRadius: 20,
-        padding: 18,
+        borderRadius: 16,
+        padding: "14px 16px",
         height: "100%",
         display: "flex",
         flexDirection: "column",
@@ -100,7 +117,7 @@ export default function TaskCard({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginBottom: 12,
+          marginBottom: 8,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -169,23 +186,26 @@ export default function TaskCard({
           同一行相邻卡片的标签落在同一水平线上。 */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <div
+          title={r.name}
           style={{
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: 700,
             color: "var(--ink)",
-            lineHeight: "23px",
-            marginBottom: 8,
+            lineHeight: "22px",
+            marginBottom: 4,
             display: "-webkit-box",
             WebkitLineClamp: 2,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
-            minHeight: 46,
           }}
         >
           {r.name}
         </div>
         {/* 任务说明:浅一层的次级信息,列表页扫一眼就知道这任务干什么;
-            无说明的任务不占位,长说明 2 行截断、悬停看全文 */}
+            无说明的任务不占位,超一行即省略号、悬停看全文。
+            单行而非两行:管理页一屏能多放一行卡片,说明本就是次级信息。
+            title 用原生而非 Tooltip:卡片外层挂着「点击填参取数」的原生 title,
+            子元素自带 title 才能盖住它 —— 换 Tooltip 会两个提示一起弹。 */}
         {r.description && (
           <div
             title={r.description}
@@ -193,23 +213,22 @@ export default function TaskCard({
               fontSize: 13,
               color: "var(--ink-secondary)",
               lineHeight: "20px",
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
               overflow: "hidden",
+              whiteSpace: "nowrap",
+              textOverflow: "ellipsis",
             }}
           >
             {r.description}
           </div>
         )}
-        {(r.datasource_name || r.team_name) && (
+        {(r.datasource_name || r.team_name || r.subscribe_enabled) && (
           <div
             style={{
               display: "flex",
               flexWrap: "wrap",
               gap: 6,
               marginTop: "auto",
-              paddingTop: 10,
+              paddingTop: 8,
             }}
           >
             {r.datasource_name && (
@@ -223,6 +242,26 @@ export default function TaskCard({
                 {r.team_name}
               </span>
             )}
+            {/* 订阅标签:计划描述由后端拼好(schedule_desc),前端不自己算频次语义。
+                已订阅时换品牌色,一眼分清「任务可订」与「我订了」。 */}
+            {r.subscribe_enabled && (
+              <span
+                style={{
+                  ...chipStyle,
+                  ...(r.subscribed
+                    ? { background: "#e9e7fd", color: "var(--brand)", fontWeight: 600 }
+                    : {}),
+                }}
+                title={
+                  `定时运行:${r.schedule_desc || ""} · ${r.subscriber_count || 0} 人订阅` +
+                  (r.subscribed ? "(含你)" : "")
+                }
+              >
+                <ClockCircleOutlined style={{ marginRight: 4 }} />
+                {r.subscribed ? "已订阅" : r.schedule_desc || "可订阅"}
+                {r.subscriber_count > 0 ? ` · ${r.subscriber_count}` : ""}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -233,8 +272,8 @@ export default function TaskCard({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginTop: 16,
-          paddingTop: 12,
+          marginTop: 10,
+          paddingTop: 8,
           borderTop: "1px solid #f0f2f8",
         }}
       >

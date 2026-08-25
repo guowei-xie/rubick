@@ -12,6 +12,13 @@ export const JOB_STATUS: TagMap = {
   failed: { color: "red", label: "失败" },
 };
 
+// 运行来源(QueryJob.source):正式取数 / 编辑器试跑 / 订阅定时运行
+export const JOB_SOURCE: TagMap = {
+  run: { color: "blue", label: "正式" },
+  test: { color: "orange", label: "试跑" },
+  subscribe: { color: "purple", label: "定时" },
+};
+
 export const TEMPLATE_STATUS: TagMap = {
   draft: { color: "gold", label: "草稿", dot: "#faad14", tint: "#fdf3e2" },
   published: { color: "green", label: "已上线", dot: "#52c41a", tint: "#e8f6ec" },

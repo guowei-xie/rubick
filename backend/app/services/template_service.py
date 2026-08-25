@@ -32,10 +32,12 @@ from app.schemas.common import ParamDef
 from app.services import (
     credential_service,
     enum_cache_service,
+    notify_service,
     params_service,
     permission_service,
     query_service,
     result_service,
+    subscription_service,
 )
 
 
@@ -119,6 +121,8 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         author_id=author.id,
     )
     db.add(version)
+    # 订阅计划落库与「开订阅的任务不能有变量」卡点(新任务无订阅者,不会有清退)
+    subscription_service.apply_template_save(db, tmpl, data.subscription, version.params, author)
     _sync_enum_cache(db, tmpl, version, data, author)
     db.commit()
     db.refresh(tmpl)
@@ -167,6 +171,13 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     db.add(version)
     db.flush()
 
+    # 订阅计划落库与「开订阅的任务不能有变量」卡点(按提交后的净状态判,见
+    # subscription_service.apply_template_save)。显式 enabled=False 视为先关闭订阅:
+    # 清退订阅者随本事务落库,通知在 commit 之后发(_push 自带 commit,不能夹在事务中间)。
+    closed_subscriber_ids = subscription_service.apply_template_save(
+        db, tmpl, data.subscription, version.params, author
+    )
+
     # 已上线任务被编辑:新版本自动接替上线,状态与可运行性不变;
     # 草稿(draft)/已下线则维持原状态,由列表「上线」操作再晋升。
     if was_published:
@@ -175,6 +186,8 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     _sync_enum_cache(db, tmpl, version, data, author)
     db.commit()
     db.refresh(version)
+    if closed_subscriber_ids:
+        notify_service.notify_subscription_closed(db, tmpl, closed_subscriber_ids)
     return version
 
 
@@ -217,6 +230,13 @@ def archive(db: Session, tmpl: SqlTemplate) -> None:
     tmpl.status = STATUS_ARCHIVED
     tmpl.published_version_id = None
     db.commit()
+    # 有订阅者时告知推送暂停。订阅关系与计划都保留:调度扫描只认 published
+    # (subscription_service.tick),下线即天然停跑;重新上线后自动恢复并补跑最近一期。
+    sched = subscription_service.get_schedule(db, tmpl.id)
+    if sched is not None and sched.enabled:
+        subs = subscription_service.subscribers_of(db, tmpl.id)
+        if subs:
+            notify_service.notify_subscription_paused(db, tmpl, [s.user_id for s in subs])
 
 
 def _ceiling_note(used: int, task_timeout: int, message: str) -> str:

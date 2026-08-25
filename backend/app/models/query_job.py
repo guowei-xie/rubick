@@ -1,8 +1,9 @@
 """取数任务(一次运行的记录)。默认由独立 DB 轮询 worker 异步执行
 (RUN_INLINE=true 时在请求内同步执行);状态全程记录以便前端展示与审计。"""
 from __future__ import annotations
+from datetime import datetime
 from typing import Optional
-from sqlalchemy import BigInteger, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.core.database import Base, tbl
@@ -13,9 +14,10 @@ JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_FAILED = "failed"
 
-# 运行来源:业务正式取数 vs 作者在编辑器里的试跑
+# 运行来源:业务正式取数 / 作者在编辑器里的试跑 / 订阅计划定时自动运行
 SOURCE_RUN = "run"
 SOURCE_TEST = "test"
+SOURCE_SUBSCRIBE = "subscribe"
 
 # executed_sql 落的是 Text 列(MySQL 上限 65535 **字节**),而它的内容直接由用户填的参数决定:
 # 业务方用「上传/粘贴列表」粘 5000 个 10 位 ID(前端 LIST_CAP 就是 5000),渲染出来是 70KB。
@@ -79,6 +81,12 @@ class QueryJob(Base, TimestampMixin):
     result_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     result_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # 仅订阅运行(source=subscribe)使用:本期结果被**下一期成功结果**取代的时刻
+    # (下一期成功结算时盖章,见 subscription_service.settle_on_success;开发者关闭订阅时
+    # 也补盖一次,免得最后一期永不过期)。它驱动订阅结果的保留期:未被取代就不过期,
+    # 订阅者在整个周期内(哪怕周期长于 RESULT_RETENTION_DAYS)都能下载到最新一期。
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # 关联模板/发起人,便于运行记录展示名称
     template = relationship("SqlTemplate", lazy="joined")
     user = relationship("User", lazy="joined")
@@ -99,11 +107,22 @@ class QueryJob(Base, TimestampMixin):
 
     @property
     def result_expired(self) -> bool:
-        """结果文件是否已过保留期(到期后由 worker 每小时清一次本地文件,见 result_service.cleanup_expired)。"""
-        from datetime import datetime, timedelta
+        """结果文件是否已过保留期(到期后由 worker 每小时清一次本地文件,见 result_service.cleanup_expired)。
+
+        订阅运行(source=subscribe)的口径不同:保留到**下一期成功结果产生**(superseded_at
+        被盖章)为止,且不低于常规保留天数 —— 月频订阅的用户不该在第 8 天就下载不到本期数据。
+        文件清理侧与这里同口径(worker._maintenance 把未过期的订阅结果作为受保护键传给
+        result_service.cleanup_expired),两边必须一起改。
+        """
+        from datetime import timedelta
 
         from app.core.config import settings
 
         if self.status != JOB_SUCCESS or not self.result_object_key or not self.created_at:
             return False
-        return datetime.now() > self.created_at + timedelta(days=settings.RESULT_RETENTION_DAYS)
+        past_retention = datetime.now() > self.created_at + timedelta(
+            days=settings.RESULT_RETENTION_DAYS
+        )
+        if self.source == SOURCE_SUBSCRIBE:
+            return self.superseded_at is not None and past_retention
+        return past_retention

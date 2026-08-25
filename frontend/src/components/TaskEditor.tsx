@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Segmented, Select, Space, Tag, Typography } from "antd";
+import { Alert, Button, Checkbox, Collapse, Divider, Form, Input, InputNumber, message, Modal, Segmented, Select, Space, Switch, Tag, TimePicker, Typography } from "antd";
+import dayjs from "dayjs";
 import {
   createTemplate,
   TeamCredentialStatus,
@@ -28,6 +29,18 @@ import { isListVar, parseVariables } from "../sqlParams";
  *  value_type 兜底文本。试跑 / SQL 预览共用,避免形状漂移。 */
 function toDef(sql: string, p: any): Pick<ParamDef, "name" | "kind" | "value_type"> {
   return { name: p.name, kind: isListVar(sql, p.name) ? "list" : "single", value_type: p.value_type || "text" };
+}
+
+/** 后端 subscription 配置 → 订阅区五个表单字段。编辑回填与新建默认(sub 缺省)共用,
+ *  订阅计划加字段时只改这里 + collect 的组装,两个 setFieldsValue 分支不再各写一份。 */
+function subFormFields(sub?: { enabled?: boolean; freq?: string; days?: number[]; at_time?: string }) {
+  return {
+    sub_enabled: !!sub?.enabled,
+    sub_freq: sub?.freq || "daily",
+    sub_weekdays: sub?.freq === "weekly" ? sub.days : [],
+    sub_monthdays: sub?.freq === "monthly" ? sub.days : [],
+    sub_time: dayjs(sub?.at_time || "09:00", "HH:mm"),
+  };
 }
 
 export default function TaskEditor({
@@ -61,10 +74,18 @@ export default function TaskEditor({
   // 编辑已有任务时进来的原团队。转移团队是独立的治理动作(独立端点 + 独立审计码 +
   // 连带撤销原团队的编辑权),PUT /templates/{id} 刻意不接受 team_id —— 故保存时分开发。
   const [originalTeamId, setOriginalTeamId] = useState<number | null>(null);
+  // 订阅:在册订阅人数(关闭订阅前的预警)与打开编辑器时的原开关状态
+  const [subscriberCount, setSubscriberCount] = useState(0);
+  const [origSubEnabled, setOrigSubEnabled] = useState(false);
   const [form] = Form.useForm();
   const sqlWatch = Form.useWatch("sql_text", form);
   const dsWatch = Form.useWatch("datasource_id", form);
   const teamWatch = Form.useWatch("team_id", form);
+  const paramsWatch = Form.useWatch("params", form);
+  const subEnabledWatch = Form.useWatch("sub_enabled", form);
+  const subFreqWatch = Form.useWatch("sub_freq", form);
+  // 「仅无变量任务可开订阅」的前端呈现;服务端卡点在 template_service.add_version
+  const hasParams = (paramsWatch || []).length > 0;
   const teamCred = teamCredentials.find(
     (c) => c.team_id === teamWatch && c.datasource_id === dsWatch
   );
@@ -133,18 +154,27 @@ export default function TaskEditor({
           timeout_seconds: d.timeout_seconds,
           sql_text: v?.sql_text,
           params,
+          ...subFormFields(d.subscription),
         });
         setOriginalTeamId(d.team_id ?? null);
+        setSubscriberCount(d.subscriber_count || 0);
+        setOrigSubEnabled(!!d.subscription?.enabled);
         setActiveKeys([]); // 变量卡默认全部收起
       });
     } else {
       form.resetFields();
       const mine = myTeams(user);
       // 只属于一个团队时(最常见)直接选上,省一次点击
-      form.setFieldsValue({ params: [], team_id: mine.length === 1 ? mine[0].id : undefined });
+      form.setFieldsValue({
+        params: [],
+        team_id: mine.length === 1 ? mine[0].id : undefined,
+        ...subFormFields(),
+      });
       setActiveKeys([]);
       setEditStatus(null);
       setOriginalTeamId(null);
+      setSubscriberCount(0);
+      setOrigSubEnabled(false);
     }
   }, [open, editingId]);
 
@@ -205,8 +235,28 @@ export default function TaskEditor({
       if (s.source_sql !== (p.enum_sql || "")) continue;
       enum_samples[p.name] = s;
     }
+    // 订阅计划:表单上的 sub_* 字段收拢成一个 subscription 对象,不把散字段发给后端
+    const { sub_enabled, sub_freq, sub_weekdays, sub_monthdays, sub_time, ...rest } = v;
+    const subscription = {
+      enabled: !!sub_enabled,
+      freq: sub_freq || "daily",
+      days:
+        sub_freq === "weekly"
+          ? sub_weekdays || []
+          : sub_freq === "monthly"
+            ? sub_monthdays || []
+            : [],
+      at_time: sub_time ? sub_time.format("HH:mm") : "09:00",
+    };
+    if (subscription.enabled && subscription.freq !== "daily" && !subscription.days.length) {
+      message.warning(
+        subscription.freq === "weekly" ? "请为订阅计划选择每周几运行" : "请为订阅计划选择每月几号运行"
+      );
+      throw new Error("subscription-days-required");
+    }
     return {
-      ...v,
+      ...rest,
+      subscription,
       enum_samples,
       // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
       params: (v.params || []).map((p: any) => {
@@ -434,23 +484,39 @@ export default function TaskEditor({
       onCancel={onClose}
       width={880}
       styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
-      footer={[
-        // 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
-        // 「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
-        // 但这句承诺只在**取数身份**这一维上成立:试跑还有一道 180 秒的前台上限
-        // (template_service.TEST_RUN_TIMEOUT_CEILING_SECONDS),不写出来的话,一个配了 30 分钟
-        // 的任务在试跑里被砍,作者会以为 SQL 不行而去改一条本来没问题的任务。
-        <Typography.Text key="note" type="secondary" style={{ float: "left", fontSize: 12 }}>
-          试跑与业务正式取数使用同一套团队账号 —— 取数身份上试跑通过即代表上线后能跑;
-          但试跑最多只跑 180 秒,长查询以任务自己配的超时为准
-        </Typography.Text>,
-        <Button key="cancel" onClick={onClose}>取消</Button>,
-        <Button key="preview" onClick={doPreviewSql}>SQL预览</Button>,
-        <Button key="test" loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>,
-        <Button key="save" type="primary" loading={saving} onClick={save}>
-          {editingId ? "保存" : "创建"}
-        </Button>,
-      ]}
+      footer={
+        // 说明文字与按钮组各占一栏(flex),而不是把说明 float:left 塞进按钮行 ——
+        // Modal 页脚是 text-align:end 的行内流,浮动元素会挤占行盒、把按钮顶到半空错位。
+        // 两栏后:说明在左侧自己的列宽里折行,按钮永远整齐贴右下角。
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "space-between",
+            gap: 16,
+            textAlign: "left",
+          }}
+        >
+          {/* 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
+              「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
+              但这句承诺只在**取数身份**这一维上成立:试跑还有一道 180 秒的前台上限
+              (template_service.TEST_RUN_TIMEOUT_CEILING_SECONDS),不写出来的话,一个配了 30 分钟
+              的任务在试跑里被砍,作者会以为 SQL 不行而去改一条本来没问题的任务。 */}
+          <Typography.Text type="secondary" style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: "18px" }}>
+            试跑与业务正式取数使用同一套团队账号 —— 取数身份上试跑通过即代表上线后能跑;
+            但试跑最多只跑 180 秒,长查询以任务自己配的超时为准
+          </Typography.Text>
+          {/* flexShrink:0:说明再长也不许压缩按钮组换行 */}
+          <Space style={{ flexShrink: 0 }}>
+            <Button onClick={onClose}>取消</Button>
+            <Button onClick={doPreviewSql}>SQL预览</Button>
+            <Button loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>
+            <Button type="primary" loading={saving} onClick={save}>
+              {editingId ? "保存" : "创建"}
+            </Button>
+          </Space>
+        </div>
+      }
     >
       <Form form={form} layout="vertical">
         <Divider orientation="left" style={{ marginTop: 0 }}>基本信息</Divider>
@@ -552,6 +618,88 @@ export default function TaskEditor({
             </div>
           )}
         </Form.List>
+
+        <Divider orientation="left">订阅与定时运行</Divider>
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          <Space align="center" size={10}>
+            <Form.Item name="sub_enabled" valuePropName="checked" noStyle>
+              {/* 有变量时禁止**开启**;已开启的仍可关闭(那正是解决冲突的出路) */}
+              <Switch disabled={hasParams && !subEnabledWatch} />
+            </Form.Item>
+            <span>允许订阅 —— 平台按计划自动运行,并把结果推送给订阅者</span>
+            {!!editingId && subscriberCount > 0 && (
+              <Tag color="purple">{subscriberCount} 人订阅中</Tag>
+            )}
+          </Space>
+          {hasParams && !subEnabledWatch && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              仅无变量任务可开启订阅:定时运行没有人在场填参,而所有变量运行时必填
+            </Typography.Text>
+          )}
+          {/* 冲突预警:已开订阅又写了 :变量 —— 服务端保存时会拒绝,这里先说清出路 */}
+          {hasParams && subEnabledWatch && (
+            <Alert
+              type="error"
+              showIcon
+              message="已开启订阅的任务不能有变量:请去掉 SQL 里的 :变量,或先关闭订阅再保存"
+            />
+          )}
+          {subEnabledWatch && !hasParams && (
+            <>
+              <Space wrap align="center" size={12}>
+                <Form.Item name="sub_freq" noStyle initialValue="daily">
+                  <Segmented
+                    options={[
+                      { label: "每天", value: "daily" },
+                      { label: "每周", value: "weekly" },
+                      { label: "每月", value: "monthly" },
+                    ]}
+                  />
+                </Form.Item>
+                {subFreqWatch === "weekly" && (
+                  <Form.Item name="sub_weekdays" noStyle>
+                    <Checkbox.Group
+                      options={["一", "二", "三", "四", "五", "六", "日"].map((label, i) => ({
+                        label: `周${label}`,
+                        value: i + 1, // ISO:周一=1 … 周日=7,与后端约定一致
+                      }))}
+                    />
+                  </Form.Item>
+                )}
+                {subFreqWatch === "monthly" && (
+                  <Form.Item name="sub_monthdays" noStyle>
+                    <Select
+                      mode="multiple"
+                      style={{ minWidth: 240 }}
+                      placeholder="选择几号(可多选)"
+                      maxTagCount="responsive"
+                      options={Array.from({ length: 31 }, (_, i) => ({
+                        value: i + 1,
+                        label: `${i + 1}日`,
+                      }))}
+                    />
+                  </Form.Item>
+                )}
+                <Form.Item name="sub_time" noStyle>
+                  <TimePicker format="HH:mm" minuteStep={5} allowClear={false} />
+                </Form.Item>
+              </Space>
+              {subFreqWatch === "monthly" && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  选 29/30/31 号时,遇到没有这一天的月份(如 2 月)自动顺延到当月最后一天运行
+                </Typography.Text>
+              )}
+            </>
+          )}
+          {/* 关闭前的预警:保存即清退全部订阅者并逐一通知,这不是能悄悄发生的事 */}
+          {origSubEnabled && !subEnabledWatch && subscriberCount > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`保存后将关闭订阅,并自动取消 ${subscriberCount} 名订阅者的订阅(平台会通知他们本人)`}
+            />
+          )}
+        </Space>
 
       </Form>
 

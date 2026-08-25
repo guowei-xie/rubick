@@ -28,6 +28,7 @@ from app.services import (
     credential_service,
     enum_cache_service,
     permission_service,
+    subscription_service,
     team_service,
 )
 
@@ -60,6 +61,9 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
     # 任务所属团队登记过该数据源的取数账号吗,一次批量算完(逐个查会 N+1)。
     # 传已加载的行而不是 id —— 团队与数据源都在手上,不必让服务再查一遍
     cred_ready = credential_service.ready_template_ids(db, rows)
+    # 订阅事实:计划行 + (订阅人数, 我订了哪些),固定三次查询
+    schedules = subscription_service.schedules_by_template(db, ids)
+    sub_counts, my_subs = subscription_service.subscription_facts(db, ids, user.id)
     # 各任务最后一次运行时间(含试跑),一次批量聚合,避免 N+1
     last_runs: dict[int, object] = {}
     if ids:
@@ -71,6 +75,8 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
             last_runs[tid] = ts
     out: list[TaskOut] = []
     for t in rows:
+        sched = schedules.get(t.id)
+        sub_on = bool(sched and sched.enabled)
         out.append(
             TaskOut(
                 id=t.id, name=t.name, description=t.description,
@@ -85,6 +91,11 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 can_run=permission_service.can_run(scope, t),
                 credential_ready=t.id in cred_ready,
                 authorized_users=authorized.get(t.id, []),
+                subscribe_enabled=sub_on,
+                schedule_desc=subscription_service.describe_schedule(sched),
+                subscribed=t.id in my_subs,
+                subscriber_count=sub_counts.get(t.id, 0),
+                can_subscribe=sub_on and permission_service.can_subscribe(scope, t),
             )
         )
     return out

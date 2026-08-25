@@ -353,9 +353,12 @@ def _detach_member(db: Session, team_id: int, user_id: int) -> tuple[list[int], 
     remove_from_all_teams(降级清队)都走它,否则日后加一条连带动作要改两处、漏一处。
     不提交,跟随调用方事务。
     """
-    from app.services import permission_service
+    from app.services import permission_service, subscription_service
 
     revoked = permission_service.revoke_edit_for_member(db, team_id=team_id, user_id=user_id)
+    # 订阅同理连带清掉:can_view 一失效推送就已被挡住(fail-closed),但订阅行留着就是
+    # 僵尸 —— 订阅者名单里挂着一个再也收不到推送的人。留痕 member_removed 事件。
+    subscription_service.remove_subscriptions_for_member(db, team_id=team_id, user_id=user_id)
     res = db.execute(
         sa_delete(TeamMember).where(
             TeamMember.team_id == team_id, TeamMember.user_id == user_id

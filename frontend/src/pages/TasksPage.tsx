@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Checkbox, Empty, Modal, Select, Space, Tooltip } from "antd";
+import { Button, Card, Checkbox, Empty, message, Modal, Select, Space, Tooltip } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
-import { archiveTemplate, listTasks, publishTemplate } from "../api";
+import {
+  archiveTemplate,
+  errMsg,
+  listTasks,
+  publishTemplate,
+  subscribeTask,
+  unsubscribeTask,
+} from "../api";
 import { hasTeam, isManager as isManagerRole, isPlatformAdmin, useAuth } from "../auth";
 import TaskEditor from "../components/TaskEditor";
 import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
 import GrantModal from "../components/GrantModal";
+import SubscribersModal from "../components/SubscribersModal";
 import TaskCard, { TaskCardHandlers } from "../components/TaskCard";
 import { TEMPLATE_STATUS } from "../components/StatusTag";
 
@@ -78,6 +86,7 @@ export default function TasksPage() {
   const [runTarget, setRunTarget] = useState<any>(null);
   const [grantTarget, setGrantTarget] = useState<any>(null);
   const [recordsTarget, setRecordsTarget] = useState<any>(null);
+  const [subscribersTarget, setSubscribersTarget] = useState<any>(null);
   const [sp, setSp] = useSearchParams();
   // 状态筛选与搜索词一样走 URL(?status=),刷新/深链可保留,与 ?q= 同一套来源
   const statusFilter = sp.get("status"); // null=全部
@@ -213,6 +222,22 @@ export default function TasksPage() {
     showRecycle,
   });
 
+  // 订阅/退订:成功后重拉列表(subscribed / subscriber_count 都由服务端算,不本地改)
+  const doSubscribeToggle = async (row: any) => {
+    try {
+      if (row.subscribed) {
+        await unsubscribeTask(row.id);
+        message.success(`已退订「${row.name}」`);
+      } else {
+        await subscribeTask(row.id);
+        message.success(`已订阅「${row.name}」,${row.schedule_desc || "按计划"}自动运行后会通知你`);
+      }
+      load();
+    } catch (e: any) {
+      message.error(errMsg(e, row.subscribed ? "退订失败" : "订阅失败"));
+    }
+  };
+
   const handlers: TaskCardHandlers = {
     onRun: setRunTarget,
     onEdit: (r) => setEditorId(r.id),
@@ -220,6 +245,8 @@ export default function TasksPage() {
     onRecords: setRecordsTarget,
     onPublish: doPublish,
     onArchive: doArchive,
+    onSubscribeToggle: doSubscribeToggle,
+    onSubscribers: setSubscribersTarget,
   };
 
   return (
@@ -336,6 +363,11 @@ export default function TasksPage() {
         templateName={grantTarget?.name}
         open={!!grantTarget}
         onClose={() => setGrantTarget(null)}
+      />
+      <SubscribersModal
+        task={subscribersTarget}
+        open={!!subscribersTarget}
+        onClose={() => setSubscribersTarget(null)}
       />
     </Card>
   );

@@ -27,7 +27,14 @@ from app.core.sql_gateway import validate_readonly
 from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED, ACTION_SUBMIT_QUERY
 from app.models.datasource import DataSource
 from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE
-from app.models.query_job import JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS, QueryJob
+from app.models.query_job import (
+    JOB_FAILED,
+    JOB_QUEUED,
+    JOB_RUNNING,
+    JOB_SUCCESS,
+    SOURCE_SUBSCRIBE,
+    QueryJob,
+)
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.models.datasource import ENGINE_HIVE
@@ -124,6 +131,44 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
     if settings.RUN_INLINE:
         execute_job(job.id, ip)
         db.refresh(job)  # 此时已是 success/failed
+    return job
+
+
+def enqueue_scheduled(db: Session, tmpl: SqlTemplate) -> QueryJob:
+    """订阅计划到期的入队 —— enqueue 的无发起人变体,只由 subscription_service.tick 调用。
+
+    跳过 permission_service.can(RUN):调度不是人,「谁能订」已在订阅时按 can_view 把过关,
+    真正的取数身份照旧跟着任务走(团队账号)。其余骨架与 enqueue 一致;job 的 user_id
+    填系统用户(见 models/user.SYSTEM_SCHEDULER_OPEN_ID 的说明,不能填作者)。
+
+    params 非空的任务不该有可用的订阅计划(卡点在 template_service.add_version),
+    这里 fail-closed 再兜一道 —— 与其组一个缺参数的运行让 worker 去失败,不如当场拒绝。
+    """
+    from app.services import subscription_service
+
+    if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
+        raise RubicError("任务未上线,订阅计划不应触发")
+    version = db.get(TemplateVersion, tmpl.published_version_id)
+    if version.params:
+        raise RubicError("任务包含变量,不能定时自动运行,请先关闭订阅")
+    validate_readonly(version.sql_text, tmpl.dialect)
+    # 取数身份探活;缺账号原样上抛,由 tick 走「通知能修的人 + 订阅者简讯」的失败流
+    credential_service.for_template(db, tmpl)
+
+    job = QueryJob(
+        user_id=subscription_service.scheduler_user(db).id,
+        template_id=tmpl.id,
+        template_version_id=version.id,
+        datasource_id=tmpl.datasource_id,
+        params={},
+        status=JOB_QUEUED,
+        source=SOURCE_SUBSCRIBE,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    # 不走 RUN_INLINE:tick 只在 worker 进程里跑,建出的 queued job 由本进程自己的
+    # 认领循环消化;执行与通知照旧走 execute_job → notify_job_done。
     return job
 
 

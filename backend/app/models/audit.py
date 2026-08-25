@@ -59,6 +59,12 @@ ACTION_DATASOURCE_CREATE = "datasource_create"
 ACTION_DATASOURCE_UPDATE = "datasource_update"
 ACTION_DATASOURCE_DELETE = "datasource_delete"
 
+# 任务订阅。auto_unsubscribe 由 worker 在请求之外触发(以系统用户名义记录),
+# 属于「审计埋点在路由层」约定的既定例外(同 run_query)。
+ACTION_TASK_SUBSCRIBE = "task_subscribe"
+ACTION_TASK_UNSUBSCRIBE = "task_unsubscribe"
+ACTION_TASK_AUTO_UNSUBSCRIBE = "task_auto_unsubscribe"
+
 # 团队取数账号(某团队在某数据源上的库身份)。动作码沿用早期名字(语义未变,只是主体
 # 从人变成了团队),密码永不进 detail,只记「哪个团队在哪个源上做了什么」
 ACTION_CREDENTIAL_UPSERT = "credential_upsert"
@@ -93,6 +99,9 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_RESTORE: ("任务从回收站恢复", GROUP_TASK),
     ACTION_TASK_ENUM_REFRESH: ("更新枚举候选值", GROUP_TASK),
     ACTION_TASK_TEAM_TRANSFER: ("转移任务所属团队", GROUP_TASK),
+    ACTION_TASK_SUBSCRIBE: ("订阅任务", GROUP_TASK),
+    ACTION_TASK_UNSUBSCRIBE: ("退订任务", GROUP_TASK),
+    ACTION_TASK_AUTO_UNSUBSCRIBE: ("连续未消费自动退订", GROUP_TASK),
     ACTION_PERMISSION_GRANT: ("授予任务权限", GROUP_PERMISSION),
     ACTION_PERMISSION_REVOKE: ("撤销任务权限", GROUP_PERMISSION),
     ACTION_TASK_EDIT_GRANT: ("授予任务编辑权", GROUP_PERMISSION),

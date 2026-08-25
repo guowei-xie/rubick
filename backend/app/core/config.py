@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     # 另受本机内存约束(每个结果最多 MAX_RESULT_ROWS 行进内存)。
     WORKER_CONCURRENCY: int = 2
 
+    # ---- 任务订阅(定时自动运行)----
+    # 订阅者连续多少个**成功**运行期未查看结果(下载或预览)后,自动取消其订阅并通知本人。
+    # 失败的期不计入(那不是订阅者的问题)。
+    SUBSCRIPTION_MISS_LIMIT: int = 3
+    # worker 扫描到期订阅计划的间隔(秒)。调度精度即由它决定,30 秒对「按分钟配置的
+    # 运行时刻」绰绰有余;调小只是白烧轮询。
+    SCHEDULE_SCAN_INTERVAL_SECONDS: int = 30
+
     # ---- 访问地址 / 端口(可配置)----
     # 后端监听地址与端口(部署脚本据此启动 uvicorn)
     BACKEND_HOST: str = "0.0.0.0"

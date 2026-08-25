@@ -102,8 +102,13 @@ def read_csv_preview(object_key: str, limit: int = 50) -> tuple[list[str], list[
     return head[0], head[1:]
 
 
-def cleanup_expired() -> int:
-    """删除超过保留期的结果文件,返回删除个数。worker 每小时调用一次(启动时也调一次)。"""
+def cleanup_expired(protected_keys: frozenset[str] = frozenset()) -> int:
+    """删除超过保留期的结果文件,返回删除个数。worker 每小时调用一次(启动时也调一次)。
+
+    protected_keys:按 mtime 已到期、但**仍不许删**的 object_key(当前只有一类 ——
+    尚未被下一期取代的订阅结果,见 subscription_service.protected_result_keys)。
+    本模块不 import 模型,保护名单由调用方算好传进来;默认空集,行为与从前一致。
+    """
     base = settings.result_dir_path
     if not base.exists():
         return 0
@@ -112,6 +117,8 @@ def cleanup_expired() -> int:
     for f in base.rglob("*.csv"):
         try:
             if f.stat().st_mtime < cutoff:
+                if protected_keys and f.relative_to(base).as_posix() in protected_keys:
+                    continue
                 f.unlink()
                 removed += 1
         except OSError:

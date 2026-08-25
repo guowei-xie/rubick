@@ -18,6 +18,7 @@ from app.api.routes import (
     notifications,
     permissions,
     query,
+    subscriptions,
     tasks,
     teams,
     templates,
@@ -93,6 +94,7 @@ app.include_router(teams.router, prefix=api)
 app.include_router(credentials.router, prefix=api)
 app.include_router(templates.router, prefix=api)
 app.include_router(tasks.router, prefix=api)
+app.include_router(subscriptions.router, prefix=api)
 app.include_router(query.router, prefix=api)
 app.include_router(permissions.router, prefix=api)
 app.include_router(audit.router, prefix=api)

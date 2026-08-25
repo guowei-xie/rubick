@@ -30,7 +30,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging_setup import get_logger
 from app.models.query_job import JOB_QUEUED, JOB_RUNNING, QueryJob
-from app.services import query_service, result_service
+from app.services import query_service, result_service, subscription_service
 
 log = get_logger("rubick.worker")
 _running = True
@@ -142,12 +142,19 @@ def main() -> None:
     # 那会让重启频繁的机器永远等不到那一小时)
     _maintenance()
     last_cleanup = time.time()
+    # 订阅计划扫描:首轮就扫(0.0),之后每 SCHEDULE_SCAN_INTERVAL_SECONDS 一次。
+    # 调度只存在于本进程 —— API 进程不扫,单进程扫描本身就消除了重复触发
+    # (水位原子推进再兜一道,见 subscription_service.tick)。
+    last_schedule_scan = 0.0
     try:
         while _running:
             if claim_and_submit(pool):
                 continue  # 立刻再试下一个,不睡
 
             now = time.time()
+            if now - last_schedule_scan > settings.SCHEDULE_SCAN_INTERVAL_SECONDS:
+                _scan_schedules()
+                last_schedule_scan = now
             if now - last_cleanup > _CLEANUP_EVERY_SECONDS:
                 _maintenance()
                 last_cleanup = now
@@ -160,11 +167,32 @@ def main() -> None:
     log.info("stopped")
 
 
+def _scan_schedules() -> None:
+    """扫描到期的订阅计划并入队(见 subscription_service.tick)。异常只记日志:
+    调度失败不该让取数 worker 停摆,下一轮扫描天然重试(水位没推进,不会丢期)。"""
+    try:
+        fired = subscription_service.tick()
+    except Exception as e:  # noqa: BLE001
+        log.exception("订阅计划扫描失败:%s", e)
+        return
+    if fired:
+        log.info("订阅计划触发 %d 个定时取数", fired)
+
+
 def _maintenance() -> None:
     """周期性维护:清过期结果文件 + 收孤儿运行记录。启动时先做一次,之后每小时一次。"""
-    removed = result_service.cleanup_expired()
-    if removed:
-        log.info("cleaned %d expired result file(s)", removed)
+    # 尚未被下一期取代的订阅结果不许删(保留到下期,可能远长于常规保留天数)。
+    # 保护名单读不出来时**跳过整轮清理**而不是裸删 —— fail 的方向必须是「多留」,
+    # 误删订阅结果等于把订阅者本期的数据变没了。
+    try:
+        protected = subscription_service.protected_result_keys()
+    except Exception as e:  # noqa: BLE001
+        log.exception("读取受保护的订阅结果清单失败,本轮跳过文件清理:%s", e)
+        protected = None
+    if protected is not None:
+        removed = result_service.cleanup_expired(protected)
+        if removed:
+            log.info("cleaned %d expired result file(s)", removed)
     try:
         n = query_service.reclaim_stale_jobs()
     except Exception as e:  # noqa: BLE001 -- 回收失败不该让 worker 起不来/停不下

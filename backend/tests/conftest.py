@@ -13,7 +13,9 @@ _CFG.write_text(
     "[rubick]\n"
     f"DATABASE_URL = sqlite:///{_TMP}/test.db\n"
     "JWT_SECRET = test-secret\n"
-    "MOCK_AUTH = false\n",
+    "MOCK_AUTH = false\n"
+    # 结果文件也进临时目录:订阅/下载类用例会真的落 CSV,不许写进仓库的 data/results
+    f"RESULT_DIR = {_TMP}/results\n",
     encoding="utf-8",
 )
 os.environ["CONFIG_FILE"] = str(_CFG)
@@ -137,6 +139,56 @@ def user_factory(db):
             db.add(u)
             db.commit()
         return u
+
+    return make
+
+
+@pytest.fixture
+def system_user(db):
+    """订阅定时运行的系统用户。生产由 migrate._ensure_system_scheduler_user 创建,
+    测试库不跑 migrate,这里按同一哨兵 open_id get-or-create(id 取 9990,避开各文件 ID 段)。"""
+    from app.models.user import ROLE_USER, SYSTEM_SCHEDULER_NAME, SYSTEM_SCHEDULER_OPEN_ID
+
+    u = db.scalar(select(User).where(User.feishu_open_id == SYSTEM_SCHEDULER_OPEN_ID))
+    if u is None:
+        u = User(
+            id=9990, feishu_open_id=SYSTEM_SCHEDULER_OPEN_ID,
+            name=SYSTEM_SCHEDULER_NAME, role=ROLE_USER, is_active=False,
+        )
+        db.add(u)
+        db.commit()
+    return u
+
+
+@pytest.fixture
+def subscribed_task_factory(db):
+    """建一个带订阅计划的无参数任务(默认每天 09:00、已上线),可顺手挂订阅者。
+
+    订阅类测试四个文件都要这套「create_template(subscription=…) → publish → subscribe」
+    脚手架,构造方式只写这一份 —— SubscriptionScheduleIn 签名一变只改这里。
+    """
+    from app.schemas.template import SubscriptionScheduleIn, TemplateCreateIn
+    from app.services import subscription_service, template_service
+
+    def make(
+        author, ds, team, name, *,
+        enabled: bool = True, freq: str = "daily", days=(), at_time: str = "09:00",
+        publish: bool = True, subscribers=(),
+    ):
+        tmpl = template_service.create_template(
+            db, author,
+            TemplateCreateIn(
+                name=name, team_id=team.id, datasource_id=ds.id, sql_text="SELECT 1",
+                subscription=SubscriptionScheduleIn(
+                    enabled=enabled, freq=freq, days=list(days), at_time=at_time
+                ),
+            ),
+        )
+        if publish:
+            template_service.publish(db, tmpl, author, None)
+        for u in subscribers:
+            subscription_service.subscribe(db, tmpl, u)
+        return tmpl
 
     return make
 

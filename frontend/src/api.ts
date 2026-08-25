@@ -113,6 +113,38 @@ export const refreshTaskEnumValues = (templateId: number, variable: string) =>
 export const listTasks = () => http.get("/tasks").then((r) => r.data);
 export const taskRunRecords = (id: number) =>
   http.get(`/tasks/${id}/jobs`).then((r) => r.data);
+
+// ---- 任务订阅(定时自动运行)----
+// 订阅计划(daily/weekly/monthly + days + "HH:MM")随任务保存提交(create/updateTemplate
+// 的 payload.subscription),不单独开端点;这里只有订阅关系的自助操作与管理侧查询。
+export interface SubscriberRow {
+  user_id: number;
+  name?: string;
+  avatar?: string;
+  miss_streak: number; // 连续未消费的成功期数
+  created_at?: string; // 订阅时间
+}
+export interface SubscriptionEvent {
+  id: number;
+  user_id: number;
+  user_name?: string;
+  action: string;
+  action_label: string; // 后端译好的中文动作(订阅/退订/自动退订…)
+  operator_id?: number;
+  operator_name?: string;
+  detail?: any;
+  created_at?: string;
+}
+export const subscribeTask = (id: number) =>
+  http.put(`/tasks/${id}/subscription`).then((r) => r.data);
+export const unsubscribeTask = (id: number) =>
+  http.delete(`/tasks/${id}/subscription`).then((r) => r.data);
+export const taskSubscribers = (id: number) =>
+  http
+    .get(`/tasks/${id}/subscribers`)
+    .then((r) => r.data as { threshold: number; items: SubscriberRow[] });
+export const taskSubscriptionEvents = (id: number) =>
+  http.get(`/tasks/${id}/subscription-events`).then((r) => r.data as SubscriptionEvent[]);
 export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((r) => r.data);
 
 // ---- query ----

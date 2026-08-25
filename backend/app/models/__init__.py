@@ -6,6 +6,7 @@ from app.models.datasource import DataSource
 from app.models.notification import Notification
 from app.models.permission import Permission
 from app.models.query_job import QueryJob
+from app.models.subscription import TaskSchedule, TaskSubscription, TaskSubscriptionEvent
 from app.models.team import Team, TeamMember
 from app.models.template import SqlTemplate, TemplateEnumValues, TemplateVersion
 from app.models.user import User
@@ -23,4 +24,7 @@ __all__ = [
     "QueryJob",
     "AuditLog",
     "DownloadEvent",
+    "TaskSchedule",
+    "TaskSubscription",
+    "TaskSubscriptionEvent",
 ]

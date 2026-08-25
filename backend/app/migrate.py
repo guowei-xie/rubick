@@ -18,7 +18,14 @@ import app.models  # noqa: F401  注册所有模型
 from app.core.database import Base, engine, tbl
 from app.models.team import DEFAULT_TEAM_NAME, Team, TeamMember
 from app.models.template import SqlTemplate, TemplateVersion
-from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User
+from app.models.user import (
+    ROLE_ADMIN,
+    ROLE_DEVELOPER,
+    ROLE_USER,
+    SYSTEM_SCHEDULER_NAME,
+    SYSTEM_SCHEDULER_OPEN_ID,
+    User,
+)
 from app.reencrypt_secrets import main as reencrypt_secrets
 
 
@@ -417,6 +424,29 @@ def _assert_every_template_has_team() -> None:
     print("[migrate] 任务归属体检通过:每个任务都有所属团队")
 
 
+def _ensure_system_scheduler_user() -> None:
+    """幂等创建订阅定时运行的系统用户(见 models/user.py 的常量说明)。
+
+    is_active=False:它只作为订阅 job 的 user_id 出现在运行记录里,永远登录不进来。
+    按哨兵 open_id 判存在 —— open_id 是用户表的 upsert 主键,任何登录路径都撞不上它。
+    """
+    with Session(engine) as db:
+        exists = db.scalar(select(User.id).where(User.feishu_open_id == SYSTEM_SCHEDULER_OPEN_ID))
+        if exists:
+            print("[migrate] 系统用户(定时运行)已存在,跳过")
+            return
+        db.add(
+            User(
+                feishu_open_id=SYSTEM_SCHEDULER_OPEN_ID,
+                name=SYSTEM_SCHEDULER_NAME,
+                role=ROLE_USER,
+                is_active=False,
+            )
+        )
+        db.commit()
+    print("[migrate] 已创建系统用户(定时运行)")
+
+
 def main() -> None:
     print("[migrate] create_all on", engine.url)
     # 建缺失的表(如新表)。共享枚举候选值表 template_enum_values,以及团队三张表
@@ -435,6 +465,10 @@ def main() -> None:
     # 增量列:本次取数实际使用的库身份(= 任务所属团队的团队账号),存量行留空
     _ensure_column(tbl("query_jobs"), "run_as_team_id", "BIGINT")
     _ensure_column(tbl("query_jobs"), "run_as_username", "VARCHAR(128)")
+    # 增量列:订阅运行的结果被下一期成功结果取代的时刻(驱动订阅结果保留期);
+    # 非订阅行恒为空。订阅三张表 task_schedules / task_subscriptions /
+    # task_subscription_events 由上面的 create_all 建出,无增量列。
+    _ensure_column(tbl("query_jobs"), "superseded_at", "DATETIME")
     # 增量列 + 索引:任务所属团队(可见性边界 + 取数身份来源)。
     # 只能加**可空**列(_ensure_column 的固有限制;补 NOT NULL 需 MySQL MODIFY / SQLite 重建表,
     # 既测不到又会挡住代码回滚)——「恒有值」靠下面的回填 + 体检 + 应用层必填三处保证。
@@ -465,6 +499,9 @@ def main() -> None:
     # 个人取数账号已被团队账号取代。线上从未有过这张表(该功能未曾发布),故对线上是 no-op;
     # 这一步是为了清掉本地开发库里已经建出来的那张表。
     _drop_table(tbl("user_datasource_credentials"))
+
+    # 订阅定时运行的系统身份(幂等)
+    _ensure_system_scheduler_user()
 
     print("[migrate] 完成。")
 

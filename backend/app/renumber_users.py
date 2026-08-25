@@ -38,11 +38,15 @@ NUMERIC_REFS: list[tuple[str, str]] = [
     ("notifications", "user_id"),
     ("permissions", "granted_by"),
     ("team_members", "user_id"),        # 真实外键(团队成员)
+    ("task_subscriptions", "user_id"),  # 真实外键(任务订阅者)
     # 软引用(无外键)
     ("teams", "created_by"),                          # 建团队的平台管理员
     ("team_members", "added_by"),                      # 谁把该成员加进来的
     ("team_datasource_credentials", "updated_by"),     # 上次改团队账号的人
     ("template_enum_values", "updated_by"),            # 谁触发的那次候选值更新
+    ("task_schedules", "updated_by"),                  # 最后修改订阅计划的人
+    ("task_subscription_events", "user_id"),           # 订阅留痕的当事人
+    ("task_subscription_events", "operator_id"),       # 订阅留痕的触发者
 ]
 
 # permissions.subject_id 是 VARCHAR,存的是 user.id 的字符串,仅 subject_type='user' 且为数字时才是用户引用

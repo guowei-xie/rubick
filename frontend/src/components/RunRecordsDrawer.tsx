@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Button, Drawer, message, Modal, Space, Table, Tag } from "antd";
+import { Button, Drawer, message, Modal, Space, Table } from "antd";
 import { downloadJob, errMsg, previewJob, taskRunRecords, withBase } from "../api";
-import StatusTag, { JOB_STATUS } from "./StatusTag";
+import StatusTag, { JOB_SOURCE, JOB_STATUS } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 
@@ -52,8 +52,7 @@ export default function RunRecordsDrawer({
       title: "类型",
       dataIndex: "source",
       width: 70,
-      render: (s: string) =>
-        s === "test" ? <Tag color="orange">试跑</Tag> : <Tag color="blue">正式</Tag>,
+      render: (s: string) => <StatusTag map={JOB_SOURCE} value={s || "run"} />,
     },
     { title: "运行人", dataIndex: "user_name", width: 100 },
     { title: "时间", dataIndex: "created_at", width: 170 },

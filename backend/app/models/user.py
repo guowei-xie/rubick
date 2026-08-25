@@ -16,6 +16,13 @@ ROLE_USER = "user"          # 普通用户(业务使用者)
 ROLE_ADMIN = "admin"        # 管理员(含 SQL 编写与上线职责)
 ROLE_DEVELOPER = "developer"  # 开发者:只在自己所属团队内取值(见 services/permission_service)
 
+# 订阅定时运行的系统身份(migrate._ensure_system_scheduler_user 幂等创建)。
+# QueryJob.user_id 非空,而定时运行没有发起人 —— 也**不能**填任务作者:
+# can_access_job 有「user_id == 本人」的短路,作者离队后仍会借订阅记录看到结果。
+# is_active=False 保证这个账号永远登录不进来,它只出现在运行记录的「运行人」一栏。
+SYSTEM_SCHEDULER_OPEN_ID = "rubick-system-scheduler"
+SYSTEM_SCHEDULER_NAME = "定时运行"
+
 
 def is_platform_admin(user: "User") -> bool:
     """平台管理员:不受团队约束,可见且可编辑所有团队的所有任务。

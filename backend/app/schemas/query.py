@@ -17,7 +17,7 @@ class JobOut(BaseModel):
     user_name: str | None = None
     params: dict[str, Any] = {}
     status: str
-    source: str = "run"  # run=正式取数,test=试跑
+    source: str = "run"  # run=正式取数,test=试跑,subscribe=订阅定时运行
     row_count: int | None = None
     duration_ms: int | None = None
     error: str | None = None
@@ -76,3 +76,13 @@ class TaskOut(BaseModel):
     # 默认 False:漏算时宁可多一个告警,也不要静默宣称「就绪」
     credential_ready: bool = False
     authorized_users: list[AuthorizedUserOut] = []  # 显式授权可运行的用户(卡片参与者头像)
+    # ---- 订阅(定时自动运行)----
+    subscribe_enabled: bool = False  # 该任务开启了订阅计划
+    # 计划的中文描述(如「每周一、四 09:00」),后端拼好(subscription_service.describe_schedule),
+    # 前端直接展示 —— 频次语义只表述一次
+    schedule_desc: str | None = None
+    subscribed: bool = False  # 当前用户已订阅
+    subscriber_count: int = 0
+    # 当前用户能不能订阅(can_view + 已上线 + 计划开启)。与 can_manage 同一约定:
+    # 前端只消费布尔位,不自己算规则
+    can_subscribe: bool = False

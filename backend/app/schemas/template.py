@@ -1,10 +1,86 @@
 from __future__ import annotations
+import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.schemas.common import ParamDef
+
+_AT_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class SubscriptionScheduleIn(BaseModel):
+    """任务的订阅计划,随任务保存提交(TemplateCreateIn/UpdateIn.subscription)。
+
+    不单独开配置端点:「已开订阅的任务不能有变量」是计划与参数**同一次保存内**的事务性
+    约束(卡点在 template_service.add_version),拆成两个端点就会出现中间态。
+    enabled=False 时其余字段仍落库(保留上次配置,再开启时不用重填)。
+    """
+
+    enabled: bool = False
+    freq: Literal["daily", "weekly", "monthly"] = "daily"
+    # weekly: ISO 星期几(1=周一 … 7=周日);monthly: 几号(1-31),可多选。
+    # 29/30/31 遇小月顺延到月末最后一天(见 subscription_service.latest_planned_at)
+    days: list[int] = []
+    at_time: str = "09:00"  # "HH:MM",服务器本地时间
+
+    @model_validator(mode="after")
+    def _check(self) -> "SubscriptionScheduleIn":
+        if not _AT_TIME_RE.fullmatch(self.at_time):
+            raise ValueError("运行时刻格式应为 HH:MM(24 小时制)")
+        self.days = sorted(set(self.days))
+        if self.enabled:
+            if self.freq == "weekly" and (
+                not self.days or any(d < 1 or d > 7 for d in self.days)
+            ):
+                raise ValueError("每周计划需在周一~周日(1~7)中至少选一天")
+            if self.freq == "monthly" and (
+                not self.days or any(d < 1 or d > 31 for d in self.days)
+            ):
+                raise ValueError("每月计划需在 1~31 号中至少选一天")
+        return self
+
+
+class SubscriptionScheduleOut(BaseModel):
+    """订阅计划回显(任务详情;编辑器据此回填表单)。"""
+
+    enabled: bool = False
+    freq: str = "daily"
+    days: list[int] = []
+    at_time: str = "09:00"
+
+    class Config:
+        from_attributes = True
+
+
+class SubscriberOut(BaseModel):
+    """订阅者名单一行(开发者/团队管理员视角)。"""
+
+    user_id: int
+    name: str | None = None
+    avatar: str | None = None
+    miss_streak: int = 0  # 连续未消费的成功期数;临近阈值时前端标橙
+    created_at: datetime | None = None  # 订阅时间
+
+
+class SubscribersOut(BaseModel):
+    threshold: int  # 自动退订阈值(settings.SUBSCRIPTION_MISS_LIMIT),前端展示说明用
+    items: list[SubscriberOut] = []
+
+
+class SubscriptionEventOut(BaseModel):
+    """订阅/退订留痕一行。action_label 由后端按 SUB_EVENT_META 译好,前端不维护枚举。"""
+
+    id: int
+    user_id: int
+    user_name: str | None = None
+    action: str
+    action_label: str
+    operator_id: int | None = None
+    operator_name: str | None = None
+    detail: dict | None = None
+    created_at: datetime | None = None
 
 
 class ValueListOut(BaseModel):
@@ -54,6 +130,8 @@ class TemplateCreateIn(BaseModel):
     # 作者测出来的候选值,按变量名归集。**缺省 ≠ 清空**:编辑器每次开窗都清空测试结果,
     # 所以「只改任务名、没重测」发来的就是空 dict,此时必须保留已有的共享候选。
     enum_samples: dict[str, EnumSampleIn] = {}
+    # 订阅计划;None = 本次保存未携带订阅配置,维持库里现状(与 enum_samples 同一「缺省 ≠ 清空」约定)
+    subscription: SubscriptionScheduleIn | None = None
 
 
 class TemplateUpdateIn(BaseModel):
@@ -73,6 +151,8 @@ class TemplateUpdateIn(BaseModel):
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
     # 同 TemplateCreateIn.enum_samples:缺省/空 dict 表示「本次没有新测的候选」,不是「清空」
     enum_samples: dict[str, EnumSampleIn] | None = None
+    # 订阅计划;None = 维持现状。显式 enabled=False 视为「关闭订阅」(清退订阅者并通知)
+    subscription: SubscriptionScheduleIn | None = None
 
 
 class TestRunIn(BaseModel):
@@ -151,3 +231,6 @@ class TemplateOut(BaseModel):
 class TemplateDetailOut(TemplateOut):
     published_version: TemplateVersionOut | None = None
     latest_version: TemplateVersionOut | None = None
+    # 订阅计划回显与在册订阅人数(编辑器回填表单 + 「有订阅者」预警)
+    subscription: SubscriptionScheduleOut | None = None
+    subscriber_count: int = 0

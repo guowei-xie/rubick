@@ -172,6 +172,13 @@ def can_download(scope: TeamScope, tmpl) -> bool:
     return is_insider(scope, tmpl) or tmpl.id in scope.download_ids
 
 
+def can_subscribe(scope: TeamScope, tmpl) -> bool:
+    """能不能订阅这个任务(资格判定;任务是否开启了订阅计划由路由层叠加,那是业务状态
+    不是权限)。口径 = can_view 且已上线:订阅的产出是运行结果,而 can_access_job 对
+    非发起人的判据就是 can_view —— 用同一把尺,订阅者天然下载得到推送给他的结果。"""
+    return tmpl.status == STATUS_PUBLISHED and can_view(scope, tmpl)
+
+
 # ---------------------------------------------------------------- 列表收窄(SQL 谓词)
 
 

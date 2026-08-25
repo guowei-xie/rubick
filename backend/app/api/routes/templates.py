@@ -21,6 +21,7 @@ from app.schemas.template import (
     PreviewSqlIn,
     PreviewSqlOut,
     PublishIn,
+    SubscriptionScheduleOut,
     TemplateCreateIn,
     TemplateDetailOut,
     TemplateOut,
@@ -35,6 +36,7 @@ from app.services import (
     enum_cache_service,
     params_service,
     permission_service,
+    subscription_service,
     template_service,
 )
 
@@ -134,6 +136,11 @@ def get_template(template_id: int, db: Session = Depends(get_db), user: User = D
     if permission_service.is_insider(scope, tmpl):
         latest = template_service.latest_version(db, tmpl.id)
         detail.latest_version = TemplateVersionOut.model_validate(latest) if latest else None
+    # 订阅计划回显 + 在册订阅人数(编辑器回填表单,以及「有订阅者」预警)
+    sched = subscription_service.get_schedule(db, tmpl.id)
+    if sched is not None:
+        detail.subscription = SubscriptionScheduleOut.model_validate(sched)
+    detail.subscriber_count = subscription_service.subscriber_count(db, tmpl.id)
     return detail
 
 

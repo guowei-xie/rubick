@@ -16,9 +16,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.exceptions import CredentialRequiredError
 from app.models.notification import Notification
-from app.models.query_job import JOB_SUCCESS, QueryJob
+from app.models.query_job import JOB_SUCCESS, SOURCE_SUBSCRIBE, QueryJob
 from app.models.template import SqlTemplate
-from app.models.user import User
+from app.models.user import ROLE_ADMIN, User
 from app.services import feishu_service
 
 
@@ -56,26 +56,50 @@ def _push(
     return note
 
 
-def _credential_fixers(db: Session, tmpl: SqlTemplate) -> list[int]:
-    """能修「团队账号未就绪」的人:该团队的团队管理员。
+def _team_fixers(db: Session, tmpl: SqlTemplate, *, include_author: bool = False) -> list[int]:
+    """能对该任务负责的人:团队管理员(include_author 时再加**仍在队的**作者)。
 
-    团队一个管理员都没有(被平台管理员清空过)时**退化为通知全部平台管理员** ——
-    否则这条消息会掉进无人区,业务用户永远等不到有人去配账号。
+    一个都找不到时**退化为通知全部平台管理员** —— 「消息不许掉进无人区」这条兜底
+    只在这里表述一次:否则业务用户/订阅者一直干等,而能修的人毫不知情。
+    两个消费方:缺取数账号(notify_credential_blocked,只要团队管理员 —— 账号由他们维护)
+    与订阅运行失败(notify_subscription_run_failed,作者也要知道 —— SQL 是他写的)。
     """
-    from app.models.user import ROLE_ADMIN, User as UserModel
     from app.services import team_service
 
+    out: list[int] = []
     if tmpl.team_id is not None:
-        admins = team_service.team_admin_ids(db, tmpl.team_id)
-        if admins:
-            return admins
+        out.extend(team_service.team_admin_ids(db, tmpl.team_id))
+        if include_author:
+            author = db.get(User, tmpl.author_id)
+            if author is not None and author.id not in out and team_service.is_member(
+                db, author, tmpl.team_id
+            ):
+                out.append(author.id)
+    if out:
+        return out
     return list(
-        db.scalars(
-            select(UserModel.id).where(
-                UserModel.role == ROLE_ADMIN, UserModel.is_active.is_(True)
-            )
-        )
+        db.scalars(select(User.id).where(User.role == ROLE_ADMIN, User.is_active.is_(True)))
     )
+
+
+def _push_each(
+    db: Session,
+    user_ids: list[int],
+    *,
+    title: str,
+    body: str,
+    level: str,
+    link: str,
+    job_id: int | None,
+    template_id: int,
+) -> None:
+    """同一条通知逐个投递给一批人。订阅类通知全是「一份文案 × N 个收件人」的形状,
+    收在这里,加通知字段时不必改六个循环。"""
+    for uid in user_ids:
+        _push(
+            db, user_id=uid, title=title, body=body, level=level,
+            link=link, job_id=job_id, template_id=template_id,
+        )
 
 
 def notify_credential_blocked(
@@ -92,7 +116,7 @@ def notify_credential_blocked(
     if tmpl is None:
         return
     team_label = f"团队《{tmpl.team_name}》" if tmpl.team_name else "该任务所属团队"
-    for uid in _credential_fixers(db, tmpl):
+    for uid in _team_fixers(db, tmpl):
         if uid == requester_id:
             continue
         _push(
@@ -114,8 +138,19 @@ def notify_credential_blocked(
         )
 
 
-def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) -> Notification:
-    """通知发起人本次运行的结果;error 是失败时的原始异常,用于判断还该通知谁。"""
+def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) -> Notification | None:
+    """通知发起人本次运行的结果;error 是失败时的原始异常,用于判断还该通知谁。
+
+    订阅定时运行(source=subscribe)的收件人完全不同(发起人是系统用户,没人在等它),
+    在入口处整体分派 —— reclaim_stale_jobs 收回的订阅 job 也天然走同一条路。
+    分派后委托给 subscription_service:期结算(清退、盖 superseded_at)是业务状态变更,
+    不住在通知层;本模块只负责收件人与文案。
+    """
+    if job.source == SOURCE_SUBSCRIBE:
+        from app.services import subscription_service
+
+        subscription_service.on_scheduled_run_finished(db, job, error)
+        return None
     tmpl = db.get(SqlTemplate, job.template_id)
     tmpl_name = tmpl.name if tmpl else f"任务#{job.template_id}"
 
@@ -142,3 +177,101 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
     if isinstance(error, CredentialRequiredError):
         notify_credential_blocked(db, tmpl, requester_id=job.user_id, job_id=job.id)
     return note
+
+
+# ---------------------------------------------------------------- 任务订阅(定时运行)
+
+def notify_subscription_run_failed(
+    db: Session,
+    tmpl: SqlTemplate,
+    subscriber_ids: list[int],
+    *,
+    reason: str,
+    job_id: int | None = None,
+) -> None:
+    """订阅定时运行失败:能修的人收详情,订阅者收简讯(两边都要知道,但要说的话不同 ——
+    订阅者修不了配置,给他细节只是徒增困惑)。同一人兼具两个身份时只收详情那条。
+
+    reason 必须是**已脱敏**的文案(job.error 已由 execute_job 脱敏;入队阶段的异常
+    不含库账号)。缺取数账号的「通知能修的人」由调用方另行叠加 notify_credential_blocked,
+    这里不重复 —— 否则团队管理员会为同一件事收到两条。
+    """
+    link = f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}"
+    managers = _team_fixers(db, tmpl, include_author=True)
+    _push_each(
+        db, managers,
+        title="订阅任务定时运行失败",
+        body=f"《{tmpl.name}》按订阅计划自动运行失败:{reason[:200]}。修复前订阅者收不到本期数据。",
+        level="error", link=link, job_id=job_id, template_id=tmpl.id,
+    )
+    _push_each(
+        db, [uid for uid in subscriber_ids if uid not in managers],
+        title="订阅数据本期生成失败",
+        body=f"你订阅的《{tmpl.name}》本期数据生成失败,平台已通知任务负责人处理。",
+        level="error", link=link, job_id=job_id, template_id=tmpl.id,
+    )
+
+
+def notify_subscription_paused(db: Session, tmpl: SqlTemplate, subscriber_ids: list[int]) -> None:
+    """任务下线 → 订阅推送暂停(订阅关系保留,重新上线自动恢复)。"""
+    _push_each(
+        db, subscriber_ids,
+        title="订阅推送已暂停",
+        body=f"《{tmpl.name}》已下线,订阅推送随之暂停;任务重新上线后自动恢复,无需重新订阅。",
+        level="info", link=f"{settings.APP_BASE_URL}/tasks", job_id=None, template_id=tmpl.id,
+    )
+
+
+def notify_subscription_closed(db: Session, tmpl: SqlTemplate, user_ids: list[int]) -> None:
+    """开发者关闭了任务的订阅功能 → 告知被清退的订阅者。"""
+    _push_each(
+        db, user_ids,
+        title="订阅已取消",
+        body=f"《{tmpl.name}》的订阅功能已被开发者关闭,你的订阅随之取消。",
+        level="info", link=f"{settings.APP_BASE_URL}/tasks", job_id=None, template_id=tmpl.id,
+    )
+
+
+def notify_auto_unsubscribed(
+    db: Session, tmpl: SqlTemplate, user_ids: list[int], *, job_id: int | None
+) -> None:
+    """连续未消费被自动清退 → 告知本人(结算本身在 subscription_service.settle_on_success)。"""
+    _push_each(
+        db, user_ids,
+        title="订阅已自动取消",
+        body=(
+            f"你订阅的《{tmpl.name}》已连续 {settings.SUBSCRIPTION_MISS_LIMIT} 期"
+            "未查看数据,为节约取数资源,平台已自动取消订阅;如仍需要,可随时重新订阅。"
+        ),
+        level="info", link=f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}",
+        job_id=job_id, template_id=tmpl.id,
+    )
+
+
+def notify_subscription_ready(db: Session, tmpl: SqlTemplate, job: QueryJob) -> None:
+    """本期订阅数据生成成功 → 通知仍在册且仍 can_view 的订阅者(收件人策略住本模块)。
+
+    权限被撤即不再推送,fail-closed;订阅行留给自动清退或本人退订收拾。
+    调用方(subscription_service.on_scheduled_run_finished)保证**先结算再调这里**,
+    刚被清退的人不会再收到「数据已生成」。
+    """
+    from app.services import permission_service, subscription_service
+
+    ready_ids = []
+    for sub in subscription_service.subscribers_of(db, tmpl.id):
+        user = sub.user  # 订阅行 lazy="joined",用户已随行加载
+        if user is None:
+            continue
+        if not permission_service.can_view(permission_service.team_scope(db, user), tmpl):
+            continue
+        ready_ids.append(user.id)
+    _push_each(
+        db, ready_ids,
+        title="订阅数据已生成",
+        body=(
+            f"你订阅的《{tmpl.name}》本期数据已生成,共 {job.row_count} 行,"
+            "可到该任务的「运行记录」里预览并下载。"
+        ),
+        level="success", link=f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}",
+        job_id=job.id, template_id=tmpl.id,
+    )
