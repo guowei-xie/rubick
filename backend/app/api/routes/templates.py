@@ -82,9 +82,12 @@ def list_templates(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """默认:按可见性(团队 + 显式授权)收窄。mine=true:作者看自己维护的全部任务(含草稿/已下线)。
+    """默认:按可见性(团队 + 显式授权)收窄。mine=true:**按作者维度**取自己名下的全部
+    任务(含草稿/已下线)。
 
     注:前端任务列表走 /tasks(带能力标记);本端点保留给按作者维度取原始模板行的用法。
+    这里的 mine 严格等于「author_id 是我」,与任务列表那个「我开发的」筛选
+    (TaskOut.developed_by_me = 作者**或**被授予编辑权)不是一回事,别互相套用。
     """
     stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
     if mine:

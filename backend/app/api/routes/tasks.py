@@ -88,6 +88,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 updated_at=t.updated_at, last_run_at=last_runs.get(t.id),
                 timeout_seconds=t.timeout_seconds,
                 can_manage=permission_service.can_edit(scope, t),
+                developed_by_me=permission_service.is_author_or_grantee(scope, t),
                 can_run=permission_service.can_run(scope, t),
                 credential_ready=t.id in cred_ready,
                 authorized_users=authorized.get(t.id, []),

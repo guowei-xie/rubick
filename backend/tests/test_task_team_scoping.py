@@ -131,6 +131,33 @@ def test_list_tasks_carries_team_and_can_manage_flags(db, people, teams, task_a)
     assert row(people.other).can_run is True
 
 
+def test_developed_by_me_is_author_or_granted_editor(db, people, task_a):
+    """「我开发的」= 作者 + 被授予编辑权的人。团队管理员/平台管理员能编辑,但那是治理权限,
+    不算「我开发的」—— 否则他们一勾这个筛选就等于没筛。"""
+    def row(actor):
+        return next(r for r in list_tasks(db, actor) if r.id == task_a.id)
+
+    assert row(people.author).developed_by_me is True
+    assert row(people.other).developed_by_me is False    # 同队但没被授权
+    grant_task_editor(task_a.id, EditorIn(user_id=people.other.id), db, people.a_admin, ip=None)
+    assert row(people.other).developed_by_me is True     # 授予编辑权后算「我开发的」
+    assert row(people.a_admin).developed_by_me is False  # 团队管理员:能编辑,但那是治理权限
+    assert row(people.admin).developed_by_me is False    # 平台管理员同理
+
+
+def test_developed_by_me_agrees_with_editor_list_for_admins(db, people, task_a, team_factory):
+    """平台管理员也可能是团队成员、也可能被真授予过编辑权。两个入口(任务列表的
+    developed_by_me 与编辑人名单的 source)必须对同一条授权行给出同一个答案 ——
+    曾经 team_scope 给管理员开「0 查询」快路径,他的 edit_ids 恒空,这里就会自相矛盾。"""
+    team_factory("scope-team-A", [(people.admin, False)])  # 管理员也可以是团队成员
+    grant_task_editor(task_a.id, EditorIn(user_id=people.admin.id), db, people.a_admin, ip=None)
+
+    sources = {e["user_id"]: e["source"] for e in list_task_editors(task_a.id, db, people.author)}
+    assert sources[people.admin.id] == "granted"
+    row = next(r for r in list_tasks(db, people.admin) if r.id == task_a.id)
+    assert row.developed_by_me is True
+
+
 def test_empty_list_for_developer_without_team(db, people, task_a):
     """无团队的开发者什么都看不到 —— 前端据此给出「请联系管理员把你加入团队」的空态。"""
     assert list_tasks(db, people.no_team) == []

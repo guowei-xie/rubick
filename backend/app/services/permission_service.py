@@ -74,8 +74,10 @@ class TeamScope:
     """
 
     user_id: int
-    is_admin: bool                                       # 平台管理员
-    # 以下均给空集默认值:平台管理员全通,一个都用不到,构造时不必逐个传
+    is_admin: bool                                       # 平台管理员;它是**叠加在下列事实之上的放行位**
+    # 以下集合对**所有人**如实填(含平台管理员)。曾经为管理员省掉这两次查询,可 is_admin
+    # 只该表达「他全通」,不该让这些集合对他变成谎话 —— 判定函数放行是因为 is_admin,
+    # 而想知道「他本人被授予过什么」的读者(如 is_author_or_grantee)照样读得到真相
     team_ids: frozenset[int] = frozenset()
     admin_team_ids: frozenset[int] = frozenset()         # ⊆ team_ids
     view_ids: frozenset[int] = frozenset()               # 以下四项都是**显式授权行**命中的任务 id
@@ -85,10 +87,11 @@ class TeamScope:
 
 
 def team_scope(db: Session, user: User) -> TeamScope:
-    """算出该用户的权限视角。固定 2 次查询;平台管理员 0 次(全通,四个集合都用不到)。"""
-    if is_platform_admin(user):
-        return TeamScope(user.id, is_admin=True)
+    """算出该用户的权限视角。固定 2 次查询,**平台管理员也一样**。
 
+    不给管理员开「0 查询」的快路径:省下的两次索引查询换来的是一份对他失真的快照 ——
+    集合空着,读的人分不清「没被授予过」还是「没查」。放行由 is_admin 一位负责就够了。
+    """
     rows = team_service.membership(db, user)
     by_action: dict[str, set[int]] = {}
     for action, rid in db.execute(
@@ -104,7 +107,7 @@ def team_scope(db: Session, user: User) -> TeamScope:
 
     return TeamScope(
         user_id=user.id,
-        is_admin=False,
+        is_admin=is_platform_admin(user),
         team_ids=frozenset(tid for tid, _ in rows),
         admin_team_ids=frozenset(tid for tid, is_admin in rows if is_admin),
         view_ids=frozenset(by_action.get(ACTION_VIEW, ())),
@@ -133,6 +136,17 @@ def can_view(scope: TeamScope, tmpl) -> bool:
     return tmpl.status == STATUS_PUBLISHED and tmpl.id in scope.view_ids
 
 
+def is_author_or_grantee(scope: TeamScope, tmpl) -> bool:
+    """这个人对该任务有**本人的**编辑主张:我建的,或被显式授予了该任务的 edit。
+
+    即 can_edit 阶梯的第 3、4 条(不含平台管理员 / 团队管理员那两条**治理**权限)。
+    与 editors_by_template 的 source 分类同源:author / granted 算,team_admin 不算。
+    刻意不叠「仍在团队内」—— 那是 can_edit 的前提,由它在调用前判完。
+    任务列表的「我开发的」筛选也读这一条(见 TaskOut.developed_by_me)。
+    """
+    return tmpl.author_id == scope.user_id or tmpl.id in scope.edit_ids
+
+
 def can_edit(scope: TeamScope, tmpl) -> bool:
     """可编辑(改 SQL / 上下线 / 对业务方授权)。四条口径,顺序即优先级:
 
@@ -153,7 +167,7 @@ def can_edit(scope: TeamScope, tmpl) -> bool:
         return True
     if tmpl.team_id not in scope.team_ids:
         return False
-    return tmpl.author_id == scope.user_id or tmpl.id in scope.edit_ids
+    return is_author_or_grantee(scope, tmpl)
 
 
 def can_run(scope: TeamScope, tmpl) -> bool:

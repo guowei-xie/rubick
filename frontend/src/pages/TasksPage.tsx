@@ -19,6 +19,9 @@ import SubscribersModal from "../components/SubscribersModal";
 import TaskCard, { TaskCardHandlers } from "../components/TaskCard";
 import { TEMPLATE_STATUS } from "../components/StatusTag";
 
+/** 标题栏里两个筛选勾选框的字重/字号 —— 与状态筛选片一样,是次要信息不抢标题 */
+const FILTER_CHECK_STYLE = { fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" };
+
 /** 顶部可点击的状态筛选小片:点击切换只看该状态,再点或点「总数」清除。 */
 function StatChip({
   n,
@@ -58,25 +61,30 @@ function emptyTextFor({
   noTeamYet,
   teamFilter,
   mineOnly,
+  subOnly,
   showRecycle,
 }: {
   rawQ: string | null;
   noTeamYet: boolean;
   teamFilter: string | null;
   mineOnly: boolean;
+  subOnly: boolean;
   showRecycle: boolean;
 }): string {
+  const where = showRecycle ? "回收站里" : "";
   if (rawQ?.trim()) return `没有匹配「${rawQ}」的任务`;
   if (noTeamYet) return "你还不属于任何团队 —— 请联系平台管理员把你加入团队后才能新建任务";
   if (teamFilter) return "该团队下暂无任务";
-  if (mineOnly) return `${showRecycle ? "回收站里" : ""}没有你创建的任务`;
+  if (mineOnly && subOnly) return `${where}没有既是你开发、又被你订阅的任务`;
+  if (mineOnly) return `${where}没有你开发的任务`;
+  if (subOnly) return `${where}没有你订阅的任务`;
   return showRecycle ? "回收站为空" : "暂无任务";
 }
 
 export default function TasksPage() {
   const { user } = useAuth();
   // 管理者 = 管理员 / 开发者(与后端 permission_service.can_author 同一口径):
-  // 能进编辑器、看回收站、用「只看我的」。注意它**不**回答「能不能动某个任务」——
+  // 能进编辑器、看回收站、用「我开发的」。注意它**不**回答「能不能动某个任务」——
   // 那一律读服务端算好的 task.can_manage,前端不自己算团队规则。
   const isManager = isManagerRole(user);
 
@@ -105,14 +113,20 @@ export default function TasksPage() {
     }
     setSp(sp, { replace: true });
   };
-  // 只看我的(?mine=1):isManager 兜底 —— 普通用户看到的本来就只是授权给自己的任务,手改 URL 也不生效
-  const mineOnly = isManager && sp.get("mine") === "1";
-  const toggleMine = () => {
-    if (mineOnly) sp.delete("mine");
-    else sp.set("mine", "1");
+  // 布尔型 URL 开关(?mine=1 / ?sub=1):勾上写 1,取消删键。与状态/团队筛选同一套约定
+  const toggleFlag = (key: string) => () => {
+    if (sp.get(key) === "1") sp.delete(key);
+    else sp.set(key, "1");
     setSp(sp, { replace: true });
   };
-  // 团队筛选(?team=<id>):与 ?q= / ?status= / ?recycle= / ?mine= 同一套约定,纯客户端过滤。
+  // 我开发的(?mine=1):口径 = 我建的 + 被授予编辑权的,由服务端逐行算好
+  // (task.developed_by_me),前端不自己算。isManager 兜底 —— 普通用户看到的本来就只是
+  // 授权给自己的任务,手改 URL 也不生效
+  const mineOnly = isManager && sp.get("mine") === "1";
+  // 我订阅的(?sub=1):与「我开发的」相互独立,同时勾选即取交集。
+  // **不加 isManager 门槛** —— 普通用户也订阅任务,这个筛选对他们同样有用
+  const subOnly = sp.get("sub") === "1";
+  // 团队筛选(?team=<id>):与 ?q= / ?status= / ?recycle= / ?mine= / ?sub= 同一套约定,纯客户端过滤。
   // 服务端已按团队收窄过一遍,这里只是在「我看得到的那些」里再挑一个团队看。
   const teamFilter = sp.get("team");
   const setTeamFilter = (v: string | null) => {
@@ -159,14 +173,15 @@ export default function TasksPage() {
   // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感)。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
   const q = (sp.get("q") ?? "").trim().toLowerCase();
-  // 「团队筛选」与「只看我的」都先于状态筛选与统计生效:顶部计数与卡片同源,
-  // 筛选后数字不会自相矛盾(这是既有约定,新增的团队筛选必须并进同一层)
+  // 「团队筛选」「我开发的」「我订阅的」都先于状态筛选与统计生效:顶部计数与卡片同源,
+  // 筛选后数字不会自相矛盾(这是既有约定,以后新增的筛选也必须并进同一层)
   const scoped = useMemo(() => {
     let rows = tasks;
     if (teamFilter) rows = rows.filter((t) => String(t.team_id) === teamFilter);
-    if (mineOnly) rows = rows.filter((t) => t.author_id === user?.id);
+    if (mineOnly) rows = rows.filter((t) => t.developed_by_me);
+    if (subOnly) rows = rows.filter((t) => t.subscribed);
     return rows;
-  }, [tasks, teamFilter, mineOnly, user?.id]);
+  }, [tasks, teamFilter, mineOnly, subOnly]);
 
   // 团队下拉只在「看得到的任务跨越多个团队」时才出现 —— 单团队开发者不该被无意义的下拉打扰
   const teamChoices = useMemo(() => {
@@ -219,6 +234,7 @@ export default function TasksPage() {
     noTeamYet,
     teamFilter,
     mineOnly,
+    subOnly,
     showRecycle,
   });
 
@@ -289,14 +305,13 @@ export default function TasksPage() {
             />
           )}
           {isManager && (
-            <Checkbox
-              checked={mineOnly}
-              onChange={toggleMine}
-              style={{ fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" }}
-            >
-              只看我的
+            <Checkbox checked={mineOnly} onChange={toggleFlag("mine")} style={FILTER_CHECK_STYLE}>
+              我开发的
             </Checkbox>
           )}
+          <Checkbox checked={subOnly} onChange={toggleFlag("sub")} style={FILTER_CHECK_STYLE}>
+            我订阅的
+          </Checkbox>
         </Space>
       }
       extra={

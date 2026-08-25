@@ -67,6 +67,9 @@ class TaskOut(BaseModel):
     # 可编辑/授权/下线。四条口径见 permission_service.can_edit(平台管理员 / 该团队的团队管理员 /
     # 仍在团队内的作者 / 被授予该任务编辑权的成员)。前端只消费这个布尔,**不要自己算团队规则**
     can_manage: bool = False
+    # 「我开发的」:我建的,或被授予该任务编辑权的 —— 见 permission_service.is_author_or_grantee
+    # (不含管理员的治理权限,故它 ≠ can_manage)
+    developed_by_me: bool = False
     # 可填参取数(已发布且有运行权限)。注意它只表达「授权够不够」,
     # 跑得起来还要 credential_ready —— 那是别人的配置,不属于本人的权限
     can_run: bool = False
