@@ -10,6 +10,7 @@ config.ini,于是整套测试(含 create_all 与各种写入)直接落到那个�
 """
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -30,7 +31,7 @@ import pytest  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 
 import app.models  # noqa: F401,E402  注册所有模型
-from app.connectors.base import QueryResult  # noqa: E402
+from app.connectors.base import DataSourceConnector  # noqa: E402
 from app.core.database import Base, SessionLocal, engine  # noqa: E402
 
 
@@ -261,6 +262,14 @@ def new_audit_rows(db, since_id: int) -> list[AuditLog]:
     return list(db.scalars(select(AuditLog).where(AuditLog.id > since_id).order_by(AuditLog.id)))
 
 
+def latest_audit(db, action: str) -> AuditLog:
+    """某个动作最新的那条审计行。「取数写了什么审计」几个文件都要问,查法只写一遍。"""
+    db.expire_all()
+    return db.scalars(
+        select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id.desc()).limit(1)
+    ).first()
+
+
 def one_audit_row(db, since_id: int) -> AuditLog:
     """恰好一条新审计行。一次写操作发 N 条会让治理阅读变差,故这条断言本身就是规格。"""
     rows = new_audit_rows(db, since_id)
@@ -311,17 +320,33 @@ def spy_connector(monkeypatch):
     """
 
     def install(
-        *, rows=((1,),), fail: str | None = None, databases: list[str] | None = None
+        *, rows=((1,),), fail: str | None = None, databases: list[str] | None = None,
+        calls: list | None = None,
     ) -> list:
         seen: list = []
         dbs = list(databases or [])  # 局部别名:类体里同名赋值会遮住外层参数
 
-        class FakeConnector:
-            def execute(self, sql, params=None, *, timeout_seconds, max_rows):
+        class FakeConnector(DataSourceConnector):
+            """只假掉「怎么取到行」这一层。
+
+            **刻意继承真基类**:execute()(试跑 / 枚举值走它)、行数截断、duration
+            于是都是应用真正跑的那份代码 —— 自己抄一遍的下场是护栏测的是假的。
+            """
+
+            def __init__(self):
+                super().__init__(config=None)
+
+            @contextmanager
+            def stream(self, sql, params=None, *, timeout_seconds):
                 if fail:
                     raise RuntimeError(fail)
-                return QueryResult(
-                    columns=["c"], rows=[tuple(r) for r in rows], meta={"duration_ms": 1}
+                yield ["c"], iter([tuple(r) for r in rows])
+
+            def execute(self, sql, params=None, *, timeout_seconds, max_rows):
+                if calls is not None:  # 想断言「传下来的是什么」的用例传个列表进来
+                    calls.append({"timeout_seconds": timeout_seconds, "max_rows": max_rows})
+                return super().execute(
+                    sql, params, timeout_seconds=timeout_seconds, max_rows=max_rows
                 )
 
             def test_connection(self):

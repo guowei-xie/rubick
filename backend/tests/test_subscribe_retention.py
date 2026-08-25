@@ -76,7 +76,7 @@ def test_normal_run_retention_is_unchanged(db, owner, ds):
 
 def _old_csv(key: str) -> str:
     """在结果目录里造一个 mtime 早已过期的 CSV,返回 object_key。"""
-    result_service.upload_csv(key, b"c\n1\n")
+    result_service.write_csv(key, ["c"], [(1,)])
     path = result_service.local_path(key)
     stale = time.time() - (settings.RESULT_RETENTION_DAYS + 5) * 86400
     os.utime(path, (stale, stale))
@@ -98,6 +98,24 @@ def test_cleanup_default_behavior_unchanged(db):
     doomed = _old_csv("jobs/ret-plain/x.csv")
     result_service.cleanup_expired()
     assert result_service.exists(doomed) is False
+
+
+def test_cleanup_also_sweeps_half_written_results(db):
+    """写到一半的 .part 也归这里收。
+
+    worker 被 SIGKILL(`deploy.sh update` 每次都可能)就会留下一个,而它谁也用不上 ——
+    清理器不认这个后缀的话,它会在盘上待到永远。用保留期当门槛是刻意的:一个 .part
+    早就是垃圾了,但绝不能删到**正在写**的那一份。
+    """
+    key = _old_csv("jobs/ret-part/x.csv")
+    part = result_service.local_path(key).with_suffix(".csv.part")
+    part.write_bytes(b"half")
+    stale = time.time() - (settings.RESULT_RETENTION_DAYS + 5) * 86400
+    os.utime(part, (stale, stale))
+
+    result_service.cleanup_expired()
+
+    assert not part.exists(), "过期的 .part 必须被清掉"
 
 
 def test_protected_result_keys_mirror_result_expired(db, owner, ds):

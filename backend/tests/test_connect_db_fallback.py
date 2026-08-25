@@ -87,7 +87,12 @@ class _FakeCursor:
         return self._rows
 
     def fetchmany(self, n):
-        return [(1,)]
+        """真游标取空了就返回空批 —— 流式取数靠这个收尾,恒返回一批会让它永远读下去。"""
+        batch, self._rows = self._rows[:n], self._rows[n:]
+        return batch
+
+    def cancel(self):
+        pass
 
     def close(self):
         pass
@@ -203,6 +208,9 @@ class _FakeEngine:
 
 
 class _FakeSAConn:
+    def __init__(self):
+        self.invalidated = False
+
     def __enter__(self):
         return self
 
@@ -213,9 +221,14 @@ class _FakeSAConn:
         return type("R", (), {"fetchall": lambda _s: [(d,) for d in VISIBLE]})()
 
     def execute(self, stmt, params=None):
+        # 取数结果按行迭代(服务端游标),不是 fetchmany 一把抓
         return type("R", (), {
-            "keys": lambda _s: ["c"], "fetchmany": lambda _s, n: [(1,)],
+            "keys": lambda _s: ["c"], "__iter__": lambda _s: iter([(1,)]),
         })()
+
+    def invalidate(self):
+        """没取完的连接会被丢弃而不是还回池里(见 mysql.stream 的说明)。"""
+        self.invalidated = True
 
 
 def _mysql_error(code: int, msg: str):

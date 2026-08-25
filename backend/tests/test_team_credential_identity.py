@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 
 from app.api.routes.templates import create_template, enum_sql, publish, update_template
 from app.core.exceptions import CredentialRequiredError, PermissionDeniedError
-from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED, AuditLog
+from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED
 from app.models.notification import Notification
 from app.models.query_job import JOB_FAILED, JOB_SUCCESS, SOURCE_TEST, QueryJob
 from app.models.template import SqlTemplate, TemplateVersion
@@ -24,7 +24,7 @@ from app.services import (
     query_service,
     template_service,
 )
-from tests.conftest import assert_never_public
+from tests.conftest import assert_never_public, latest_audit
 
 pytestmark = pytest.mark.usefixtures("clean_credentials")
 
@@ -107,13 +107,6 @@ def _grant_run(db, tmpl, user, granter):
     )
 
 
-def _latest_audit(db, action: str) -> AuditLog:
-    db.expire_all()
-    return db.scalars(
-        select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.id.desc()).limit(1)
-    ).first()
-
-
 # ---------------------------------------------------------------- 正式取数
 
 
@@ -138,7 +131,7 @@ def test_run_uses_the_tasks_team_account(
     assert_never_public(seen)
     # 固化在运行记录上,审计才答得出「这次数据是哪个团队的账号取的」
     assert (job.run_as_team_id, job.run_as_username) == (team_a.id, "teamA_acct")
-    assert _latest_audit(db, ACTION_RUN_QUERY).detail["run_as"] == {
+    assert latest_audit(db, ACTION_RUN_QUERY).detail["run_as"] == {
         "team_id": team_a.id,
         "db_username": "teamA_acct",
     }
@@ -234,7 +227,7 @@ def test_job_error_does_not_leak_the_team_db_username(
     assert "teamA_acct" not in (job.error or ""), "库账号名泄漏给了业务用户"
     assert "***" in job.error
     # 审计保留原文,否则查不出「哪个账号被拒了」
-    assert "teamA_acct" in _latest_audit(db, ACTION_RUN_QUERY_FAILED).detail["error"]
+    assert "teamA_acct" in latest_audit(db, ACTION_RUN_QUERY_FAILED).detail["error"]
 
 
 # ---------------------------------------------------------------- 枚举候选值

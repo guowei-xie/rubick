@@ -5,8 +5,12 @@
 """
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
+from itertools import islice
 from typing import Any
 
 from app.core.logging_setup import get_logger
@@ -18,12 +22,48 @@ log = get_logger(__name__)
 class QueryResult:
     columns: list[str]
     rows: list[tuple]
-    truncated: bool = False  # 是否因 MAX_RESULT_ROWS 被截断
+    # 是否因调用方给的 max_rows 被截断。**max_rows=None(不限)时永远是 False** ——
+    # 取数结果的行数上限(MAX_RESULT_ROWS)已可关闭,见 config 里那一项的说明。
+    truncated: bool = False
     meta: dict = field(default_factory=dict)
 
     @property
     def row_count(self) -> int:
         return len(self.rows)
+
+
+def take_rows(rows: Iterator[Sequence], max_rows: int | None) -> tuple[list[tuple], bool]:
+    """行迭代器 → (最多 max_rows 行, 是否还有更多)。max_rows=None 即全要。
+
+    多探一行来判断「有没有被截断」:这是唯一能把「刚好 max_rows 行」与「超了」分开的办法。
+    转成 tuple 也只在这里做 —— 只有留在内存里的行才需要脱离驱动的行对象,流式落盘的那条
+    路上每行都拷一次纯属白烧(见各引擎 stream 的返回类型)。
+    """
+    if max_rows is None:
+        return [tuple(r) for r in rows], False
+    head = [tuple(r) for r in islice(rows, max_rows + 1)]
+    return head[:max_rows], len(head) > max_rows
+
+
+@contextmanager
+def abandonable(rows: Iterator[Sequence], on_abandon: Callable[[], None]) -> Iterator[Iterator]:
+    """行流 + 「调用方没取完就做这件事」。stream() 契约第 2 条的实现只在这里写一次。
+
+    各引擎只需说清「了断」是什么(丢弃连接 / 取消操作),不必各自再记一遍「取完了没」——
+    那个标志漏写不会报错、不会有测试变红,只会让一个 50 行的试跑安静地把几百万行拖完。
+    """
+    drained = False
+
+    def tracked() -> Iterator:
+        nonlocal drained
+        yield from rows
+        drained = True
+
+    try:
+        yield tracked()
+    finally:
+        if not drained:
+            on_abandon()
 
 
 @dataclass(frozen=True)
@@ -65,15 +105,51 @@ class DataSourceConnector(ABC):
         self.config = config
 
     @abstractmethod
+    def stream(
+        self,
+        sql: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: int,
+    ) -> AbstractContextManager[tuple[list[str], Iterator[Sequence]]]:
+        """执行只读参数化查询,**边取边吐**:实现为 @contextmanager,yield (列名, 行迭代器)。
+
+        params 使用 :name 命名占位符。这是每个引擎唯一要实现的取数入口 —— execute() 是它
+        「全收进内存」的封装,行数上限也只在那一层表达(见 take_rows),各引擎不必各写一遍。
+        行按驱动给的原样吐出(不必转 tuple):要留在内存里的那条路自己会转。
+
+        两条契约:
+
+        1. **连接的生命周期是这个上下文**。行迭代器只在 with 块内有效,退出即关连接;
+        2. **调用方可以提前不取了**(取样、撞上上限)。此时别让剩下的行继续从服务端流过来
+           —— 各引擎按自己的方式了断(取消操作、丢弃连接),这是「只要 50 行的试跑」
+           不该把一个几百万行的结果集拖完的唯一保障。**用 abandonable() 包一层即可**,
+           别自己记「取完了没」。
+        """
+
     def execute(
         self,
         sql: str,
         params: dict[str, Any] | None = None,
         *,
         timeout_seconds: int,
-        max_rows: int,
+        max_rows: int | None,
     ) -> QueryResult:
-        """执行只读参数化查询。params 使用 :name 命名占位符。"""
+        """执行只读参数化查询,结果**全部进内存**。max_rows 必须显式给,None 即不限行数。
+
+        规模已知很小的调用方用它(编辑器试跑取样、枚举值候选)。规模不可控的取数结果
+        走 stream() + result_service.write_csv 直接落盘 —— 那条路的内存占用与行数无关。
+        max_rows 刻意没有默认值:这个入口的默认值只能是「不限」,而那正是要避免的形状。
+        """
+        start = time.perf_counter()
+        with self.stream(sql, params, timeout_seconds=timeout_seconds) as (columns, rows):
+            taken, truncated = take_rows(rows, max_rows)
+        return QueryResult(
+            columns=columns,
+            rows=taken,
+            truncated=truncated,
+            meta={"duration_ms": int((time.perf_counter() - start) * 1000)},
+        )
 
     @abstractmethod
     def test_connection(self) -> list[str]:

@@ -10,10 +10,9 @@ import csv
 import io
 import time
 from collections.abc import Iterator
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
 
-from app.connectors.base import QueryResult
 from app.core.config import settings
 
 
@@ -30,6 +29,10 @@ def _abs_path(object_key: str) -> Path:
 # 而不是为了缓存 —— 内存占用只与这个数字有关,与总行数无关。
 _CSV_CHUNK_ROWS = 500
 
+# 写到一半的结果文件的后缀(写完即改名去掉它)。write_csv 与 cleanup_expired 共用一个常量
+# —— 两处各写一遍字面量的下场是清理器认不出临时文件,而那种漏删是永久的。
+_PART_SUFFIX = ".part"
+
 # UTF-8 BOM 便于 Excel 直接打开中文
 _BOM = b"\xef\xbb\xbf"
 
@@ -37,9 +40,10 @@ _BOM = b"\xef\xbb\xbf"
 def iter_csv_bytes(columns, rows) -> Iterator[bytes]:
     """把列名 + 行迭代器**流式**序列化成 CSV 字节片。
 
-    唯一的 CSV 写法住在这里:to_csv_bytes 只是它的「全收进内存」版本。分成两个入口是因为
-    两类调用方的规模天差地别 —— 取数结果受 MAX_RESULT_ROWS 收口,而审计导出可以有二十万行、
-    每行还带着一段 SQL 原文,那种量级一次性拼装会把整个 API 进程(它同时还托管 SPA)撑爆。
+    唯一的 CSV 写法住在这里,两个出口共用:审计导出直接把它当响应体(见 audit 路由),
+    取数结果由 write_csv 把它写进文件。两边的量级都不可控 —— 取数行数上限已可关闭,
+    审计导出可以有二十万行、每行还带着一段 SQL 原文,而后端是**单进程 uvicorn、
+    同时托管 SPA 与 /api**:一次性拼装把它撑爆不是「导出失败」,是全站 502。
     """
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -56,7 +60,10 @@ def iter_csv_bytes(columns, rows) -> Iterator[bytes]:
 
     n = 0
     for row in rows:
-        writer.writerow(["" if v is None else v for v in row])
+        # 直接把驱动给的行交给 csv:它本来就把 None 写成空字段(与 "" 逐字节相同)。
+        # 这里曾有一句 ["" if v is None else v for v in row] —— 每行多一个列表 + 一遍
+        # 遍历,占 CSV 序列化开销的三成,而行数已经没有上限了。别再加回来。
+        writer.writerow(row)
         n += 1
         if n >= _CSV_CHUNK_ROWS:
             yield flush()
@@ -65,16 +72,41 @@ def iter_csv_bytes(columns, rows) -> Iterator[bytes]:
         yield flush()
 
 
-def to_csv_bytes(result: QueryResult) -> bytes:
-    """整份 CSV 的字节串。行数受 MAX_RESULT_ROWS 收口的取数结果用它;
-    规模不可控的导出走 iter_csv_bytes。"""
-    return b"".join(iter_csv_bytes(result.columns, result.rows))
+def write_csv(object_key: str, columns, rows, *, max_rows: int | None = None) -> tuple[int, bool]:
+    """把列名 + 行迭代器**流式**写成结果文件,返回 (写入行数, 是否因 max_rows 截断)。
 
+    取数结果的落地入口。整条链路(服务端游标 → 这里 → 文件)上都没有「把所有行攒起来」
+    的一步,所以取数进程的内存与结果行数无关 —— 这正是行数上限得以关掉的前提。
+    max_rows=None 即不限;给了正数则写到那么多行为止,并回报「还有更多」。
 
-def upload_csv(object_key: str, data: bytes) -> None:
+    先写 .part 再改名:中途失败(引擎报错、超时、进程被打断)时留下的是一个不会被误当成
+    结果的临时文件,而不是一份看着正常、实际只有前半截的 CSV。**进程被 SIGKILL 时连
+    unlink 都来不及**,所以 cleanup_expired 也认这个后缀 —— 别让它们在盘上待到永远。
+    """
     path = _abs_path(object_key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    tmp = path.with_name(path.name + _PART_SUFFIX)
+    written = 0
+    truncated = False
+
+    def counted() -> Iterator:
+        nonlocal written, truncated
+        for row in rows:
+            if max_rows is not None and written >= max_rows:
+                truncated = True
+                return
+            written += 1
+            yield row
+
+    try:
+        with tmp.open("wb") as fp:
+            for chunk in iter_csv_bytes(columns, counted()):
+                fp.write(chunk)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return written, truncated
 
 
 def exists(object_key: str) -> bool:
@@ -108,13 +140,17 @@ def cleanup_expired(protected_keys: frozenset[str] = frozenset()) -> int:
     protected_keys:按 mtime 已到期、但**仍不许删**的 object_key(当前只有一类 ——
     尚未被下一期取代的订阅结果,见 subscription_service.protected_result_keys)。
     本模块不 import 模型,保护名单由调用方算好传进来;默认空集,行为与从前一致。
+
+    **写到一半的 .part 也归这里收**(见 write_csv):worker 被 SIGKILL 就会留下一个,
+    而 `deploy.sh update` 每次都可能这么杀。它们同样按保留期删 —— 一个 .part 早就是垃圾了,
+    但拿保留期当门槛能保证绝不会删到**正在写**的那一份,那才是不能出错的一边。
     """
     base = settings.result_dir_path
     if not base.exists():
         return 0
     cutoff = time.time() - settings.RESULT_RETENTION_DAYS * 86400
     removed = 0
-    for f in base.rglob("*.csv"):
+    for f in chain(base.rglob("*.csv"), base.rglob(f"*.csv{_PART_SUFFIX}")):
         try:
             if f.stat().st_mtime < cutoff:
                 if protected_keys and f.relative_to(base).as_posix() in protected_keys:

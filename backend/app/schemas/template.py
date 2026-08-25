@@ -170,7 +170,8 @@ class TestRunIn(BaseModel):
     params: list[ParamDef] = []
     values: dict[str, Any] = {}
     # 试跑取样行数。默认与前端编辑器实际发的值、以及两份手册写的「最多取 50 行」对齐 ——
-    # 这里曾默认 100,全靠前端显式传 50 才没走样。上限仍受 MAX_RESULT_ROWS 收口。
+    # 这里曾默认 100,全靠前端显式传 50 才没走样。配了 MAX_RESULT_ROWS 时不越过它
+    # (默认不限,那就按这里的数取;见 template_service.test_run)。
     limit: int = 50
     # 关联到某个已存在任务时,试跑会落一条 source=test 的运行记录;新建未保存任务时为空,不留痕
     template_id: int | None = None

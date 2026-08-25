@@ -9,6 +9,7 @@ RUN_INLINE=true 时 execute_job 在请求内同步执行(无需 worker,便于本
 """
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 from sqlalchemy import func, select
@@ -206,18 +207,23 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             job.executed_sql = params_service.render_sql(sql_text, bound)
             db.commit()
             connector = get_connector(ds, credential)
-            res = connector.execute(
-                sql_text, bound,
-                timeout_seconds=effective_timeout(tmpl, ds),
-                max_rows=settings.MAX_RESULT_ROWS,
-            )
             filename = f"{tmpl.name}_{job.id}.csv"
             object_key = f"jobs/{job.id}/{filename}"
-            result_service.upload_csv(object_key, result_service.to_csv_bytes(res))
+            # 边取边写盘:结果行数不再有平台上限(见 settings.MAX_RESULT_ROWS 的说明),
+            # 所以这条链路上不能有「先把所有行收进内存」的一步。duration 由这里计时 ——
+            # 它现在盖住的是「提交查询到结果落盘」整段,连接器不再自己报时长。
+            start = time.perf_counter()
+            with connector.stream(
+                sql_text, bound, timeout_seconds=effective_timeout(tmpl, ds)
+            ) as (columns, rows):
+                row_count, truncated = result_service.write_csv(
+                    object_key, columns, rows, max_rows=settings.result_row_cap
+                )
+            duration_ms = int((time.perf_counter() - start) * 1000)
 
             job.status = JOB_SUCCESS
-            job.row_count = res.row_count
-            job.duration_ms = res.meta.get("duration_ms")
+            job.row_count = row_count
+            job.duration_ms = duration_ms
             job.result_object_key = object_key
             job.result_filename = filename
             db.commit()
@@ -226,8 +232,10 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
                 db, user=user, action=ACTION_RUN_QUERY, resource_type=RESOURCE_TEMPLATE,
                 resource_id=tmpl.id,
                 detail={"template_version_id": version.id, "datasource": ds.name,
-                        "params": job.params, "row_count": res.row_count,
-                        "truncated": res.truncated, "executed_sql": (job.executed_sql or "")[:20000],
+                        "params": job.params, "row_count": row_count,
+                        # 只有配了 MAX_RESULT_ROWS 才可能为 true(那一项的说明里讲了
+                        # 这条记录为什么重要),不限行数时恒 false。
+                        "truncated": truncated, "executed_sql": (job.executed_sql or "")[:20000],
                         # 用哪个团队的库账号取的数 —— 按团队隔离数据权限后,这是审计的关键一列
                         **_run_as_detail(job)},
                 ip=ip,

@@ -10,15 +10,16 @@ Engine(连接池)按「连接身份」缓存复用,详见 _get_engine。
 from __future__ import annotations
 
 import hashlib
-import time
 from collections import OrderedDict
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import NullPool
 
-from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
+from app.connectors.base import ConnectionConfig, DataSourceConnector, abandonable
 
 # 按连接身份缓存 Engine,复用连接池;否则每次取数都新建池、每查都付一次 TCP+鉴权握手。
 #
@@ -36,6 +37,9 @@ _ENGINE_CACHE_MAX = 64
 _POOL_SIZE = 1
 _POOL_MAX_OVERFLOW = 4
 _POOL_RECYCLE_SECONDS = 1800  # 早于 MySQL 默认 wait_timeout(8h)回收,避免拿到已被服务端关掉的连接
+# 服务端游标一次预读多少行。只影响单次网络往返的批量,不是缓存:内存占用只与这个数有关,
+# 与结果总行数无关。调大省往返、调小省内存,几百行是取数这种低频长查询的合适量级。
+_STREAM_BATCH_ROWS = 500
 
 
 def _get_engine(url: URL, connect_timeout: int):
@@ -116,29 +120,34 @@ class MySQLConnector(DataSourceConnector):
         self.warn_bypassed(database, "不带默认库的连接")
         return conn
 
-    def execute(
+    @contextmanager
+    def stream(
         self,
         sql: str,
         params: dict[str, Any] | None = None,
         *,
         timeout_seconds: int,
-        max_rows: int,
-    ) -> QueryResult:
-        start = time.perf_counter()
+    ) -> Iterator[tuple[list[str], Iterator[Sequence]]]:
+        """边取边吐(契约见基类)。**服务端游标**,内存占用与结果行数无关。
+
+        stream_results=True 让 pymysql 用 SSCursor:行留在服务端,客户端按需取。
+        这不只是「顺手优化」—— 默认的缓冲游标在 execute() 那一刻就把**整个**结果集
+        下载进客户端内存,于是从前那个 10 万行上限压根没保护到内存(截断发生在下载之后),
+        真正的保护只能是这里。
+
+        没读完就 invalidate():把连接还回池里要先关游标,而关一个未读完的 SSCursor 会把
+        剩下的行全从服务端拉过来丢掉 —— 只要 50 行的试跑会因此等一个几百万行的结果集走完。
+        invalidate() 直接丢弃这条物理连接,代价只是下次取数多付一次握手。
+        """
         with self._connect() as conn:
             # 语句级超时(MySQL 8+):单位毫秒
             conn.exec_driver_sql(f"SET SESSION MAX_EXECUTION_TIME={timeout_seconds * 1000}")
-            result = conn.execute(text(sql), params or {})
-            columns = list(result.keys())
-            rows = result.fetchmany(max_rows + 1)
-        truncated = len(rows) > max_rows
-        rows = rows[:max_rows]
-        return QueryResult(
-            columns=columns,
-            rows=[tuple(r) for r in rows],
-            truncated=truncated,
-            meta={"duration_ms": int((time.perf_counter() - start) * 1000)},
-        )
+            stmt = text(sql).execution_options(
+                stream_results=True, max_row_buffer=_STREAM_BATCH_ROWS
+            )
+            result = conn.execute(stmt, params or {})
+            with abandonable(result, conn.invalidate) as rows:
+                yield list(result.keys()), rows
 
     def test_connection(self) -> list[str]:
         """验身份 + 列出账号能访问的库(契约见基类)。刻意不走 _connect —— 那是取数口径。

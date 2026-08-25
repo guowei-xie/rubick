@@ -77,7 +77,7 @@ def _sub_job(db, system_user, task, ds, *, status=JOB_SUCCESS, with_file=False):
     if with_file:
         filename = f"{task.name}_{job.id}.csv"
         key = f"jobs/{job.id}/{filename}"
-        result_service.upload_csv(key, b"\xef\xbb\xbfc\n1\n")
+        result_service.write_csv(key, ["c"], [(1,)])
         job.result_object_key = key
         job.result_filename = filename
         job.row_count = 1

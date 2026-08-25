@@ -18,10 +18,11 @@ from __future__ import annotations
 import contextlib
 import re
 import time
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from app.connectors.base import ConnectionConfig, DataSourceConnector, QueryResult
+from app.connectors.base import ConnectionConfig, DataSourceConnector, abandonable
 
 # 跳过 USE 后这个值用不上,但 pyhive 的构造函数要一个合法库名;给它 default(恒存在),
 # 好让「万一将来 pyhive 改了构造流程、USE 没跳成」时退回从前的行为,而不是报个怪错。
@@ -29,6 +30,10 @@ _NEUTRAL_DATABASE = "default"
 # 列库的超时预算。它只是元数据查询,又卡在一个有人在等的同步请求上,不该按取数的
 # 长超时(Hive 默认 3600s)来等 —— 超了就当「列不出来」,不影响连通性判定。
 _LIST_TIMEOUT_SECONDS = 15
+# 取数时一批向 HiveServer2 要多少行(同时设进 cursor.arraysize,见 stream)。内存峰值只与
+# 这个数有关,与结果总行数无关。刻意等于 pyhive 的默认 1000:调大省往返,但取样类调用
+# (试跑只要 50 行)也会照这个数拉一整批回来,那头的浪费同样是真的。
+_FETCH_BATCH_ROWS = 1000
 
 
 def _hive_error_text(exc: Exception) -> str:
@@ -63,6 +68,12 @@ def _from_info_messages(info_messages) -> str:
         if m:
             return m.group(1).strip()
     return ""
+
+
+def _cancel_quietly(cursor) -> None:
+    """尽力取消一个不再取数的操作。这里在 finally 里跑,报错也没有下一步可做。"""
+    with contextlib.suppress(Exception):
+        cursor.cancel()
 
 
 def _is_permission_denied(text: str) -> bool:
@@ -176,20 +187,20 @@ class HiveConnector(DataSourceConnector):
             self.warn_bypassed(database, "无默认库的会话")
         return conn
 
-    def execute(
+    @contextmanager
+    def stream(
         self,
         sql: str,
         params: dict[str, Any] | None = None,
         *,
         timeout_seconds: int,
-        max_rows: int,
-    ) -> QueryResult:
+    ) -> Iterator[tuple[list[str], Iterator[Sequence]]]:
+        """边取边吐(契约见基类):提交 → 等完成 → 按批取,不把结果攒成一整个列表。"""
         # pyhive 带参数时会对整条 SQL 做 Python % 格式化来注入参数。因此:
         #   - 有参数:先把字面 % 转义为 %%(否则 LIKE '%x%'、date_format('%Y') 会破坏格式化),
         #             再把 :name 占位符转成 pyhive 的 %(name)s,交由驱动参数化绑定;
         #   - 无参数:原样执行(pyhive 不做格式化),字面 % 保持不变。
         params = params or {}
-        start = time.perf_counter()
         conn = self._connect()
         try:
             cursor = conn.cursor()
@@ -206,17 +217,21 @@ class HiveConnector(DataSourceConnector):
                 # 只能在客户端设截止时间并主动 cancel,避免长批处理拖垮数仓(见 QUERY/HIVE 超时治理)。
                 self._await_completion(cursor, timeout_seconds)
                 columns = [d[0] for d in cursor.description]
-                rows = cursor.fetchmany(max_rows + 1)
+            # 一次 Thrift 取多少行由 arraysize 说了算(pyhive 把它当 maxRows 发出去),
+            # fetchmany 的入参只是从那个缓冲里切多少 —— 两个都设成同一个数,这个常量才
+            # 真的是「一批多少行」,内存峰值也才真的只与它有关。
+            cursor.arraysize = _FETCH_BATCH_ROWS
+
+            def batched() -> Iterator[Sequence]:
+                with _readable_errors("取数失败"):
+                    while batch := cursor.fetchmany(_FETCH_BATCH_ROWS):
+                        yield from batch
+
+            # 没取完就 cancel:让数仓别再为这个结果集干活。失败无所谓 —— conn.close() 兜底。
+            with abandonable(batched(), lambda: _cancel_quietly(cursor)) as rows:
+                yield columns, rows
         finally:
             conn.close()
-        truncated = len(rows) > max_rows
-        rows = rows[:max_rows]
-        return QueryResult(
-            columns=columns,
-            rows=[tuple(r) for r in rows],
-            truncated=truncated,
-            meta={"duration_ms": int((time.perf_counter() - start) * 1000)},
-        )
 
     @staticmethod
     def _await_completion(cursor, timeout_seconds: int) -> None:

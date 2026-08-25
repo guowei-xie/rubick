@@ -66,7 +66,18 @@ class Settings(BaseSettings):
     QUERY_TIMEOUT_SECONDS: int = 120
     # Hive 批处理查询默认超时(秒),默认 1 小时——Hive 多为长耗时批处理,不套用上面的即时默认。
     HIVE_QUERY_TIMEOUT_SECONDS: int = 3600
-    MAX_RESULT_ROWS: int = 100_000
+    # 单次取数最多返回多少行。**0 = 不限,这是默认**。
+    #
+    # 从前是 100000,而且是**静默**截断:超出的行被直接丢掉,界面上没有任何标记,业务用户
+    # 唯一的线索是「行数比预期少」—— 一份少了行的报表比一次失败危险得多。它当初还兼着
+    # 「别把进程撑爆」的活,但那份保护是假的:MySQL 的默认游标在 execute 那一刻就把整个
+    # 结果集下载进了内存,截断发生在下载之后。现在取数是服务端游标 → CSV 直接落盘
+    # (见 connectors 的 stream() 与 result_service.write_csv),内存占用与行数无关,
+    # 所以不再需要用行数上限来保护进程,上限也就没有理由默认存在。
+    #
+    # 真要设个上限就填正数(如 500000):行为回到「截断 + 审计记 truncated」,
+    # 而**界面依旧不会提示**,所以填之前先想清楚谁来告诉业务用户「这份不是全部」。
+    MAX_RESULT_ROWS: int = 0
     # 「枚举值获取 SQL」一次最多返回的候选数(超出截断,业务侧仍可手输未列出的值)
     ENUM_VALUE_CAP: int = 1000
     # 业务侧「更新枚举值」的复用窗口(秒):窗口内重复点击直接复用最新结果,不再查库
@@ -81,7 +92,8 @@ class Settings(BaseSettings):
     # 串行的代价是一个 Hive 长任务(默认上限 1 小时)运行期间全平台的取数都排在它后面。
     # 不含编辑器里的「测试运行」—— 那些跑在 API 进程里、不受这个数约束(见 template_service
     # .test_run),所以目标库的连接数要按「这个数 + 同时可能试跑的人数」来备。
-    # 另受本机内存约束(每个结果最多 MAX_RESULT_ROWS 行进内存)。
+    # 内存不再随结果行数增长(取数是流式落盘),但磁盘会:并发跑的大结果同时占着
+    # RESULT_DIR,按「这个数 × 单份结果可能多大 × RESULT_RETENTION_DAYS」估容量。
     WORKER_CONCURRENCY: int = 2
 
     # ---- 任务订阅(定时自动运行)----
@@ -206,6 +218,15 @@ class Settings(BaseSettings):
         """
         path = urlparse(self.APP_BASE_URL).path.strip("/")
         return f"/{path}/" if path else "/"
+
+    @property
+    def result_row_cap(self) -> int | None:
+        """生效的取数行数上限;**None = 不限**(MAX_RESULT_ROWS <= 0)。
+
+        「0 表示不限」这个换算只在这里表述一次:取数链路一律读这个属性,别各自去判 <= 0
+        —— 漏判一处的后果不是报错,而是 min(50, 0) = 0 那种「一行都不给」的静默走样。
+        """
+        return self.MAX_RESULT_ROWS if self.MAX_RESULT_ROWS > 0 else None
 
     @property
     def result_dir_path(self) -> Path:

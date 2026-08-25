@@ -307,7 +307,10 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
         db.refresh(job)
 
     connector = get_connector(ds, credential)
-    limit = min(data.limit, settings.MAX_RESULT_ROWS)
+    # 试跑取样行数:配了行数上限就别越过它,没配(默认不限)就按前端要的取
+    # —— 直接 min(data.limit, MAX_RESULT_ROWS) 会在「不限」时算出 0 行。
+    cap = settings.result_row_cap
+    limit = data.limit if cap is None else min(data.limit, cap)
     # 与正式取数同一个口径,再夹一道前台上限(见 TEST_RUN_TIMEOUT_CEILING_SECONDS)
     task_timeout = query_service.effective_timeout(tmpl, ds)
     timeout = min(task_timeout, TEST_RUN_TIMEOUT_CEILING_SECONDS)
@@ -335,7 +338,9 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
     if job is not None:
         filename = f"{tmpl.name}_{job.id}.csv"
         object_key = f"jobs/{job.id}/{filename}"
-        result_service.upload_csv(object_key, result_service.to_csv_bytes(result))
+        # 试跑结果本来就已经在内存里(取样,最多 data.limit 行),照旧一次写完;
+        # 唯一的 CSV 写法住在 result_service,这里不自己拼字节。
+        result_service.write_csv(object_key, result.columns, result.rows)
         job.status = JOB_SUCCESS
         job.row_count = result.row_count
         job.duration_ms = result.meta.get("duration_ms")

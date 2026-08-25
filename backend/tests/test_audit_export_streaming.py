@@ -15,7 +15,7 @@ import pytest
 from app.api.routes.audit import export_logs
 from app.models.audit import ACTION_EXPORT_AUDIT, AuditLog
 from app.models.user import ROLE_ADMIN
-from app.services import audit_service, result_service
+from app.services import audit_service
 from tests.conftest import max_audit_id, new_audit_rows
 
 # ID 段 9140
@@ -63,12 +63,12 @@ def _drain(resp) -> tuple[str, int]:
     return raw.decode("utf-8-sig"), len(chunks)
 
 
-def test_export_is_streamed_not_materialised(db, exporter, bulk, monkeypatch):
-    """整份内容不许经过 to_csv_bytes —— 那个函数就是「先全拼好再返回」的那条路。"""
-    def explode(*_a, **_k):
-        raise AssertionError("导出仍在走一次性拼装的 to_csv_bytes,没有真的流式化")
+def test_export_is_streamed_not_materialised(db, exporter, bulk):
+    """整份内容不许先在内存里拼好:响应体必须是**多片**吐出来的。
 
-    monkeypatch.setattr(result_service, "to_csv_bytes", explode)
+    「先全拼好再返回」那条路(result_service.to_csv_bytes)已经不存在了 —— 取数结果也改成
+    流式落盘之后它没有调用方,便一并删除。所以这里守的是可观察的事实:分片数 > 1。
+    """
     resp = export_logs(resource_type=MARK, db=db, admin=exporter, ip=None)
     text, n_chunks = _drain(resp)
     assert n_chunks > 1, "只吐了一片 = 还是整份在内存里拼好的"
