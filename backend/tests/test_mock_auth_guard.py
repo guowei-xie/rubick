@@ -29,7 +29,9 @@ REMOTE_DB = "mysql+pymysql://u:p@10.72.96.33:3306/bitest"
     ],
 )
 def test_database_is_local(url: str, is_local: bool):
-    assert Settings(DATABASE_URL=url).DATABASE_IS_LOCAL is is_local
+    # ALLOW_REMOTE_DB 只为让远端 URL 能构造出来(见 test_remote_db_guard):
+    # 这里要验的是 DATABASE_IS_LOCAL 这条判据本身
+    assert Settings(DATABASE_URL=url, ALLOW_REMOTE_DB=True).DATABASE_IS_LOCAL is is_local
 
 
 def test_remote_db_with_mock_auth_refuses_to_start():
@@ -44,13 +46,14 @@ def test_local_db_with_mock_auth_is_fine():
 
 
 def test_remote_db_without_mock_auth_is_fine():
-    """线上就是这个形态:远端库 + 飞书登录。护栏不能挡住它 —— 构造不抛异常即为通过。"""
-    Settings(DATABASE_URL=REMOTE_DB, MOCK_AUTH=False)
+    """线上就是这个形态:远端库 + 飞书登录 + 显式获准连远端库。
+    两道护栏都不能挡住它 —— 构造不抛异常即为通过。"""
+    Settings(DATABASE_URL=REMOTE_DB, MOCK_AUTH=False, ALLOW_REMOTE_DB=True)
 
 
 def test_database_display_hides_password():
     """报错信息会带上库地址,密码必须打码(它会进日志)。"""
-    shown = Settings(DATABASE_URL=REMOTE_DB).database_display
+    shown = Settings(DATABASE_URL=REMOTE_DB, ALLOW_REMOTE_DB=True).database_display
     assert "***" in shown and ":p@" not in shown
     assert "10.72.96.33:3306/bitest" in shown
 

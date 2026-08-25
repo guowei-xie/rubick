@@ -145,7 +145,7 @@ $(tail -n 40 "$LOG_DIR/api.log" 2>/dev/null)"
 
 # /health 是 **API** 的,worker 起没起来它一个字都不说。而 worker 静默不起来的后果同样严重:
 # 排队的取数没人认领、订阅计划不再触发 —— 页面一切正常,谁都不会发现,直到有人问
-# 「我的取数怎么一直在排队」。2026-08-25 新增的 WORKER_ALLOW_REMOTE_DB 护栏更让
+# 「我的取数怎么一直在排队」。2026-08-25 新增的 ALLOW_REMOTE_DB 护栏更让
 # 「worker 起不来」变成一种**配置就能触发**的常态失败,必须有闸门看着。
 worker_gate() {
   local i tries=8 restarts0 restarts1

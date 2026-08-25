@@ -130,11 +130,11 @@ def _handle_stop(*_a) -> None:
 
 
 def main() -> None:
-    # 护栏:连着远端库就必须显式获准(见 config.MAY_EXECUTE_JOBS)。放在最前面 ——
-    # 开发机上起 worker 会替线上认领真实取数,而认领是原子的:抢到就是抢到,
-    # 结果文件写在本机,线上那条运行记录永远只有「成功 N 行」却下载不到。
-    if not settings.MAY_EXECUTE_JOBS:
-        raise SystemExit(settings.remote_executor_refusal("worker"))
+    # 护栏第二层(第一层在 Settings 构造期,见 config._guard_remote_db):挡运行期被改掉的
+    # 开关。worker 是危害最大的那个入口 —— 它替线上**认领**任务,而认领是原子的:
+    # 抢到就是抢到,结果文件写在本机,线上那条运行记录永远只有「成功 N 行」却下载不到。
+    if not settings.DATABASE_ALLOWED:
+        raise SystemExit(settings.remote_db_refusal())
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
     pool = JobPool()

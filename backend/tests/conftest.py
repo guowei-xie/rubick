@@ -1,6 +1,12 @@
 """pytest 全局夹具:用本地临时 SQLite 承载平台元数据库,绝不触碰线上库。
 
-必须在任何 app.* 导入之前设置 CONFIG_FILE(settings 在导入时即缓存)。
+必须在任何 app.* 导入之前设置 CONFIG_FILE(settings 在导入时即缓存)。而「必须」是一句
+约定,不是保证 —— 任何一个先于本文件执行的 app.* 导入都会让 settings 缓存成真实
+config.ini,于是整套测试(含 create_all 与各种写入)直接落到那个库上。所以下面还钉了一道
+硬闸:引擎不是**系统临时目录里的 sqlite**就当场终止整个测试会话。
+
+这道闸尤其挡一种「配置全对」的翻车:在**线上机器**上跑 pytest。那里的 config.ini 指向线上库,
+且按部署要求打开了 ALLOW_REMOTE_DB —— 应用层护栏会放行(它本该放行),只有这道闸拦得住。
 """
 import os
 import tempfile
@@ -26,6 +32,33 @@ from sqlalchemy import func, select  # noqa: E402
 import app.models  # noqa: F401,E402  注册所有模型
 from app.connectors.base import QueryResult  # noqa: E402
 from app.core.database import Base, SessionLocal, engine  # noqa: E402
+
+
+def _refuse_foreign_test_db() -> None:
+    """测试库必须是系统临时目录里的 sqlite,否则终止整个会话。
+
+    只报错不够 —— 必须**在任何用例跑起来之前**停下:第一个动作 create_all 就已经在
+    往那个库里建表了。pytest.exit 在 conftest 导入期即中止收集,是唯一足够早的出口。
+
+    判据用「系统临时目录」而不是本模块这次的 _TMP:一次会话里 conftest 可能被重复导入
+    (有用例会 reload app.* / 清 sys.modules),每次都新建一个 _TMP,而 engine 早已绑定在
+    最先那个上 —— 拿 _TMP 比对会把正常运行判成违规。
+    """
+    url = engine.url
+    if url.get_backend_name() != "sqlite" or not str(url.database or "").startswith(
+        tempfile.gettempdir()
+    ):
+        pytest.exit(
+            "测试库不是临时 sqlite,已终止:"
+            f"engine={url.render_as_string(hide_password=True)}。"
+            "测试一律用 sqlite 本地库,绝不连线上 —— 多半是某个 app.* 导入早于 "
+            "tests/conftest.py(settings 因此缓存成了真实 config.ini),"
+            "或是在线上机器上直接跑了 pytest。",
+            returncode=2,
+        )
+
+
+_refuse_foreign_test_db()
 from app.models.audit import AuditLog  # noqa: E402
 from app.models.credential import TeamDataSourceCredential  # noqa: E402
 from app.models.datasource import DataSource  # noqa: E402
