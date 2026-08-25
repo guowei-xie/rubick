@@ -21,7 +21,7 @@ export default function SubscribersModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const [threshold, setThreshold] = useState(3);
+  const [threshold, setThreshold] = useState(10);
   const [subs, setSubs] = useState<SubscriberRow[]>([]);
   const [events, setEvents] = useState<SubscriptionEvent[]>([]);
   const [loading, setLoading] = useState(false);

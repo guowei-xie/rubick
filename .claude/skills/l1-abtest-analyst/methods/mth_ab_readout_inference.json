@@ -1,0 +1,5 @@
+{
+  "params_schema": [],
+  "recommended_deps": "scipy>=1.10, numpy>=1.24, pandas>=2.0",
+  "name": "AB实验读数与统计推断规范"
+}

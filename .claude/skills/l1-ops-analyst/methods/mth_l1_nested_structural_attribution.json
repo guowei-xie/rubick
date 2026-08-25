@@ -1,0 +1,5 @@
+{
+  "params_schema": [],
+  "recommended_deps": "pandas>=2.0, numpy>=1.24",
+  "name": "多层嵌套结构归因·逐层拆内率闭合"
+}

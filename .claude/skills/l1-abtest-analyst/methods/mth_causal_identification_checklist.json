@@ -1,0 +1,5 @@
+{
+  "params_schema": [],
+  "recommended_deps": "statsmodels>=0.14, pandas>=2.0, numpy>=1.24",
+  "name": "因果识别清单与偏差排查"
+}

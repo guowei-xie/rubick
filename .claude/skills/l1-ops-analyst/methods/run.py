@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""本地 invoker：以 `python3 run.py <method_id> '<params_json>'` 形式执行 role-pack 下发的方法脚本。
+
+每个 role 的 skill 目录被 bootstrap 物化成：
+
+    <skill_dir>/methods/
+    ├── run.py                  # 本文件副本
+    ├── <method_id>.py.tpl      # 服务端 method.script_example 原文
+    └── <method_id>.json        # {"params_schema":[...], "recommended_deps":"..."}
+
+invoker 做四件事：
+
+1. 读 `<method_id>.json`，对入参做必填 / 多余字段 / 浅类型校验；
+2. 把入参以 `params = json.loads(<safe>)` 形式拼到 `<method_id>.py.tpl` **前面**，
+   形成完整可执行源——脚本作者直接 `params["xxx"]` 取值，无需 argparse；
+3. 写到 `~/.htba-team/cache/.run/<method_id>.<sha8>.py`，subprocess 跑；
+4. 透传 stdout / stderr / exit code；失败时 stderr 首行固定形如
+   `HTBA_METHOD_ERROR <method_id> <kind>`，便于 stop hook / data-collector 抽取。
+
+故意不依赖 stdlib 之外的库；客户端只要有 python3 即可。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# Windows 兼容层（与本模块同目录）
+try:
+    from windows_compat import force_utf8_io  # type: ignore
+except Exception:  # noqa: BLE001
+    def force_utf8_io() -> None:  # type: ignore[no-redef]
+        return
+
+# stderr 首行契约 `HTBA_METHOD_ERROR <method_id> <kind>` 里的 kind 集中在此，
+# 测试与下游 stop-hook 都从这里取，避免散落字面量造成的隐式 API 漂移。
+ERR_PARAMS_JSON = "PARAMS_JSON"
+ERR_PARAMS_MISSING = "PARAMS_MISSING"
+ERR_PARAMS_UNKNOWN = "PARAMS_UNKNOWN"
+ERR_PARAMS_TYPE = "PARAMS_TYPE"
+ERR_SCHEMA_MISSING = "SCHEMA_MISSING"
+ERR_SCHEMA_INVALID = "SCHEMA_INVALID"
+ERR_TEMPLATE_MISSING = "TEMPLATE_MISSING"
+ERR_EXEC_OSERROR = "EXEC_OSERROR"
+
+_EXIT_USAGE = 64
+_EXIT_PARAMS = 65
+_EXIT_NOT_FOUND = 66
+_EXIT_RUNTIME = 67
+
+_RUN_GC_TTL_SECONDS = 7 * 86400  # .run/ 里 7 天前的脚本会被回收
+
+
+def _err(method_id: str, kind: str, msg: str) -> None:
+    sys.stderr.write(f"HTBA_METHOD_ERROR {method_id} {kind}\n")
+    sys.stderr.write(f"{msg}\n")
+
+
+def _load_schema(methods_dir: Path, method_id: str) -> dict:
+    schema_path = methods_dir / f"{method_id}.json"
+    try:
+        return json.loads(schema_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        _err(method_id, ERR_SCHEMA_MISSING, f"未找到 schema 文件: {schema_path}")
+        sys.exit(_EXIT_NOT_FOUND)
+    except json.JSONDecodeError as e:
+        _err(method_id, ERR_SCHEMA_INVALID, f"schema 解析失败: {e}")
+        sys.exit(_EXIT_NOT_FOUND)
+
+
+def _load_template(methods_dir: Path, method_id: str) -> str:
+    tpl_path = methods_dir / f"{method_id}.py.tpl"
+    try:
+        return tpl_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        _err(method_id, ERR_TEMPLATE_MISSING, f"未找到脚本模板: {tpl_path}")
+        sys.exit(_EXIT_NOT_FOUND)
+
+
+_TYPE_MAP: dict[str, tuple[type, ...]] = {
+    "string": (str,),
+    "str": (str,),
+    "int": (int,),
+    "integer": (int,),
+    "number": (int, float),
+    "float": (int, float),
+    "bool": (bool,),
+    "boolean": (bool,),
+    "list": (list,),
+    "array": (list,),
+    "dict": (dict,),
+    "object": (dict,),
+}
+
+
+def _validate_params(
+    method_id: str, params: dict, params_schema: list[dict]
+) -> None:
+    declared = {p.get("name") for p in params_schema if isinstance(p, dict)}
+    declared.discard(None)
+
+    extra = sorted(set(params.keys()) - declared)
+    if extra:
+        _err(
+            method_id,
+            ERR_PARAMS_UNKNOWN,
+            f"params 含未声明字段: {extra}（schema 已声明: {sorted(declared)}）",
+        )
+        sys.exit(_EXIT_PARAMS)
+
+    for spec in params_schema:
+        if not isinstance(spec, dict):
+            continue
+        name = spec.get("name")
+        if not name:
+            continue
+        required = bool(spec.get("required"))
+        if name not in params:
+            if required:
+                _err(method_id, ERR_PARAMS_MISSING, f"缺少必填参数: {name!r}")
+                sys.exit(_EXIT_PARAMS)
+            continue
+        type_label = (spec.get("type") or "").lower()
+        expected = _TYPE_MAP.get(type_label)
+        if expected is None:
+            continue
+        value = params[name]
+        # bool 是 int 子类，但 schema 中 int/number 要排除 bool，避免 True 当 1
+        if isinstance(value, bool) and bool not in expected:
+            _err(
+                method_id,
+                ERR_PARAMS_TYPE,
+                f"参数 {name!r} 类型不符：期望 {type_label}，实际 bool",
+            )
+            sys.exit(_EXIT_PARAMS)
+        if not isinstance(value, expected):
+            _err(
+                method_id,
+                ERR_PARAMS_TYPE,
+                f"参数 {name!r} 类型不符：期望 {type_label}，实际 {type(value).__name__}",
+            )
+            sys.exit(_EXIT_PARAMS)
+
+
+def _compose_source(params: dict, tpl_body: str, method_id: str) -> str:
+    # 双重序列化把 params 注入到生成的 .py 里：先 json.dumps 拿到字符串，再让
+    # repr() 把它包成合法的 Python 字符串字面量，子进程里 json.loads 还原结构。
+    # 比直接 repr(params) 稳：绕开 tuple / set / Path 等非 JSON 类型差异。
+    params_json = json.dumps(params, ensure_ascii=False)
+    header = (
+        "# auto-generated by htba_run_method.py — DO NOT EDIT\n"
+        f"# method_id: {method_id}\n"
+        "import json as _htba_json\n"
+        f"params = _htba_json.loads({params_json!r})\n"
+        "del _htba_json\n"
+        "\n"
+    )
+    return header + tpl_body
+
+
+def _gc_run_dir(run_dir: Path) -> None:
+    cutoff = time.time() - _RUN_GC_TTL_SECONDS
+    try:
+        entries = list(run_dir.iterdir())
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            pass
+
+
+def _run(method_id: str, source: str, run_dir: Path) -> int:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
+    out_path = run_dir / f"{method_id}.{digest}.py"
+    out_path.write_text(source, encoding="utf-8")
+    _gc_run_dir(run_dir)
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(out_path)],
+            check=False,
+        )
+    except OSError as e:
+        _err(method_id, ERR_EXEC_OSERROR, f"启动 python3 失败: {e}")
+        return _EXIT_RUNTIME
+    return proc.returncode
+
+
+def _resolve_methods_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _resolve_run_dir() -> Path:
+    home = os.environ.get("HTBA_HOME") or os.path.expanduser("~/.htba-team")
+    return Path(home) / ".run"
+
+
+def main(argv: list[str] | None = None) -> int:
+    force_utf8_io()
+    parser = argparse.ArgumentParser(
+        prog="run.py",
+        description="Run an htba-team role-pack method script with params.",
+    )
+    parser.add_argument("method_id", help="method code, e.g. cohort_analysis")
+    parser.add_argument(
+        "params_json",
+        nargs="?",
+        default="{}",
+        help="参数 JSON 字符串，例如 '{\"term\":\"2026春\"}'；省略等价于 {}",
+    )
+    args = parser.parse_args(argv)
+
+    method_id: str = args.method_id
+    try:
+        params = json.loads(args.params_json)
+    except json.JSONDecodeError as e:
+        _err(method_id, ERR_PARAMS_JSON, f"params_json 解析失败: {e}")
+        return _EXIT_USAGE
+    if not isinstance(params, dict):
+        _err(method_id, ERR_PARAMS_JSON, "params_json 必须解析为对象（dict）")
+        return _EXIT_USAGE
+
+    methods_dir = _resolve_methods_dir()
+    schema = _load_schema(methods_dir, method_id)
+    params_schema = schema.get("params_schema") or []
+    if not isinstance(params_schema, list):
+        _err(method_id, ERR_SCHEMA_INVALID, "params_schema 字段应为数组")
+        return _EXIT_NOT_FOUND
+
+    _validate_params(method_id, params, params_schema)
+
+    tpl_body = _load_template(methods_dir, method_id)
+    source = _compose_source(params, tpl_body, method_id)
+    return _run(method_id, source, _resolve_run_dir())
+
+
+if __name__ == "__main__":
+    sys.exit(main())
