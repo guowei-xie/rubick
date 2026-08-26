@@ -1,16 +1,22 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
-import {
-  ClockCircleOutlined,
-  MoreOutlined,
-  PlusOutlined,
-  UserOutlined,
-  WarningOutlined,
-} from "@ant-design/icons";
+import { ClockCircleOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
 import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
 import { fmtTime } from "../format";
+import {
+  AuthorizedAvatars,
+  credentialWarnText,
+  GrantButton,
+  runHint,
+  scheduleHint,
+  scheduleLabel,
+  showCredentialWarn,
+  stop,
+  TaskHandlers,
+  taskMenuItems,
+  taskTimeMeta,
+} from "./taskActions";
 
 const fmt = (t: string) => fmtTime(t, false);
-const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 // 数据源 / 团队两个小标签共用:flex 子项 + minWidth:0,两个都长时按内容比例收缩、
 // 各自省略号截断并排一行;只有一个时它能占满整行不被无谓截断。
@@ -29,75 +35,27 @@ const chipStyle: React.CSSProperties = {
   textOverflow: "ellipsis",
 };
 
-export type TaskCardHandlers = {
-  onRun: (r: any) => void;
-  onEdit: (r: any) => void;
-  onGrant: (r: any) => void;
-  onRecords: (r: any) => void;
-  onPublish: (r: any) => void;
-  onArchive: (r: any) => void;
-  onSubscribeToggle: (r: any) => void; // 订阅/退订(按 r.subscribed 二态)
-  onSubscribers: (r: any) => void; // 订阅者名单与订阅记录(can_manage)
-};
-
 export default function TaskCard({
   task: r,
   h,
 }: {
   task: any;
-  h: TaskCardHandlers;
+  h: TaskHandlers;
 }) {
   const users: any[] = r.authorized_users || [];
-  // 卡头时间:最后运行 → 最后编辑 → 创建
-  const timeVal = r.last_run_at || r.updated_at || r.created_at;
-  const timeLabel = r.last_run_at ? "最后运行" : r.updated_at ? "最后编辑" : "创建于";
+  // 卡头时间:最后运行 → 最后编辑 → 创建(口径与列表视图共用,见 taskActions)
+  const { value: timeVal, label: timeLabel } = taskTimeMeta(r);
 
   const meta = TEMPLATE_STATUS[r.status];
 
-  // ⋮ 菜单:运行记录(所有人)+ 管理项(仅 can_manage)
-  // 动作动词三分:已上线→下线、已下线→重新上线、草稿→上线
-  const moreItems: any[] = [
-    { key: "records", label: "运行记录", onClick: () => h.onRecords(r) },
-  ];
-  // 订阅/退订:已订阅的人永远能退订(哪怕任务已下线/权限被撤);未订阅的按服务端
-  // 算好的 can_subscribe 显示 —— 前端不自己算资格规则
-  if (r.subscribed) {
-    moreItems.push({ key: "unsubscribe", label: "退订", onClick: () => h.onSubscribeToggle(r) });
-  } else if (r.can_subscribe) {
-    moreItems.push({ key: "subscribe", label: "订阅本任务", onClick: () => h.onSubscribeToggle(r) });
-  }
-  if (r.can_manage) {
-    moreItems.push(
-      { type: "divider" },
-      { key: "edit", label: "编辑", onClick: () => h.onEdit(r) },
-      r.status === "published"
-        ? { key: "archive", label: "下线", danger: true, onClick: () => h.onArchive(r) }
-        : {
-            key: "publish",
-            label: r.status === "archived" ? "重新上线" : "上线",
-            onClick: () => h.onPublish(r),
-          }
-    );
-    if (r.subscribe_enabled) {
-      moreItems.push({
-        key: "subscribers",
-        label: "订阅者名单",
-        onClick: () => h.onSubscribers(r),
-      });
-    }
-  }
+  // ⋮ 菜单与列表视图共用一份构造,见 taskActions.taskMenuItems
+  const moreItems = taskMenuItems(r, h);
 
   return (
     <div
       className={r.can_run ? "rk-lift" : undefined}
       onClick={() => r.can_run && h.onRun(r)}
-      title={
-        r.can_run
-          ? "点击填参取数"
-          : r.status !== "published"
-            ? "任务未上线,暂不可取数"
-            : "未授权,暂不可取数"
-      }
+      title={runHint(r)}
       style={{
         background: "#fff",
         border: "1px solid #edf0f7",
@@ -141,13 +99,9 @@ export default function TaskCard({
           <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
             <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
           </Tooltip>
-          {/* 所属团队压根没登记该数据源的取数账号 ⇒ 这任务跑不动。只给管得着的人看:
-              业务用户看一堆自己修不了的红字只会造成困扰(他们点运行时会拿到指名团队的报错)。
-              「已配置但没点过测试连接」不在此列 —— 那种账号照样能跑,不该挂告警。 */}
-          {r.can_manage && r.credential_ready === false && (
-            <Tooltip
-              title={`团队${r.team_name ? `《${r.team_name}》` : ""}尚未登记该数据源的取数账号 —— 该任务当前无法运行,请联系团队管理员`}
-            >
+          {/* 挂不挂告警的口径见 taskActions.showCredentialWarn */}
+          {showCredentialWarn(r) && (
+            <Tooltip title={credentialWarnText(r)}>
               <span
                 style={{
                   display: "inline-flex",
@@ -167,8 +121,6 @@ export default function TaskCard({
             </Tooltip>
           )}
         </div>
-        {/* 用 span 包住 Dropdown 并 stopPropagation:菜单项虽 DOM 上在 portal,但在 React 树里仍是本卡子节点,
-            合成事件会冒泡到卡片 onClick(取数),这里拦在卡片之前。 */}
         <span onClick={stop}>
           <Dropdown menu={{ items: moreItems }} trigger={["click"]} placement="bottomRight">
             <Button
@@ -252,14 +204,10 @@ export default function TaskCard({
                     ? { background: "#e9e7fd", color: "var(--brand)", fontWeight: 600 }
                     : {}),
                 }}
-                title={
-                  `定时运行:${r.schedule_desc || ""} · ${r.subscriber_count || 0} 人订阅` +
-                  (r.subscribed ? "(含你)" : "")
-                }
+                title={scheduleHint(r)}
               >
                 <ClockCircleOutlined style={{ marginRight: 4 }} />
-                {r.subscribed ? "已订阅" : r.schedule_desc || "可订阅"}
-                {r.subscriber_count > 0 ? ` · ${r.subscriber_count}` : ""}
+                {scheduleLabel(r)}
               </span>
             )}
           </div>
@@ -294,28 +242,8 @@ export default function TaskCard({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={stop}>
-          {users.length > 0 && (
-            <Avatar.Group max={{ count: 3, style: { background: "#8a90a6", fontSize: 12 } }} size={24}>
-              {users.map((u) => (
-                <Tooltip key={u.id} title={u.name}>
-                  <Avatar size={24} src={u.avatar || undefined}>
-                    {(u.name || "?").slice(0, 1)}
-                  </Avatar>
-                </Tooltip>
-              ))}
-            </Avatar.Group>
-          )}
-          {r.can_manage && (
-            <Tooltip title="授权用户">
-              <Button
-                shape="circle"
-                size="small"
-                icon={<PlusOutlined />}
-                onClick={() => h.onGrant(r)}
-                style={{ borderStyle: "dashed", color: "#8a90a6" }}
-              />
-            </Tooltip>
-          )}
+          {users.length > 0 && <AuthorizedAvatars users={users} />}
+          <GrantButton task={r} h={h} />
         </div>
       </div>
     </div>

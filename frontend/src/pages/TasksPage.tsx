@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Checkbox, Empty, message, Modal, Select, Space, Tooltip } from "antd";
-import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { Button, Card, Checkbox, Empty, message, Modal, Segmented, Select, Space, Tooltip } from "antd";
+import {
+  AppstoreOutlined,
+  DeleteOutlined,
+  PlusOutlined,
+  UnorderedListOutlined,
+} from "@ant-design/icons";
 import {
   archiveTemplate,
   errMsg,
@@ -16,8 +21,17 @@ import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
 import GrantModal from "../components/GrantModal";
 import SubscribersModal from "../components/SubscribersModal";
-import TaskCard, { TaskCardHandlers } from "../components/TaskCard";
+import TaskCard from "../components/TaskCard";
+import TaskTable from "../components/TaskTable";
+import { TaskHandlers } from "../components/taskActions";
 import { TEMPLATE_STATUS } from "../components/StatusTag";
+
+/** 卡片 / 列表两种视图的选择:存本地,不进 URL。
+ *  它是「这个人习惯怎么看」而不是「此刻在看哪一批」—— 筛选与搜索走 ?q= / ?status= 是为了刷新与深链
+ *  可复现某一批任务,视图偏好换台机器本就该各自记,也不该被别人点开你的链接时改掉。
+ *  键名沿用 rubic_ 前缀(与 rubic_token、取数抽屉的运行记录折叠状态同一套)。 */
+const VIEW_KEY = "rubic_tasks_view";
+type ViewMode = "card" | "list";
 
 /** 标题栏里两个筛选勾选框的字重/字号 —— 与状态筛选片一样,是次要信息不抢标题 */
 const FILTER_CHECK_STYLE = { fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" };
@@ -96,6 +110,14 @@ export default function TasksPage() {
   const [recordsTarget, setRecordsTarget] = useState<any>(null);
   const [subscribersTarget, setSubscribersTarget] = useState<any>(null);
   const [sp, setSp] = useSearchParams();
+  // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
+  const [view, setView] = useState<ViewMode>(() =>
+    localStorage.getItem(VIEW_KEY) === "list" ? "list" : "card"
+  );
+  const changeView = (v: ViewMode) => {
+    setView(v);
+    localStorage.setItem(VIEW_KEY, v);
+  };
   // 状态筛选与搜索词一样走 URL(?status=),刷新/深链可保留,与 ?q= 同一套来源
   const statusFilter = sp.get("status"); // null=全部
   const setStatusFilter = (s: string | null) => {
@@ -135,12 +157,12 @@ export default function TasksPage() {
     setSp(sp, { replace: true });
   };
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true);
     listTasks()
       .then(setTasks)
       .finally(() => setLoading(false));
-  };
+  }, []);
   useEffect(load, []);
 
   // 从通知深链进来(/tasks?records=<taskId>):任务加载后打开对应运行记录抽屉,并清掉参数
@@ -153,14 +175,14 @@ export default function TasksPage() {
     setSp(sp, { replace: true });
   }, [tasks]);
 
-  const doArchive = (row: any) =>
+  const doArchive = useCallback((row: any) =>
     Modal.confirm({
       title: `下线任务「${row.name}」?`,
       content: "下线后业务用户将不能再运行该任务。",
       onOk: () => archiveTemplate(row.id).then(load),
-    });
+    }), [load]);
 
-  const doPublish = (row: any) => {
+  const doPublish = useCallback((row: any) => {
     const restore = row.status === "archived"; // 回收站里的下线任务:恢复=重新上线
     Modal.confirm({
       title: `${restore ? "重新上线" : "上线"}任务「${row.name}」?`,
@@ -168,7 +190,7 @@ export default function TasksPage() {
       okText: restore ? "重新上线" : "上线",
       onOk: () => publishTemplate(row.id, restore ? "回收站重新上线" : "任务列表上线").then(load),
     });
-  };
+  }, [load]);
 
   // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感)。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
@@ -239,7 +261,7 @@ export default function TasksPage() {
   });
 
   // 订阅/退订:成功后重拉列表(subscribed / subscriber_count 都由服务端算,不本地改)
-  const doSubscribeToggle = async (row: any) => {
+  const doSubscribeToggle = useCallback(async (row: any) => {
     try {
       if (row.subscribed) {
         await unsubscribeTask(row.id);
@@ -252,18 +274,73 @@ export default function TasksPage() {
     } catch (e: any) {
       message.error(errMsg(e, row.subscribed ? "退订失败" : "订阅失败"));
     }
-  };
+  }, [load]);
 
-  const handlers: TaskCardHandlers = {
-    onRun: setRunTarget,
-    onEdit: (r) => setEditorId(r.id),
-    onGrant: setGrantTarget,
-    onRecords: setRecordsTarget,
-    onPublish: doPublish,
-    onArchive: doArchive,
-    onSubscribeToggle: doSubscribeToggle,
-    onSubscribers: setSubscribersTarget,
-  };
+  // 身份稳定:TaskTable 的列定义与 onRow 都按 h 记忆,h 每次渲染换新的话
+  // 几百行的单元格会跟着白跑一遍(顶栏搜索是逐字符触发渲染的)
+  const handlers: TaskHandlers = useMemo(
+    () => ({
+      onRun: setRunTarget,
+      onEdit: (r) => setEditorId(r.id),
+      onGrant: setGrantTarget,
+      onRecords: setRecordsTarget,
+      onPublish: doPublish,
+      onArchive: doArchive,
+      onSubscribeToggle: doSubscribeToggle,
+      onSubscribers: setSubscribersTarget,
+    }),
+    [doPublish, doArchive, doSubscribeToggle]
+  );
+
+  // 视图切换对所有人可见(普通用户任务少也照样有人偏好列表);回收站与新建仍限管理者。
+  // 图标不能是唯一的信息载体:原生 title 给鼠标、aria-label 给读屏。
+  const extra = (
+    <Space size={8}>
+      <Segmented<ViewMode>
+        size="small"
+        value={view}
+        onChange={changeView}
+        options={[
+          { value: "card", title: "卡片视图", icon: <AppstoreOutlined aria-label="卡片视图" /> },
+          {
+            value: "list",
+            title: "列表视图(信息更密,可点列头排序)",
+            icon: <UnorderedListOutlined aria-label="列表视图" />,
+          },
+        ]}
+      />
+      {isManager && (
+        <>
+          <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
+            <Button
+              shape="circle"
+              icon={<DeleteOutlined />}
+              type={showRecycle ? "primary" : "default"}
+              onClick={toggleRecycle}
+              aria-label="回收站"
+            />
+          </Tooltip>
+          {!showRecycle && (
+            // 需求 4 的 UI 兑现:没有团队就建不了任务(后端 require_can_create_in_team 也会拦)
+            <Tooltip
+              title={
+                noTeamYet ? "你还不属于任何团队,请联系平台管理员把你加入团队后再建任务" : undefined
+              }
+            >
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={noTeamYet}
+                onClick={() => setEditorId(null)}
+              >
+                新建任务
+              </Button>
+            </Tooltip>
+          )}
+        </>
+      )}
+    </Space>
+  );
 
   return (
     <Card
@@ -314,43 +391,14 @@ export default function TasksPage() {
           </Checkbox>
         </Space>
       }
-      extra={
-        isManager && (
-          <Space size={8}>
-            <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
-              <Button
-                shape="circle"
-                icon={<DeleteOutlined />}
-                type={showRecycle ? "primary" : "default"}
-                onClick={toggleRecycle}
-                aria-label="回收站"
-              />
-            </Tooltip>
-            {!showRecycle && (
-              // 需求 4 的 UI 兑现:没有团队就建不了任务(后端 require_can_create_in_team 也会拦)
-              <Tooltip
-                title={
-                  noTeamYet
-                    ? "你还不属于任何团队,请联系平台管理员把你加入团队后再建任务"
-                    : undefined
-                }
-              >
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  disabled={noTeamYet}
-                  onClick={() => setEditorId(null)}
-                >
-                  新建任务
-                </Button>
-              </Tooltip>
-            )}
-          </Space>
-        )
-      }
+      extra={extra}
     >
+      {/* 两种视图消费同一个 filtered:顶部计数、筛选、搜索、空态都只有一份,
+          切视图不会让「数字与内容对不上」。空态两种视图共用,不必各画一遍。 */}
       {filtered.length === 0 ? (
         <Empty style={{ padding: "48px 0" }} description={emptyText} />
+      ) : view === "list" ? (
+        <TaskTable tasks={filtered} h={handlers} />
       ) : (
         <div
           style={{

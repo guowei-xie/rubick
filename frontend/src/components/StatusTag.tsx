@@ -25,6 +25,17 @@ export const TEMPLATE_STATUS: TagMap = {
   archived: { color: "red", label: "已下线", dot: "#ff4d4f", tint: "#fdecec" },
 };
 
+/** 任务状态的**排列次序**:先看能跑的,再看没上线的,最后是回收站里的。
+ *  与标签/配色同住一处 —— 按字母排会得到 archived/draft/published,读起来毫无道理;
+ *  以后新增状态,顺序也只在这里补一次(列表排序、筛选片都读它)。 */
+export const TEMPLATE_STATUS_ORDER = ["published", "draft", "archived"] as const;
+
+/** 未知状态排在最后。 */
+export function templateStatusRank(status: string): number {
+  const i = TEMPLATE_STATUS_ORDER.indexOf(status as (typeof TEMPLATE_STATUS_ORDER)[number]);
+  return i < 0 ? TEMPLATE_STATUS_ORDER.length : i;
+}
+
 export const ROLE: TagMap = {
   user: { color: "default", label: "普通用户" },
   developer: { color: "geekblue", label: "开发者" },
