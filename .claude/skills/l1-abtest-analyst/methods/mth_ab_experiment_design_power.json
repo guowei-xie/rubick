@@ -1,5 +1,0 @@
-{
-  "params_schema": [],
-  "recommended_deps": "scipy>=1.10, numpy>=1.24",
-  "name": "AB实验设计与样本量功效测算"
-}

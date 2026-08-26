@@ -1,5 +1,0 @@
-{
-  "params_schema": [],
-  "recommended_deps": "pandas>=2.0",
-  "name": "过程漏斗连环替代法"
-}

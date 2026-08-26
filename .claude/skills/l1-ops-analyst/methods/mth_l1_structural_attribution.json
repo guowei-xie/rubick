@@ -1,5 +1,0 @@
-{
-  "params_schema": [],
-  "recommended_deps": "pandas>=2.0, numpy>=1.24",
-  "name": "结构归因统一公式"
-}

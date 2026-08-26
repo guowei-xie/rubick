@@ -1,5 +1,0 @@
-{
-  "params_schema": [],
-  "recommended_deps": "pandas>=2.0, numpy>=1.24",
-  "name": "比值型指标贡献分解（人效贡献通法）"
-}
