@@ -21,6 +21,13 @@ dist/
 .vite/
 *.tsbuildinfo
 
+# AI 工具的本机配置与插件缓存(不属于本项目)
+# skills 是 htba-team 平台同步下来的分析师角色包,服务端带版本、与 ~/.claude/skills 重复;
+# settings.local.json 是本机授权记录。日后若有团队级 settings.json 再单独放行。
+.claude/*
+!.claude/settings.json
+.cursor/
+
 # 系统
 .DS_Store
 *.log
