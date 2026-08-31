@@ -48,11 +48,15 @@ export default function TaskEditor({
   open,
   onClose,
   onSaved,
+  readOnly = false,
 }: {
   editingId: number | null;
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
+  /** 只读查看:同一个弹窗、同一份回填,但整表置灰、页脚收成「SQL预览 + 关闭」。
+   *  给的是**团队内部人里没有该任务编辑权的人**(服务端算的 task.can_view_detail)。 */
+  readOnly?: boolean;
 }) {
   const { user } = useAuth();
   const [datasources, setDatasources] = useState<any[]>([]);
@@ -127,9 +131,14 @@ export default function TaskEditor({
 
   useEffect(() => {
     if (!open) return;
+    // 数据源仍要拉:详情接口不带 datasource_name,置灰的下拉也得有选项才显示得出名字。
+    // 另两个只服务于「编辑时的选择」——账号就绪态是选完团队+数据源的当场提示、
+    // 全量团队是平台管理员的转移下拉。只读的人什么都不选,拉了也没人看。
     listDatasources().then(setDatasources);
-    myTeamCredentials().then(setTeamCredentials);
-    if (isPlatformAdmin(user)) listTeams().then(setAllTeams);
+    if (!readOnly) {
+      myTeamCredentials().then(setTeamCredentials);
+      if (isPlatformAdmin(user)) listTeams().then(setAllTeams);
+    }
     setPreview(null);
     setEnumSample({});
     setEnumEnabled({});
@@ -221,6 +230,13 @@ export default function TaskEditor({
 
   // 该变量是否已开启枚举 SQL 配置:会话内勾选态优先,默认从已有 enum_sql 派生(仅 UI 层,取消勾选保存时才丢弃)
   const isEnumOn = (p: any) => enumEnabled[p.name] ?? !!p.enum_sql;
+
+  // 只读态下**文字框**的处理:readOnly 而不是继承 Form 的 disabled。
+  // disabled 的 textarea 在多数浏览器里连选中复制都做不到,而「把 SQL / 说明复制走」正是
+  // 别人点开「查看」的主要目的。disabled:false 压住 Form 下发的 context(antd 取 `自身 ?? context`)。
+  // 选择器(Select / Segmented / Switch / Checkbox / TimePicker)不在此列 —— 它们没有可复制的
+  // 文本,置灰就是对的。整份政策只写这一处,新增文字字段摊上 roText 即可,不必各自再想一遍。
+  const roText = readOnly ? { readOnly: true, disabled: false } : {};
 
   const collect = async () => {
     const v = await form.validateFields();
@@ -400,7 +416,7 @@ export default function TaskEditor({
           <div>
             <div style={{ fontSize: 13, marginBottom: 4 }}>变量说明(业务填参时显示为该字段名与提示)</div>
             <Form.Item {...f} name={[f.name, "label"]} noStyle>
-              <Input placeholder="例如:开始日期(格式 yyyy-mm-dd)" />
+              <Input placeholder="例如:开始日期(格式 yyyy-mm-dd)" {...roText} />
             </Form.Item>
           </div>
 
@@ -428,7 +444,7 @@ export default function TaskEditor({
               </Space>
             ) : (
               <Form.Item {...f} name={[f.name, "test_value"]} noStyle>
-                <Input style={{ maxWidth: 360 }} placeholder="样例值(如 2026-07-01 或 100)" />
+                <Input style={{ maxWidth: 360 }} placeholder="样例值(如 2026-07-01 或 100)" {...roText} />
               </Form.Item>
             )}
           </div>
@@ -460,6 +476,7 @@ export default function TaskEditor({
                     rows={2}
                     style={{ fontFamily: "var(--rk-mono)" }}
                     placeholder="SELECT DISTINCT user_id FROM dim_user ORDER BY 1"
+                    {...roText}
                   />
                 </Form.Item>
                 {sample && (
@@ -477,48 +494,72 @@ export default function TaskEditor({
     };
   }
 
+  // 只读页脚:SQL预览(纯本地渲染,不连库)+ 关闭。刻意不给「测试运行」——
+  // 查看就是查看,不该顺手在别人任务的运行记录里留下一条试跑。
+  const footer = readOnly ? (
+    <Space>
+      <Button onClick={doPreviewSql}>SQL预览</Button>
+      <Button type="primary" onClick={onClose}>关闭</Button>
+    </Space>
+  ) : (
+    // 说明文字与按钮组各占一栏(flex),而不是把说明 float:left 塞进按钮行 ——
+    // Modal 页脚是 text-align:end 的行内流,浮动元素会挤占行盒、把按钮顶到半空错位。
+    // 两栏后:说明在左侧自己的列宽里折行,按钮永远整齐贴右下角。
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "space-between",
+        gap: 16,
+        textAlign: "left",
+      }}
+    >
+      {/* 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
+          「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
+          但这句承诺只在**取数身份**这一维上成立:试跑还有一道 180 秒的前台上限
+          (template_service.TEST_RUN_TIMEOUT_CEILING_SECONDS),不写出来的话,一个配了 30 分钟
+          的任务在试跑里被砍,作者会以为 SQL 不行而去改一条本来没问题的任务。 */}
+      <Typography.Text type="secondary" style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: "18px" }}>
+        试跑与业务正式取数使用同一套团队账号 —— 取数身份上试跑通过即代表上线后能跑;
+        但试跑最多只跑 180 秒,长查询以任务自己配的超时为准
+      </Typography.Text>
+      {/* flexShrink:0:说明再长也不许压缩按钮组换行 */}
+      <Space style={{ flexShrink: 0 }}>
+        <Button onClick={onClose}>取消</Button>
+        <Button onClick={doPreviewSql}>SQL预览</Button>
+        <Button loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>
+        <Button type="primary" loading={saving} onClick={save}>
+          {editingId ? "保存" : "创建"}
+        </Button>
+      </Space>
+    </div>
+  );
+
   return (
     <Modal
-      title={editingId ? "编辑任务" : "新建任务"}
+      title={readOnly ? "任务详情" : editingId ? "编辑任务" : "新建任务"}
       open={open}
       onCancel={onClose}
       width={880}
       styles={{ body: { maxHeight: "72vh", overflowY: "auto" } }}
-      footer={
-        // 说明文字与按钮组各占一栏(flex),而不是把说明 float:left 塞进按钮行 ——
-        // Modal 页脚是 text-align:end 的行内流,浮动元素会挤占行盒、把按钮顶到半空错位。
-        // 两栏后:说明在左侧自己的列宽里折行,按钮永远整齐贴右下角。
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            justifyContent: "space-between",
-            gap: 16,
-            textAlign: "left",
-          }}
-        >
-          {/* 团队化带来的真实改善,值得在这儿讲出来:个人账号时代试跑用本人、正式取数用作者,
-              「试跑通过」并不代表「上线后能跑」。现在两者是同一套团队账号。
-              但这句承诺只在**取数身份**这一维上成立:试跑还有一道 180 秒的前台上限
-              (template_service.TEST_RUN_TIMEOUT_CEILING_SECONDS),不写出来的话,一个配了 30 分钟
-              的任务在试跑里被砍,作者会以为 SQL 不行而去改一条本来没问题的任务。 */}
-          <Typography.Text type="secondary" style={{ flex: 1, minWidth: 0, fontSize: 12, lineHeight: "18px" }}>
-            试跑与业务正式取数使用同一套团队账号 —— 取数身份上试跑通过即代表上线后能跑;
-            但试跑最多只跑 180 秒,长查询以任务自己配的超时为准
-          </Typography.Text>
-          {/* flexShrink:0:说明再长也不许压缩按钮组换行 */}
-          <Space style={{ flexShrink: 0 }}>
-            <Button onClick={onClose}>取消</Button>
-            <Button onClick={doPreviewSql}>SQL预览</Button>
-            <Button loading={testing} onClick={doTestRun}>{testing ? "试跑中…" : "测试运行"}</Button>
-            <Button type="primary" loading={saving} onClick={save}>
-              {editingId ? "保存" : "创建"}
-            </Button>
-          </Space>
-        </div>
-      }
+      footer={footer}
     >
-      <Form form={form} layout="vertical">
+      {/* 只读态必须说清「为什么改不了、要改找谁」。只点作者与团队管理员(而不是照抄后端
+          _require_can_edit 报错里的三类人):被授予编辑权的同事不是能去要权限的对象。
+          放在 Form 外:它不该跟着 Form 的 disabled 一起褪色。 */}
+      {readOnly && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="你对该任务没有编辑权限,当前为只读查看 —— 需要修改请联系任务作者或该团队的团队管理员"
+        />
+      )}
+      {/* disabled 一次性下发给整棵表单树(antd 的 DisabledContext),含变量卡里那些不是 Form.Item
+          的勾选框与按钮,不必逐个再写一遍;要放行某个控件得显式写 disabled:false(见 roText)。
+          Collapse 不吃这个 context,所以变量卡照样能展开看 —— 正是只读态想要的。
+          requiredMark:只读态不画必填星号,那是「你得填」的祈使,而这里没有要填的东西。 */}
+      <Form form={form} layout="vertical" disabled={readOnly} requiredMark={!readOnly}>
         <Divider orientation="left" style={{ marginTop: 0 }}>基本信息</Divider>
         {/* align="start":Space 水平方向默认 align:center,带 extra 说明的字段更高,
             会把同排没有说明的字段压成垂直居中 ⇒ 标签与控件错行。顶对齐后各字段控件同线。
@@ -531,7 +572,7 @@ export default function TaskEditor({
             rules={[{ required: true }]}
             style={{ width: 300 }}
           >
-            <Input />
+            <Input {...roText} />
           </Form.Item>
           {/* 团队放在数据源**之前**:团队决定用哪套库账号,账号决定这个数据源跑不跑得动 */}
           <Form.Item
@@ -540,21 +581,24 @@ export default function TaskEditor({
             rules={[{ required: true, message: "请选择所属团队" }]}
             tooltip="团队决定这个任务谁看得见,以及取数用哪套数据库账号"
             extra={
-              editingId && !isPlatformAdmin(user) ? (
-                <span style={{ color: "#8c8c8c" }}>
-                  任务所属团队不可自行更改,需要转移请联系平台管理员
-                </span>
-              ) : editingId ? (
+              // 只读与新建都没有可说的;剩下就是「改既有任务」按能不能转移二选一
+              readOnly || !editingId ? undefined : isPlatformAdmin(user) ? (
                 <span style={{ color: "#d46b08" }}>
                   转移团队会同时改变任务的可见范围与取数账号
                 </span>
-              ) : undefined
+              ) : (
+                <span style={{ color: "#8c8c8c" }}>
+                  任务所属团队不可自行更改,需要转移请联系平台管理员
+                </span>
+              )
             }
             style={{ width: 240 }}
           >
             <Select
               // 编辑已有任务时只有平台管理员能改(转移团队是跨组织的治理动作)
-              disabled={!!editingId && !isPlatformAdmin(user)}
+              // `|| undefined` 不能省:antd 取 `自身 disabled ?? context`,写死的 false
+              // 会把 Form 的 disabled 顶掉,只读态下这个下拉就又能点了
+              disabled={(!!editingId && !isPlatformAdmin(user)) || undefined}
               placeholder={teamOptions.length ? "选择团队" : "你还不属于任何团队"}
               options={teamOptions}
               notFoundContent="你还不属于任何团队,请联系平台管理员"
@@ -581,7 +625,7 @@ export default function TaskEditor({
           </Form.Item>
         </Space>
         <Form.Item name="description" label="任务说明">
-          <Input.TextArea rows={2} placeholder="这个取数任务是做什么的,给协作者/业务参考" />
+          <Input.TextArea rows={2} placeholder="这个取数任务是做什么的,给协作者/业务参考" {...roText} />
         </Form.Item>
         <Divider orientation="left">SQL 语句</Divider>
         <Form.Item
@@ -591,7 +635,7 @@ export default function TaskEditor({
           rules={[{ required: true }]}
           extra="带底色的行为「参数影响行」,行内高亮的即 :变量 占位符"
         >
-          <SqlHighlightArea rows={7} placeholder="SELECT ... WHERE dt = :dt AND uid IN (:uids)" />
+          <SqlHighlightArea rows={7} placeholder="SELECT ... WHERE dt = :dt AND uid IN (:uids)" {...roText} />
         </Form.Item>
 
         <Divider orientation="left">变量配置</Divider>
@@ -624,7 +668,8 @@ export default function TaskEditor({
           <Space align="center" size={10}>
             <Form.Item name="sub_enabled" valuePropName="checked" noStyle>
               {/* 有变量时禁止**开启**;已开启的仍可关闭(那正是解决冲突的出路) */}
-              <Switch disabled={hasParams && !subEnabledWatch} />
+              {/* `|| undefined` 同上:false 会压住 Form 的 disabled,让只读态下这个开关还能拨 */}
+              <Switch disabled={(hasParams && !subEnabledWatch) || undefined} />
             </Form.Item>
             <span>允许订阅 —— 平台按计划自动运行,并把结果推送给订阅者</span>
             {!!editingId && subscriberCount > 0 && (
@@ -637,7 +682,7 @@ export default function TaskEditor({
             </Typography.Text>
           )}
           {/* 冲突预警:已开订阅又写了 :变量 —— 服务端保存时会拒绝,这里先说清出路 */}
-          {hasParams && subEnabledWatch && (
+          {!readOnly && hasParams && subEnabledWatch && (
             <Alert
               type="error"
               showIcon
@@ -692,7 +737,7 @@ export default function TaskEditor({
             </>
           )}
           {/* 关闭前的预警:保存即清退全部订阅者并逐一通知,这不是能悄悄发生的事 */}
-          {origSubEnabled && !subEnabledWatch && subscriberCount > 0 && (
+          {!readOnly && origSubEnabled && !subEnabledWatch && subscriberCount > 0 && (
             <Alert
               type="warning"
               showIcon

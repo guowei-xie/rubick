@@ -104,7 +104,8 @@ export default function TasksPage() {
 
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [editorId, setEditorId] = useState<number | null | undefined>(undefined); // undefined=关闭
+  // 编辑器目标:null=关闭;{id:null}=新建;{id:n}=编辑;带 readOnly=只读查看
+  const [editor, setEditor] = useState<{ id: number | null; readOnly?: boolean } | null>(null);
   const [runTarget, setRunTarget] = useState<any>(null);
   const [grantTarget, setGrantTarget] = useState<any>(null);
   const [recordsTarget, setRecordsTarget] = useState<any>(null);
@@ -281,7 +282,8 @@ export default function TasksPage() {
   const handlers: TaskHandlers = useMemo(
     () => ({
       onRun: setRunTarget,
-      onEdit: (r) => setEditorId(r.id),
+      onEdit: (r) => setEditor({ id: r.id }),
+      onView: (r) => setEditor({ id: r.id, readOnly: true }),
       onGrant: setGrantTarget,
       onRecords: setRecordsTarget,
       onPublish: doPublish,
@@ -331,7 +333,7 @@ export default function TasksPage() {
                 type="primary"
                 icon={<PlusOutlined />}
                 disabled={noTeamYet}
-                onClick={() => setEditorId(null)}
+                onClick={() => setEditor({ id: null })}
               >
                 新建任务
               </Button>
@@ -414,9 +416,10 @@ export default function TasksPage() {
       )}
 
       <TaskEditor
-        editingId={editorId ?? null}
-        open={editorId !== undefined}
-        onClose={() => setEditorId(undefined)}
+        editingId={editor?.id ?? null}
+        readOnly={editor?.readOnly}
+        open={!!editor}
+        onClose={() => setEditor(null)}
         onSaved={load}
       />
       <RunDrawer task={runTarget} open={!!runTarget} onClose={() => setRunTarget(null)} />

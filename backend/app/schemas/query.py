@@ -67,6 +67,11 @@ class TaskOut(BaseModel):
     # 可编辑/授权/下线。四条口径见 permission_service.can_edit(平台管理员 / 该团队的团队管理员 /
     # 仍在团队内的作者 / 被授予该任务编辑权的成员)。前端只消费这个布尔,**不要自己算团队规则**
     can_manage: bool = False
+    # 能不能**只读查看**任务详情(SQL 原文 / 变量配置 / 订阅计划)。口径 = permission_service.is_insider:
+    # 平台管理员或该任务所属团队的成员 —— 与 GET /templates/{id} 只对 insider 返回 latest_version
+    # 的分级同源,故前端据它给出「查看」入口不会看到接口不肯给的东西。业务使用者不给:
+    # 他们只该看到已上线的那一面。
+    can_view_detail: bool = False
     # 「我开发的」:我建的,或被授予该任务编辑权的 —— 见 permission_service.is_author_or_grantee
     # (不含管理员的治理权限,故它 ≠ can_manage)
     developed_by_me: bool = False

@@ -103,6 +103,21 @@ def _ids(rows):
     return {r.id for r in rows}
 
 
+def _row(db, actor, tmpl):
+    """任务在某人的任务列表里的那一行。多个用例要断言同一行上的不同能力位。"""
+    return next(r for r in list_tasks(db, actor) if r.id == tmpl.id)
+
+
+def _grant_biz(db, tmpl, user, granter, actions=("view", "run")):
+    """把业务侧授权给某人。与 /api/tasks/{id}/editors 的 edit 授权刻意分开
+    (见 models/permission.BUSINESS_ACTIONS),同兄弟测试文件里的 _grant_* 写法。"""
+    permission_service.grant(
+        db, subject_type="user", subject_id=str(user.id),
+        resource_type="template", resource_id=str(tmpl.id),
+        actions=list(actions), granted_by=granter.id,
+    )
+
+
 # ---------------------------------------------------------------- 列表
 
 
@@ -119,7 +134,7 @@ def test_list_tasks_is_scoped_by_team(db, people, task_a, task_b, draft_a):
 def test_list_tasks_carries_team_and_can_manage_flags(db, people, teams, task_a):
     """can_manage 是服务端算好的单一布尔 —— 前端只消费它,不自己算团队规则。"""
     def row(actor):
-        return next(r for r in list_tasks(db, actor) if r.id == task_a.id)
+        return _row(db, actor, task_a)
 
     assert row(people.author).team_id == teams.a.id
     assert row(people.author).team_name == teams.a.name
@@ -135,7 +150,7 @@ def test_developed_by_me_is_author_or_granted_editor(db, people, task_a):
     """「我开发的」= 作者 + 被授予编辑权的人。团队管理员/平台管理员能编辑,但那是治理权限,
     不算「我开发的」—— 否则他们一勾这个筛选就等于没筛。"""
     def row(actor):
-        return next(r for r in list_tasks(db, actor) if r.id == task_a.id)
+        return _row(db, actor, task_a)
 
     assert row(people.author).developed_by_me is True
     assert row(people.other).developed_by_me is False    # 同队但没被授权
@@ -166,11 +181,7 @@ def test_empty_list_for_developer_without_team(db, people, task_a):
 def test_business_user_sees_only_granted_published(db, people, task_a, draft_a):
     assert list_tasks(db, people.biz) == []
     for t in (task_a, draft_a):
-        permission_service.grant(
-            db, subject_type="user", subject_id=str(people.biz.id),
-            resource_type="template", resource_id=str(t.id),
-            actions=["view", "run"], granted_by=people.author.id,
-        )
+        _grant_biz(db, t, people.biz, people.author)
     biz_ids = _ids(list_tasks(db, people.biz))
     assert task_a.id in biz_ids
     assert draft_a.id not in biz_ids, "草稿不该因为一条 view 授权就暴露给业务方"
@@ -185,14 +196,34 @@ def test_get_template_hides_latest_version_from_outsiders(db, people, task_a):
     with pytest.raises(PermissionDeniedError, match="无权查看"):
         get_template(task_a.id, db, people.b_dev)
 
-    permission_service.grant(
-        db, subject_type="user", subject_id=str(people.biz.id),
-        resource_type="template", resource_id=str(task_a.id),
-        actions=["view"], granted_by=people.author.id,
-    )
+    _grant_biz(db, task_a, people.biz, people.author, actions=("view",))
     detail = get_template(task_a.id, db, people.biz)
     assert detail.published_version is not None
     assert detail.latest_version is None
+
+
+def test_can_view_detail_marks_team_insiders(db, people, task_a):
+    """can_view_detail 决定 ⋮ 菜单里出不出「查看」(只读打开任务详情)。
+
+    它必须与 get_template 的分级严格同源:凡是这一位为真的人,GET /templates/{id} 都会
+    给他 latest_version(SQL 原文);为假的人要么根本看不到,要么只拿得到已上线的那一面。
+    两处若漂移,前端就会给出一个点开来是空的入口,或者反过来漏掉一个本该有的入口
+    (分级本身由上一个用例覆盖,这里只断这一位跟没跟上)。
+    """
+    def row(actor):
+        return _row(db, actor, task_a)
+
+    # 同队但无编辑权的开发者:正是这一位要服务的人 —— 编辑不了,但看得到怎么写的
+    assert row(people.other).can_view_detail is True
+    # 有编辑权的人这一位也为真(菜单里由前端决定只给「编辑」,不在后端裁)
+    assert row(people.author).can_view_detail is True
+    assert row(people.a_admin).can_view_detail is True
+    assert row(people.admin).can_view_detail is True
+
+    # 被授予 view 的业务使用者:看得见这个任务,但不给只读详情入口 ——
+    # 给了等于把 SQL 原文摊给他,而接口本来也不会返回 latest_version
+    _grant_biz(db, task_a, people.biz, people.author, actions=("view",))
+    assert row(people.biz).can_view_detail is False
 
 
 # ---------------------------------------------------------------- 编辑
@@ -282,11 +313,7 @@ def _job(db, tmpl, user) -> QueryJob:
 
 def test_run_records_visible_to_insiders_only(db, people, task_a):
     """团队内部人看该任务下全部人的运行;被授权的业务方只看自己的。"""
-    permission_service.grant(
-        db, subject_type="user", subject_id=str(people.biz.id),
-        resource_type="template", resource_id=str(task_a.id),
-        actions=["view", "run"], granted_by=people.author.id,
-    )
+    _grant_biz(db, task_a, people.biz, people.author)
     biz_job = _job(db, task_a, people.biz)
     author_job = _job(db, task_a, people.author)
 

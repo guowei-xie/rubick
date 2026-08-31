@@ -13,6 +13,7 @@ import { PlusOutlined } from "@ant-design/icons";
 export type TaskHandlers = {
   onRun: (r: any) => void;
   onEdit: (r: any) => void;
+  onView: (r: any) => void; // 只读打开同一个编辑器(can_view_detail 但无 can_manage 的团队内部人)
   onGrant: (r: any) => void;
   onRecords: (r: any) => void;
   onPublish: (r: any) => void;
@@ -25,7 +26,7 @@ export type TaskHandlers = {
  *  但在 React 树里仍是本卡/本行的子节点,合成事件照样冒泡,所以要拦在宿主之前。 */
 export const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-/** ⋮ 菜单项:运行记录(所有人)+ 订阅相关 + 管理项(仅 can_manage)。
+/** ⋮ 菜单项:运行记录(所有人)+ 订阅相关 + 管理项(仅 can_manage)/只读查看(仅 can_view_detail)。
  *  动作动词三分:已上线→下线、已下线→重新上线、草稿→上线。 */
 export function taskMenuItems(r: any, h: TaskHandlers): any[] {
   const items: any[] = [{ key: "records", label: "运行记录", onClick: () => h.onRecords(r) }];
@@ -50,6 +51,14 @@ export function taskMenuItems(r: any, h: TaskHandlers): any[] {
     if (r.subscribe_enabled) {
       items.push({ key: "subscribers", label: "订阅者名单", onClick: () => h.onSubscribers(r) });
     }
+  } else if (r.can_view_detail) {
+    // 团队内部人但对这个任务没有编辑权:给一个只读入口。没有它,他在列表里看得见这个任务,
+    // 却没有任何办法看到它到底怎么写的 —— 想参考同事的写法只能去问人。
+    // else if 而非另起一个 if:有编辑权的人不该同时看到「编辑」与「查看」两个入口。
+    items.push(
+      { type: "divider" },
+      { key: "view", label: "查看", onClick: () => h.onView(r) }
+    );
   }
   return items;
 }
