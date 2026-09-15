@@ -38,8 +38,11 @@ export default function NotificationBell() {
       refreshList();
     }
     setOpen(false);
-    // 深链到该任务的运行记录(template_id 由通知直接携带,无需再查 job)
-    if (n.template_id) nav(`/tasks?records=${n.template_id}`);
+    // 深链到该任务的运行记录(template_id 由通知直接携带,无需再查 job)。
+    // 再带上 job_id,让落地页把这条通知说的那次运行顶到眼前 —— 定时运行尤其需要:
+    // 一个任务攒了几十期,订阅者要的是「本期」那条,不是列表第一行碰巧是谁的。
+    if (n.template_id)
+      nav(`/tasks?records=${n.template_id}${n.job_id ? `&job=${n.job_id}` : ""}`);
     else if (n.job_id) nav("/tasks");
   };
 

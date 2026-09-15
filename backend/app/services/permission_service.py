@@ -34,7 +34,7 @@ from app.models.permission import (
     SUBJECT_USER,
     Permission,
 )  # noqa: F401
-from app.models.query_job import QueryJob
+from app.models.query_job import SOURCE_SUBSCRIBE, QueryJob
 from app.models.template import STATUS_PUBLISHED, SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User, is_platform_admin  # noqa: F401
 from app.services import team_service, user_service
@@ -217,21 +217,41 @@ def visible_condition(scope: TeamScope):
 
 
 def job_visibility_condition(scope: TeamScope):
-    """运行记录列表的可见口径:本人发起的 + 我所属团队任务下的全部运行。None = 全部。
+    """运行记录列表的可见口径:本人发起的 + 我所属团队任务下的全部运行
+    + **被授予 view 的任务下的定时运行**。None = 全部(仅平台管理员)。
 
-    与 tasks.task_run_records 同源 —— 否则会出现「抽屉里看得到、列表里看不到」。
+    「谁能列到哪些运行」只在这里表述一次:/api/jobs 与 /api/tasks/{id}/jobs 都调它。
+    从前路由层另写了一份等价谓词,放宽时漏改一边,订阅者就收得到通知却看不到结果 ——
+    那次之后这里是唯一入口(单条记录的对应物是 can_access_job)。
+
+    第三支是给订阅者的:定时运行挂在系统用户名下(query_service.enqueue_scheduled),
+    既不是「本人发起」也不落在团队里,不单列出来,被授权的业务使用者就永远看不到
+    推送给他的那份数据。**只补 view_ids 这一支**:团队任务下的定时运行已被第二支整个
+    覆盖(它不挑 source),所以这里不能图省事直接套 visible_condition —— 那会把同一个
+    模板子查询原样跑两遍,而对没有任何授权的人还多挂一条 WHERE false 的死子查询。
     """
     if scope.is_admin:
         return None
-    own = QueryJob.user_id == scope.user_id
-    if not scope.team_ids:
-        return own
-    return or_(
-        own,
-        QueryJob.template_id.in_(
-            select(SqlTemplate.id).where(SqlTemplate.team_id.in_(scope.team_ids))
-        ),
-    )
+    clauses = [QueryJob.user_id == scope.user_id]
+    if scope.team_ids:
+        clauses.append(
+            QueryJob.template_id.in_(
+                select(SqlTemplate.id).where(SqlTemplate.team_id.in_(scope.team_ids))
+            )
+        )
+    if scope.view_ids:
+        clauses.append(
+            and_(
+                QueryJob.source == SOURCE_SUBSCRIBE,
+                QueryJob.template_id.in_(
+                    select(SqlTemplate.id).where(
+                        SqlTemplate.status == STATUS_PUBLISHED,
+                        SqlTemplate.id.in_(scope.view_ids),
+                    )
+                ),
+            )
+        )
+    return or_(*clauses)
 
 
 def manageable_template_ids(db: Session, scope: TeamScope) -> set[int] | None:

@@ -5,12 +5,13 @@ import StatusTag, { JOB_SOURCE, JOB_STATUS } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import { fmtDayTime, fmtDuration, fmtTime } from "../format";
+import { MODAL } from "../widths";
 
 /** 表格里的空值占位,与「参数/执行SQL 没有内容」用同一个灰破折号,免得同一行里三种写法。 */
 const EMPTY = <span style={{ color: "#ccc" }}>—</span>;
 
-/** 窄抽屉里的列宽预算列在一处 —— 要判断这几列塞不塞得进 480 宽的取数抽屉,
- *  得把它们加起来看(现为 510,故 compact 下本就会横向滚动),散在各列的三元里加不动。 */
+/** 两种形态的列宽预算列在一处 —— 要判断这几列塞不塞得进某个宽度,得把它们加起来看
+ *  (compact 现为 510,full 约 830),散在各列的三元里加不动。 */
 const WIDTHS = {
   full: { source: 70, time: 170, status: undefined, rows: 80, dur: 90, params: 90, result: 150 },
   compact: { source: 58, time: 92, status: 64, rows: 58, dur: 76, params: 62, result: 100 },
@@ -25,8 +26,9 @@ type RunRecordColumn = TableColumnType<any> & { hideInCompact?: boolean };
  * job_visibility_condition。别把它记成「开发者与作者看全部」:别团队的开发者一条都看不到,
  * 而被加进团队的普通用户看得到全部(团队成员身份不受 users.role 约束)。
  *
- * 两种呈现:full = ⋮ 菜单/通知深链打开的 860 宽独立抽屉,列全;compact = 取数抽屉里的
- * 折叠区块,那儿只有 480/760 宽,砍掉「运行人」「执行SQL」两列并压窄其余列。
+ * 两种呈现:full = ⋮ 菜单/通知深链打开的独立抽屉,列全;compact = 取数抽屉里的折叠区块,
+ * 那儿窄得多,砍掉「运行人」「执行SQL」两列并压窄其余列。两者的抽屉宽度都跟着视口走
+ * (见 widths.ts),所以**别再把某个像素值写进判断里**。
  * **砍列纯粹是宽度取舍,不是权限边界** —— 后端 GET /tasks/{id}/jobs 照样把 executed_sql
  * 返给业务用户,同一个人从卡片 ⋮ 进 full 形态就能看到这两列。要真不给看,得在
  * task_run_records 里按 is_insider 抹掉,不能靠前端少画一列。
@@ -39,11 +41,14 @@ export default function RunRecordsPanel({
   active = true,
   variant = "full",
   refreshKey = 0,
+  highlightJobId = null,
 }: {
   taskId: number | null;
   active?: boolean;
   variant?: "full" | "compact";
   refreshKey?: number;
+  /** 通知深链点名的那次运行:标出来,免得订阅者在几十期里找「本期」是哪条 */
+  highlightJobId?: number | null;
 }) {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -166,9 +171,12 @@ export default function RunRecordsPanel({
         columns={columns
           .filter((c) => !(compact && c.hideInCompact))
           .map(({ hideInCompact, ...c }) => c)}
-        // 只有窄抽屉需要:宁可横向滚动,也不要把「导出」挤成两行。
-        // full 形态列本就排得下,不必让 rc-table 切到测量布局那条路。
-        scroll={compact ? { x: "max-content" } : undefined}
+        // 宁可横向滚动,也不要把「导出」挤成两行。两种形态都留着这个兜底:
+        // 列宽预算是定数,而抽屉宽度现在跟着视口走(见 widths.ts),
+        // 窄窗口下 full 形态同样可能排不下 —— 旧代码「full 本就排得下」的前提
+        // 建立在那个已经不存在的固定 860 上。
+        scroll={{ x: "max-content" }}
+        rowClassName={(r: any) => (r.id === highlightJobId ? "rk-row-hit" : "")}
         locale={{ emptyText: "还没有运行记录" }}
       />
 
@@ -177,7 +185,7 @@ export default function RunRecordsPanel({
         open={!!previewData}
         onCancel={() => setPreviewData(null)}
         footer={null}
-        width={900}
+        width={MODAL.preview}
       >
         {previewData && (
           <>
@@ -189,7 +197,13 @@ export default function RunRecordsPanel({
 
       <SqlModal sql={sqlText} onClose={() => setSqlText(null)} />
 
-      <Modal title="本次运行参数" open={!!paramsData} onCancel={() => setParamsData(null)} footer={null} width={560}>
+      <Modal
+        title="本次运行参数"
+        open={!!paramsData}
+        onCancel={() => setParamsData(null)}
+        footer={null}
+        width={MODAL.params}
+      >
         {paramsData && (
           <Table
             size="small"

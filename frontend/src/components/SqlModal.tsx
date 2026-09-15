@@ -3,6 +3,7 @@ import { Button, message, Modal } from "antd";
 import { affectedLines } from "../sqlParams";
 import SqlLines from "./SqlLines";
 import "../styles/sql-highlight.css";
+import { MODAL } from "../widths";
 
 /** 查看只读文本(执行 SQL / 审计详情等),可一键复制。sql 为 null 时不显示。
  *
@@ -36,7 +37,7 @@ export default function SqlModal({
       title={title}
       open={sql != null}
       onCancel={onClose}
-      width={820}
+      width={MODAL.sql}
       footer={[
         <Button key="copy" onClick={copy}>复制</Button>,
         <Button key="ok" type="primary" onClick={onClose}>关闭</Button>,

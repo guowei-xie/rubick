@@ -70,6 +70,18 @@ def _push(
     return note
 
 
+def _records_link(template_id: int, job_id: int | None = None) -> str:
+    """「去看这个任务的运行记录」这条深链的唯一出处(前端 /tasks 读 records / job 参数)。
+
+    带上 job_id 时,落地页会把通知说的**那一次**运行标出来 —— 定时运行攒了几十期,
+    订阅者要的是本期那条而不是列表第一行。从前四处各拼一份 f-string,加 &job= 时
+    只改到了其中一处,另外几条通知照旧落在「一列记录,自己找」。签名收在这里之后,
+    「通知指向具体某次运行」由参数保证,不靠每个调用点记得。
+    """
+    url = f"{settings.APP_BASE_URL}/tasks?records={template_id}"
+    return f"{url}&job={job_id}" if job_id else url
+
+
 def _team_fixers(db: Session, tmpl: SqlTemplate, *, include_author: bool = False) -> list[int]:
     """能对该任务负责的人:团队管理员(include_author 时再加**仍在队的**作者)。
 
@@ -183,8 +195,7 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
         title=title,
         body=body,
         level=level,
-        # 深链到该任务的运行记录(前端 /tasks 读 records 参数打开对应抽屉)
-        link=f"{settings.APP_BASE_URL}/tasks?records={job.template_id}",
+        link=_records_link(job.template_id, job.id),
         job_id=job.id,
         template_id=job.template_id,
     )
@@ -210,7 +221,7 @@ def notify_subscription_run_failed(
     不含库账号)。缺取数账号的「通知能修的人」由调用方另行叠加 notify_credential_blocked,
     这里不重复 —— 否则团队管理员会为同一件事收到两条。
     """
-    link = f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}"
+    link = _records_link(tmpl.id, job_id)
     managers = _team_fixers(db, tmpl, include_author=True)
     _push_each(
         db, managers,
@@ -257,7 +268,7 @@ def notify_auto_unsubscribed(
             f"你订阅的《{tmpl.name}》已连续 {settings.SUBSCRIPTION_MISS_LIMIT} 期"
             "未查看数据,为节约取数资源,平台已自动取消订阅;如仍需要,可随时重新订阅。"
         ),
-        level="info", link=f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}",
+        level="info", link=_records_link(tmpl.id, job_id),
         job_id=job_id, template_id=tmpl.id,
     )
 
@@ -286,6 +297,6 @@ def notify_subscription_ready(db: Session, tmpl: SqlTemplate, job: QueryJob) -> 
             f"你订阅的《{tmpl.name}》本期数据已生成,共 {job.row_count} 行,"
             "可到该任务的「运行记录」里预览并下载。"
         ),
-        level="success", link=f"{settings.APP_BASE_URL}/tasks?records={tmpl.id}",
+        level="success", link=_records_link(tmpl.id, job.id),
         job_id=job.id, template_id=tmpl.id,
     )

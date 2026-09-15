@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from app.api.routes.query import preview as preview_route
+from app.api.routes.tasks import task_run_records
 from app.core.config import settings
 from app.models.audit import ACTION_TASK_AUTO_UNSUBSCRIBE, AuditLog
 from app.models.notification import Notification
@@ -24,13 +25,14 @@ from app.models.subscription import (
 from app.models.user import ROLE_DEVELOPER, ROLE_USER
 from app.services import (
     notify_service,
+    permission_service,
     query_service,
     result_service,
     subscription_service,
 )
 
-# ID 段 9220–9222
-AUTHOR, SUB_A, SUB_B = 9220, 9221, 9222
+# ID 段 9220–9223
+AUTHOR, SUB_A, SUB_B, OUTSIDER = 9220, 9221, 9222, 9223
 
 
 @pytest.fixture
@@ -46,6 +48,13 @@ def sub_a(user_factory):
 @pytest.fixture
 def sub_b(user_factory):
     return user_factory(SUB_B, ROLE_USER, "结算订阅者乙", prefix="stl")
+
+
+@pytest.fixture
+def outsider(user_factory):
+    """**不在任务所属团队里**的订阅者 —— 线上真正踩到「收得到通知、看不到结果」的那种人。
+    团队成员是内部人,一直看得到全部运行记录,照不出这个问题。"""
+    return user_factory(OUTSIDER, ROLE_USER, "结算外部订阅者", prefix="stl")
 
 
 @pytest.fixture
@@ -301,3 +310,40 @@ def test_scheduled_job_executes_end_to_end(db, author, sub_a, ds, team, task, sy
         )
     )
     assert any("已生成" in n.title for n in notes), [n.title for n in notes]
+
+
+# ---------------------------------------------------------------- 通知与可见性必须同进退
+
+
+def test_notified_subscriber_can_actually_see_the_run(
+    db, author, outsider, ds, team, task, system_user
+):
+    """「收到通知」与「看得到结果」绑死:只发通知不给看,等于没送到。
+
+    回归的是线上那条 —— 定时运行挂在系统用户名下,而运行记录列表当时只放行
+    「自己发起的」,于是团队外的订阅者点开通知深链只看到一张空表。
+    顺带确认连带后果也解了:他打得开,消费水位才推得动,不会再因为「连续未查看」
+    被自动清退掉一份他从来没能查看的数据。
+    """
+    permission_service.grant(
+        db, subject_type="user", subject_id=str(outsider.id),
+        resource_type="template", resource_id=str(task.id),
+        actions=["view"], granted_by=author.id,
+    )
+    subscription_service.subscribe(db, task, outsider)
+    job = _sub_job(db, system_user, task, ds, with_file=True)
+
+    # 1. 平台确实给他发了「本期数据已生成」
+    notify_service.notify_subscription_ready(db, task, job)
+    assert db.scalar(
+        select(func.count()).select_from(Notification).where(
+            Notification.user_id == outsider.id, Notification.job_id == job.id
+        )
+    ) == 1
+
+    # 2. 通知深链的落点(运行记录)里就该有这一条
+    assert job.id in {j.id for j in task_run_records(task.id, db, outsider)}
+
+    # 3. 打得开 → 消费水位推得动 → 不会被当成「连续未查看」清退
+    preview_route(job.id, db=db, user=outsider)
+    assert _sub_row(db, task, outsider).last_consumed_job_id == job.id

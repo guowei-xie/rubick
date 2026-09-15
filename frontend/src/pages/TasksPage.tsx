@@ -108,7 +108,10 @@ export default function TasksPage() {
   const [editor, setEditor] = useState<{ id: number | null; readOnly?: boolean } | null>(null);
   const [runTarget, setRunTarget] = useState<any>(null);
   const [grantTarget, setGrantTarget] = useState<any>(null);
-  const [recordsTarget, setRecordsTarget] = useState<any>(null);
+  // 运行记录抽屉的目标:任务 + 可选的「点名那次运行」(通知深链的 ?job=,用于高亮)。
+  // 两者是同一件事的两半,合成一个 state —— 拆成两个就得在每个入口手工配对,
+  // 漏配一次就是一个不报错的陈旧高亮
+  const [records, setRecords] = useState<{ task: any; jobId: number | null } | null>(null);
   const [subscribersTarget, setSubscribersTarget] = useState<any>(null);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
@@ -166,13 +169,16 @@ export default function TasksPage() {
   }, []);
   useEffect(load, []);
 
-  // 从通知深链进来(/tasks?records=<taskId>):任务加载后打开对应运行记录抽屉,并清掉参数
+  // 从通知深链进来(/tasks?records=<taskId>&job=<jobId>):任务加载后打开对应运行记录抽屉,
+  // 并清掉参数。job 可选,用来把通知说的那一次运行高亮出来(定时运行攒了几十期时,
+  // 订阅者要的是「本期」那条,不是列表第一行)。
   useEffect(() => {
     const rid = sp.get("records");
     if (!rid || !tasks.length) return;
     const t = tasks.find((x) => String(x.id) === rid);
-    if (t) setRecordsTarget(t);
+    if (t) setRecords({ task: t, jobId: Number(sp.get("job")) || null });
     sp.delete("records");
+    sp.delete("job");
     setSp(sp, { replace: true });
   }, [tasks]);
 
@@ -285,7 +291,7 @@ export default function TasksPage() {
       onEdit: (r) => setEditor({ id: r.id }),
       onView: (r) => setEditor({ id: r.id, readOnly: true }),
       onGrant: setGrantTarget,
-      onRecords: setRecordsTarget,
+      onRecords: (r) => setRecords({ task: r, jobId: null }),
       onPublish: doPublish,
       onArchive: doArchive,
       onSubscribeToggle: doSubscribeToggle,
@@ -423,7 +429,12 @@ export default function TasksPage() {
         onSaved={load}
       />
       <RunDrawer task={runTarget} open={!!runTarget} onClose={() => setRunTarget(null)} />
-      <RunRecordsDrawer task={recordsTarget} open={!!recordsTarget} onClose={() => setRecordsTarget(null)} />
+      <RunRecordsDrawer
+        task={records?.task ?? null}
+        highlightJobId={records?.jobId ?? null}
+        open={!!records}
+        onClose={() => setRecords(null)}
+      />
       <GrantModal
         templateId={grantTarget?.id ?? null}
         templateName={grantTarget?.name}

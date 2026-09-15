@@ -109,3 +109,14 @@ body {
   background: var(--ink);
   color: #fff;
 }
+
+/* 通知深链点名的那一行运行记录(见 RunRecordsPanel 的 highlightJobId):
+   一个任务攒了几十期定时运行,订阅者点通知进来要的是「本期」那条,
+   不是列表第一行。只做浅底 + 左侧色条,不抢表格本身的可读性。 */
+.rk-row-hit > td {
+  /* 底色由品牌色派生(与 sql-highlight.css 的参数行同一写法),品牌色改一处即可 */
+  background: color-mix(in srgb, var(--brand) 7%, transparent) !important;
+}
+.rk-row-hit > td:first-child {
+  box-shadow: inset 3px 0 0 var(--brand);
+}

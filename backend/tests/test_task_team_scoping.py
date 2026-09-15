@@ -18,7 +18,7 @@ from app.api.routes.tasks import (
 )
 from app.api.routes.templates import create_template, get_template, publish, update_template
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
-from app.models.query_job import JOB_SUCCESS, SOURCE_RUN, QueryJob
+from app.models.query_job import JOB_SUCCESS, SOURCE_RUN, SOURCE_SUBSCRIBE, QueryJob
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
 from app.schemas.permission import GrantIn
@@ -300,10 +300,10 @@ def test_platform_admin_can_create_in_any_team(db, ds, people, teams):
 # ---------------------------------------------------------------- 运行记录
 
 
-def _job(db, tmpl, user) -> QueryJob:
+def _job(db, tmpl, user, source=SOURCE_RUN) -> QueryJob:
     job = QueryJob(
         user_id=user.id, template_id=tmpl.id, template_version_id=tmpl.published_version_id,
-        datasource_id=tmpl.datasource_id, params={}, status=JOB_SUCCESS, source=SOURCE_RUN,
+        datasource_id=tmpl.datasource_id, params={}, status=JOB_SUCCESS, source=source,
     )
     db.add(job)
     db.commit()
@@ -325,6 +325,21 @@ def test_run_records_visible_to_insiders_only(db, people, task_a):
 
     with pytest.raises(PermissionDeniedError, match="无权查看"):
         task_run_records(task_a.id, db, people.b_dev)
+
+
+def test_scheduled_run_visible_to_granted_subscriber(db, people, task_a, system_user):
+    """订阅者看得到推送给他的那一期 —— 这条缺席时,「收到通知却是一张空表」发到了线上。
+
+    定时运行挂在**系统用户**名下(query_service.enqueue_scheduled),既不是业务方
+    「自己跑的」,他又不在任务所属团队里,于是被旧的 user_id == me 过滤干净。
+    """
+    _grant_biz(db, task_a, people.biz, people.author, actions=("view",))
+    sched_job = _job(db, task_a, system_user, SOURCE_SUBSCRIBE)
+    other_job = _job(db, task_a, people.author)  # 别人手动跑的:照旧不给业务方看
+
+    biz_ids = {j.id for j in task_run_records(task_a.id, db, people.biz)}
+    assert sched_job.id in biz_ids, "订阅者看不到定时运行,通知里的「运行记录」就是空表"
+    assert other_job.id not in biz_ids, "只该放开定时运行,不该连带暴露他人手动发起的运行"
 
 
 def test_my_jobs_is_scoped_by_team(db, people, task_a, task_b):

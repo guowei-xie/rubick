@@ -107,8 +107,14 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
 def task_run_records(
     template_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """任务的运行记录。**团队内部人**(同团队成员 / 平台管理员)看全部;
-    被授权的业务使用者只看自己跑过的。"""
+    """某个任务的运行记录。本函数只管两件事:限定到这个任务,以及无权时 403。
+
+    **可见口径不在这里** —— 它由 permission_service.job_visibility_condition 独家表述,
+    与 /api/jobs 同一份。从前这里另写了一份等价谓词,于是「放宽可见范围」得同时改两处:
+    定时运行挂在系统用户名下(见 query_service.enqueue_scheduled),而这份副本只放行
+    「自己发起的」,订阅者收到「本期数据已生成」的通知、点进来却是一张空表。
+    那条 bug 的根因就是这份副本,所以修法是删掉它、改为调用,而不是把特例补进两边。
+    """
     tmpl = _load(db, template_id)
     scope = permission_service.team_scope(db, user)
     if not permission_service.can_view(scope, tmpl):
@@ -117,8 +123,9 @@ def task_run_records(
         select(QueryJob).where(QueryJob.template_id == template_id)
         .order_by(QueryJob.id.desc()).limit(200)
     )
-    if not permission_service.is_insider(scope, tmpl):
-        stmt = stmt.where(QueryJob.user_id == user.id)
+    cond = permission_service.job_visibility_condition(scope)
+    if cond is not None:
+        stmt = stmt.where(cond)
     return list(db.scalars(stmt))
 
 

@@ -6,6 +6,7 @@ import { ParamField } from "./ParamForm";
 import ResultPreviewTable from "./ResultPreviewTable";
 import RunRecordsPanel from "./RunRecordsPanel";
 import SqlModal from "./SqlModal";
+import { DRAWER } from "../widths";
 
 /** 「运行记录」折叠区块的开合记在本地:用户来这儿本就是为了少点几下,
  * 展开过一次的人不该每开一个任务都再点一次。跨任务生效,故不随抽屉重置。 */
@@ -160,7 +161,7 @@ export default function RunDrawer({
       title={task ? `取数:${task.name}` : ""}
       open={open}
       onClose={close}
-      width={preview ? 760 : 480}
+      width={preview ? DRAWER.runPreview : DRAWER.run}
       extra={
         preview ? (
           <Space>
