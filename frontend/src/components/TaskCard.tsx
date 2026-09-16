@@ -1,11 +1,11 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
 import { ClockCircleOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
 import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
-import { fmtTime } from "../format";
 import {
   AuthorizedAvatars,
   credentialWarnText,
   GrantButton,
+  IDLE_TEXT,
   runHint,
   scheduleHint,
   scheduleLabel,
@@ -13,10 +13,8 @@ import {
   stop,
   TaskHandlers,
   taskMenuItems,
-  taskTimeMeta,
+  taskTimeCell,
 } from "./taskActions";
-
-const fmt = (t: string) => fmtTime(t, false);
 
 // 数据源 / 团队两个小标签共用:flex 子项 + minWidth:0,两个都长时按内容比例收缩、
 // 各自省略号截断并排一行;只有一个时它能占满整行不被无谓截断。
@@ -43,8 +41,12 @@ export default function TaskCard({
   h: TaskHandlers;
 }) {
   const users: any[] = r.authorized_users || [];
-  // 卡头时间:最后运行 → 最后编辑 → 创建(口径与列表视图共用,见 taskActions)
-  const { value: timeVal, label: timeLabel } = taskTimeMeta(r);
+  // 卡头那一格:正常是时间(最后运行 → 最后编辑 → 创建),闲置时换成「闲置 167 天」。
+  // 文案与判断都在 taskActions,与列表视图共用一份
+  const timeCell = taskTimeCell(r);
+  // 长期没人跑的已上线任务。给谁看的策略见 taskActions.showIdle(只给 can_manage 的人);
+  // 排到列表末尾在 TasksPage 的 filtered 里做,这里只管这张卡自己怎么长
+  const idle = timeCell.idle;
 
   const meta = TEMPLATE_STATUS[r.status];
 
@@ -57,14 +59,25 @@ export default function TaskCard({
       onClick={() => r.can_run && h.onRun(r)}
       title={runHint(r)}
       style={{
+        // 底色**不跟着变灰**:卡身的小标签(chipStyle)拿 var(--app-bg) 当自己的底,
+        // 卡片底色一往灰里走,数据源 / 团队 / 订阅三枚标签就跟着消失了 —— 那不是降噪,是删信息
         background: "#fff",
-        border: "1px solid #edf0f7",
+        // 闲置**不用 opacity**:整卡半透明在本产品里已经专指 can_run=false「点不动」,
+        // 两者还可能同时成立(一个闲置的已上线任务,对无权限的人同时是点不动的)。
+        // 所以闲置走另外两根轴:深度(撤掉 --card-shadow 的浮起,这套界面的层级全靠它把白卡
+        // 从 --app-bg 上托起来)与墨色(标题退到 --ink-secondary,见卡身)。两根轴与透明度
+        // 互不干扰,叠在一起读出来仍是两句话:「点不动」+「没人用」。
+        // 后退只发生在静止态 —— 鼠标移上去它照样浮起来(.rk-lift 仍只按 can_run 挂),
+        // 这一条正是两种状态不会被读混的关键:闲置的卡片还是点得开取数的。
+        // 影子撤掉后卡片边界会糊,边框往深里走半档把轮廓接回来(仍是实线 —— 虚线在本产品里
+        // 是 GrantButton 的「可以添加」)。
+        border: idle ? "1px solid #e4e8f3" : "1px solid #edf0f7",
         borderRadius: 16,
         padding: "14px 16px",
         height: "100%",
         display: "flex",
         flexDirection: "column",
-        boxShadow: "var(--card-shadow)",
+        boxShadow: idle ? "none" : "var(--card-shadow)",
         cursor: r.can_run ? "pointer" : "default",
         opacity: r.can_run ? 1 : 0.85,
       }}
@@ -96,8 +109,17 @@ export default function TaskCard({
               flexShrink: 0,
             }}
           />
-          <Tooltip title={`${timeLabel} · ${fmt(timeVal)}`}>
-            <span style={{ color: "#9aa0b5", fontSize: 12 }}>{fmt(timeVal)}</span>
+          <Tooltip title={timeCell.hint}>
+            <span
+              style={{
+                color: "#9aa0b5",
+                fontSize: 12,
+                whiteSpace: "nowrap",
+                ...(idle ? IDLE_TEXT : null),
+              }}
+            >
+              {timeCell.text}
+            </span>
           </Tooltip>
           {/* 挂不挂告警的口径见 taskActions.showCredentialWarn */}
           {showCredentialWarn(r) && (
@@ -142,7 +164,9 @@ export default function TaskCard({
           style={{
             fontSize: 15,
             fontWeight: 700,
-            color: "var(--ink)",
+            // 墨色是与「撤掉阴影」正交的第二根降噪轴:扫一排卡片时最先被读到的就是标题的
+            // 字重与黑度,它退一档整张卡就往后站了,而对比度仍远高于可读阈值
+            color: idle ? "var(--ink-secondary)" : "var(--ink)",
             lineHeight: "22px",
             marginBottom: 4,
             display: "-webkit-box",

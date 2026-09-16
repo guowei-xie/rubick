@@ -2,11 +2,14 @@
 任务的「编辑人」与所属团队维护。"""
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import client_ip, get_current_user, require_admin
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.audit import (
@@ -30,6 +33,7 @@ from app.services import (
     permission_service,
     subscription_service,
     team_service,
+    template_service,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -73,10 +77,13 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
             .group_by(QueryJob.template_id)
         ):
             last_runs[tid] = ts
+    now = datetime.now()  # 整批共用同一把尺,理由见 template_service.idle_days
     out: list[TaskOut] = []
     for t in rows:
         sched = schedules.get(t.id)
         sub_on = bool(sched and sched.enabled)
+        # 口径与阈值都在 template_service,这里只搬运(同 can_manage / credential_ready)
+        idle = template_service.idle_days(t, last_runs.get(t.id), now)
         out.append(
             TaskOut(
                 id=t.id, name=t.name, description=t.description,
@@ -86,6 +93,8 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 team_id=t.team_id, team_name=t.team_name,
                 published_version_id=t.published_version_id, created_at=t.created_at,
                 updated_at=t.updated_at, last_run_at=last_runs.get(t.id),
+                idle_days=idle, is_idle=template_service.is_idle(idle),
+                idle_threshold_days=settings.TASK_IDLE_DAYS,
                 timeout_seconds=t.timeout_seconds,
                 can_manage=permission_service.can_edit(scope, t),
                 can_view_detail=permission_service.is_insider(scope, t),

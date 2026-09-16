@@ -63,6 +63,20 @@ class TaskOut(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None  # 最后编辑时间
     last_run_at: datetime | None = None  # 最后一次运行时间(含试跑);无则为空
+    # ---- 闲置(长期没人运行,可以考虑下线)----
+    # 距今多少天没运行过(口径同 last_run_at,含试跑与订阅定时运行)。从未运行过的按
+    # created_at 起算 —— 「上线至今没人跑过」正是最该被看见的一种,给它 null 等于把它藏起来。
+    # **非已上线任务恒为 None**:草稿/已下线不参与判定(见 template_service.idle_days)。
+    idle_days: int | None = None
+    # 是否已超过阈值。阈值比较**在服务端做一次**,与 can_run / credential_ready 同一约定;
+    # 否则「算不算闲置」会在卡片、列表、排序、顶栏筛选片四处各算一遍,改阈值时漏一处就对不上数。
+    is_idle: bool = False
+    # 判定用的阈值(settings.TASK_IDLE_DAYS;0 = 这项提示关着)。只供前端拼一句
+    # 「超过 90 天没有运行记录」的悬停解释 —— 被标出来的人得能看到「为什么是我」。
+    # 每行重复同一个数确实冗余(不同于 SubscribersOut.threshold —— 那是包在一个对象里
+    # 只出现一次,本接口返回的是裸 list),但另两条路更贵:为一句悬停文案多开一个配置接口,
+    # 或让前端硬编码 90(那就成了「前端自己推导规则」,正是本 schema 一直在避免的)。
+    idle_threshold_days: int = 0
     timeout_seconds: int | None = None  # 该任务查询超时(秒);None=按引擎默认
     # 可编辑/授权/下线。四条口径见 permission_service.can_edit(平台管理员 / 该团队的团队管理员 /
     # 仍在团队内的作者 / 被授予该任务编辑权的成员)。前端只消费这个布尔,**不要自己算团队规则**

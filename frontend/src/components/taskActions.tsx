@@ -1,6 +1,9 @@
 import { Avatar, Button, Tooltip } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 
+import { fmtTime } from "../format";
+import { TASK_IDLE } from "./StatusTag";
+
 /** 任务在两种视图(卡片 TaskCard / 列表 TaskTable)里必须一致的那一份:动作、口径、共用小部件。
  *
  * 判定都带 can_manage / can_subscribe / subscribe_enabled 的条件分支,两边各写一份迟早漂移
@@ -86,6 +89,65 @@ export function showCredentialWarn(r: any): boolean {
 export function credentialWarnText(r: any): string {
   return `团队${r.team_name ? `《${r.team_name}》` : ""}尚未登记该数据源的取数账号 —— 该任务当前无法运行,请联系团队管理员`;
 }
+
+/** 该不该把这一行标成「闲置」。**判定在服务端(r.is_idle),这里只决定给谁看** ——
+ *  与 showCredentialWarn 同一策略位:只给 can_manage 的人。三条理由:
+ *  ① 闲置提示唯一的下一步是「下线」,而只有 can_manage 的人做得了那个动作;
+ *  ② 对业务使用者它不只是无用还有害 —— 一个季度/年度才跑一次的任务被标成「闲置 300 天」、
+ *     还被排到列表最后,读起来像「这份数据过时了」,而事实上他就是那个一年来跑一次的人;
+ *  ③ can_manage 的覆盖面恰好对:管理员 / 团队管理员 / 作者本人 / 被授予编辑权的人,
+ *     正是会做「清理没人用的任务」这件事的那批人。
+ *  排序、卡片、列表、顶栏计数、筛选五处全读这一个函数 ——
+ *  否则会出现「顶栏说 3 个闲置、列表里只找得到 1 个」。 */
+export function showIdle(r: any): boolean {
+  return !!r.can_manage && r.is_idle === true;
+}
+
+/** 闲置任务在卡头 / 时间列里显示的那行字。与 taskTimeMeta 的分工:那一句回答
+ *  「最后一次是什么时候」(04-02),这一句回答「到今天有多久」(闲置 167 天)——
+ *  同一个时间的两种读法,不是两个事实,所以**取代**日期而不是并排:并排既要占两段位置
+ *  (280px 的卡头还要放状态点、⋮ 与可能出现的「缺取数账号」胶囊),又要读的人自己心算,
+ *  而那个换算恰恰是这个提示的全部价值。日期退进悬停(idleHint)里。
+ *  天数由服务端 idle_days 给,前端不许自己再算一遍。 */
+export function idleLabel(r: any): string {
+  return `闲置 ${r.idle_days} 天`;
+}
+
+/** 闲置的悬停解释。必须说清三件事:量的是什么、门槛多少、下一步做什么 ——
+ *  否则「闲置 167 天」读起来像一句指责,而不是一条可以处理的线索。
+ *  「从未运行」要单独说:对一个从来没跑过的任务,「最后一次运行在…」是假话,
+ *  而且「上线后就没人跑过」与「跑过但没人跑了」的处理方式本来就不一样。 */
+export function idleHint(r: any): string {
+  // 从未运行时把 taskTimeMeta 那一档降级(最后编辑 / 创建于)也交代出来 ——
+  // 否则一个「昨天刚编辑过、但一直没人跑」的任务,悬停里只剩「从未运行过」,
+  // 而「还有人在维护」恰恰是决定要不要下线时最该看到的一条
+  const { value, label } = taskTimeMeta(r);
+  const head = r.last_run_at
+    ? `最后一次运行在 ${fmtTime(r.last_run_at, false)}`
+    : `上线至今从未运行过(天数从创建时间起算;${label} ${fmtTime(value, false)})`;
+  return (
+    `${head};已超过 ${r.idle_threshold_days} 天没有运行记录(含作者试跑与定时运行)。` +
+    "确认没人再用的话,可以在 ⋮ 菜单里下线"
+  );
+}
+
+/** 卡片卡头 / 列表时间列里那一格该显示什么:正常时是时间,闲置时换成「闲置 167 天」。
+ *  **这个判断只写一次** —— 它正是本文件存在的理由(见文件头注释):两个视图各写一份
+ *  if/else,迟早一边改了措辞另一边没改。历史上就已经漂过一次:同样是非闲置的悬停,
+ *  卡片给的是不带秒的时间、列表给的是带秒的,谁也说不出为什么。现在统一成带秒(悬停本就
+ *  该比正文多给一点信息,否则它和正文一字不差)。
+ *  留给各视图自己决定的只有包法:卡片用 Tooltip,列表必须用原生 title(行上挂着 runHint
+ *  的原生 title,只有子元素的原生 title 盖得住它)。 */
+export function taskTimeCell(r: any): { text: string; hint: string; idle: boolean } {
+  if (showIdle(r)) return { text: idleLabel(r), hint: idleHint(r), idle: true };
+  const { value, label } = taskTimeMeta(r);
+  return { text: fmtTime(value, false), hint: `${label} · ${fmtTime(value)}`, idle: false };
+}
+
+/** 闲置那一格的字怎么长。与 taskTimeCell 同住一处:文案统一了,样式再各写一份就白统一了。
+ *  加粗的灰字而不是彩色胶囊 —— 卡头本就可能有一枚橙色「缺取数账号」,再来一枚彩的
+ *  会变成两个抢眼的告警,而闲置不是故障。 */
+export const IDLE_TEXT: React.CSSProperties = { color: TASK_IDLE.dot, fontWeight: 600 };
 
 /** 定时运行标签的文字与悬停说明。计划描述由后端拼好(schedule_desc),前端不自己算频次语义;
  *  「已订阅」与计划本身二选一,订阅人数只在有人订时才缀上。 */

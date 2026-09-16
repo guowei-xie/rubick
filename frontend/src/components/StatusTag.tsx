@@ -72,6 +72,14 @@ export const CREDENTIAL_STATUS: TagMap = {
   verified: { color: "green", label: "已测通", dot: "#52c41a", tint: "#e8f6ec" },
 };
 
+/** 「闲置」(长期没人运行的已上线任务)的配色。它不是模型上的枚举,所以**不是 TagMeta**
+ *  —— 从不经 <StatusTag> 渲染,给它 color / label 只会多两个永远没人读的成员。
+ *  但卡片、列表行、顶栏筛选片三处要用同一套色,与其散在三个文件里,不如和别的状态色住一起。
+ *  **刻意用灰而不是橙**:闲置不是故障 —— 它没坏、也没人做错什么,只是没人用。
+ *  用 CREDENTIAL_STATUS.unconfigured 那种橙会被读成「现在就跑不动、要立刻修」,
+ *  而这两件事的下一步恰好相反(一个是找团队管理员配账号,一个是考虑把它下掉)。 */
+export const TASK_IDLE = { dot: "#8a90a6", tint: "#eef0f7" } as const;
+
 export const NOTE_LEVEL: TagMap = {
   info: { color: "blue", label: "info" },
   success: { color: "green", label: "success" },

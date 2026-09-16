@@ -1,8 +1,10 @@
-"""取数任务(SQL 模板)的编写、版本、上线/下线、试跑。
+"""取数任务(SQL 模板)的编写、版本、上线/下线、试跑,以及「还有没有人在用」的闲置判定。
 
 术语:产品 UI 里的「任务」= 这里的 SqlTemplate;「上线 / 下线」= publish / archive。
 """
 from __future__ import annotations
+
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -237,6 +239,46 @@ def archive(db: Session, tmpl: SqlTemplate) -> None:
         subs = subscription_service.subscribers_of(db, tmpl.id)
         if subs:
             notify_service.notify_subscription_paused(db, tmpl, [s.user_id for s in subs])
+
+
+# ---------------------------------------------------------------- 闲置(长期没人运行)
+# 「这个任务还有没有人在用」是任务生命周期的判断(下线的依据),与 publish / archive 同属本模块。
+# 不放在 routes.tasks.list_tasks 里:那已经是个「把六七种事实拼成一行」的装配函数,再塞一段
+# 日期算术,口径就藏进装配里了 —— 而这条口径以后还要被「闲置任务清单」之类的地方复用。
+
+
+def idle_days(tmpl: SqlTemplate, last_run_at: datetime | None, now: datetime) -> int | None:
+    """这个任务有多少天没被运行过;**None = 不参与闲置判定**。
+
+    只判定已上线的任务:草稿还没给人用,已下线的已经下线了 —— 给它们算「闲置」得不出任何
+    可执行的下一步,只会多一堆要解释的噪声。于是「idle_days 非空」与「参与判定」是同一件事,
+    消费方不必再记一条「草稿要另外排除」的规则。
+
+    从未运行过的从 created_at 起算:「上线至今没人跑过」比「跑过但很久没跑」更该被看见,
+    给它空值等于把它藏起来。
+
+    时间一律用**朴素** datetime.now():库里存的就是朴素本地时间(TimestampMixin 的
+    server_default=func.now()),与 QueryJob.result_expired 同一把尺 —— 混进 utcnow /
+    带时区的值会凭空差出 8 小时,在 90 天的尺度上看不出来,在边界上就是一条错标。
+
+    now 由调用方传,且**没有默认值**:一次请求几百行要用同一把尺,逐行取 now 会让跨秒的
+    那一批出现 89 / 90 两种结果 —— 那正是「顶栏说 3 个闲置、列表里只找得到 2 个」的来源。
+    留一个 now=None 的兜底等于把这个 bug 的入口一直开着,所以让调用方必须交代清楚。
+    """
+    if tmpl.status != STATUS_PUBLISHED:
+        return None
+    since = last_run_at or tmpl.created_at
+    if since is None:  # created_at 是 NOT NULL,理论上到不了;真到了按「不判定」,不谎报闲置
+        return None
+    return max((now - since).days, 0)
+
+
+def is_idle(days: int | None) -> bool:
+    """超过阈值即闲置。**阈值只在这里比这一次** —— 含「TASK_IDLE_DAYS <= 0 即关闭提示」
+    这条换算,别在别处再判一遍 <= 0:漏判一处的后果不是报错,而是「阈值 0 天 ⇒ 所有任务
+    都闲置」那种静默走样。"""
+    limit = settings.TASK_IDLE_DAYS
+    return limit > 0 and days is not None and days >= limit
 
 
 def _ceiling_note(used: int, task_timeout: int, message: str) -> str:

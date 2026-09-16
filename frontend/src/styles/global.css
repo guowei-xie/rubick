@@ -120,3 +120,13 @@ body {
 .rk-row-hit > td:first-child {
   box-shadow: inset 3px 0 0 var(--brand);
 }
+
+/* 任务列表里「闲置」的行(长期没人运行的已上线任务,判定见 taskActions.showIdle)。
+   只把文字退一档,**不动底色** —— 表格底色已经被斑马纹与 hover 占着,用来回答
+   「我在看哪一行」;再叠一层底色会把这两件事一起读糊。
+   也不用 opacity:那在卡片上专指 can_run=false「点不动」,两种状态可能同时成立,
+   在列表里另立一套含义会让两个视图对同一张任务说不一样的话。
+   不用 !important:.rk-row-hit 的深链高亮与 AntD 的 hover 都该盖得过它。 */
+.rk-row-idle > td {
+  color: var(--ink-secondary);
+}

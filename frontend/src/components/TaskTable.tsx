@@ -6,25 +6,30 @@ import StatusTag, {
   TEMPLATE_STATUS,
   templateStatusRank,
 } from "./StatusTag";
-import { dash, fmtTime } from "../format";
+import { dash } from "../format";
 import {
   AuthorizedAvatars,
   credentialWarnText,
   GrantButton,
+  IDLE_TEXT,
   runHint,
   scheduleHint,
   scheduleLabel,
   showCredentialWarn,
+  showIdle,
   stop,
   TaskHandlers,
   taskMenuItems,
+  taskTimeCell,
   taskTimeMeta,
 } from "./taskActions";
 
 /** 列多,窄屏宁可横向滚动,也不要把列挤成两行(操作列另用 fixed 钉住,见下)。 */
 const SCROLL = { x: "max-content" } as const;
 const CURSOR_RUN = { cursor: "pointer" };
-const CURSOR_IDLE = { cursor: "default" };
+/** 点不动的行。**不叫 CURSOR_IDLE** —— 本文件里的 rk-row-idle 说的是「闲置」
+ *  (长期没人运行),与「点不动」是两件事,同名两个 idle 迟早被读混。 */
+const CURSOR_PLAIN = { cursor: "default" };
 
 /** 排序器里现建 collator 会按次比较重建一份;整表排一次是上千次比较,建一次就够。 */
 const ZH = new Intl.Collator("zh");
@@ -121,11 +126,17 @@ export default function TaskTable({ tasks, h }: { tasks: any[]; h: TaskHandlers 
       {
         title: "时间",
         width: 150,
-        // 哪个时间由 taskTimeMeta 定,与卡片同一档降级;是哪一种写在悬停里,
-        // 否则一列裸时间没人知道量的是什么
+        // 这一格显示什么(时间 / 闲置几天)、悬停说什么,都由 taskTimeCell 定,与卡片共用
+        // 一份 —— 否则一列裸时间没人知道量的是什么,两个视图还会各自漂。
+        // 悬停必须是**原生 title**:行上挂着 runHint 的原生 title,只有子元素的原生 title
+        // 盖得住它,换 Tooltip 会两个一起弹。
         render: (_: any, r: any) => {
-          const { value, label } = taskTimeMeta(r);
-          return <span title={`${label} · ${fmtTime(value)}`}>{fmtTime(value, false)}</span>;
+          const c = taskTimeCell(r);
+          return (
+            <span title={c.hint} style={c.idle ? IDLE_TEXT : undefined}>
+              {c.text}
+            </span>
+          );
         },
         // 后端给的是 ISO 字符串,字典序即时间序 —— 不必上 collator
         sorter: (a: any, b: any) => {
@@ -158,11 +169,16 @@ export default function TaskTable({ tasks, h }: { tasks: any[]; h: TaskHandlers 
     return cols.map((c) => ({ ...c, shouldCellUpdate }));
   }, [h]);
 
+  /** 闲置行整行退一档墨色(样式见 global.css 的 .rk-row-idle)。
+   *  useCallback 只是跟着同文件 onRow 的写法,别指望它省下重渲 —— antd 每次渲染都会另建
+   *  一个 internalRowClassName 包一层传给 rc-table,这里的引用稳不稳它都看不见。 */
+  const rowClassName = useCallback((r: any) => (showIdle(r) ? "rk-row-idle" : ""), []);
+
   const onRow = useCallback(
     (r: any) => ({
       onClick: () => r.can_run && h.onRun(r),
       title: runHint(r),
-      style: r.can_run ? CURSOR_RUN : CURSOR_IDLE,
+      style: r.can_run ? CURSOR_RUN : CURSOR_PLAIN,
     }),
     [h]
   );
@@ -176,6 +192,7 @@ export default function TaskTable({ tasks, h }: { tasks: any[]; h: TaskHandlers 
       pagination={false}
       scroll={SCROLL}
       onRow={onRow}
+      rowClassName={rowClassName}
     />
   );
 }

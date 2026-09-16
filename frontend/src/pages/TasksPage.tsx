@@ -23,8 +23,8 @@ import GrantModal from "../components/GrantModal";
 import SubscribersModal from "../components/SubscribersModal";
 import TaskCard from "../components/TaskCard";
 import TaskTable from "../components/TaskTable";
-import { TaskHandlers } from "../components/taskActions";
-import { TEMPLATE_STATUS } from "../components/StatusTag";
+import { showIdle, TaskHandlers } from "../components/taskActions";
+import { TASK_IDLE, TEMPLATE_STATUS } from "../components/StatusTag";
 
 /** 卡片 / 列表两种视图的选择:存本地,不进 URL。
  *  它是「这个人习惯怎么看」而不是「此刻在看哪一批」—— 筛选与搜索走 ?q= / ?status= 是为了刷新与深链
@@ -42,17 +42,20 @@ function StatChip({
   label,
   active,
   activeBg,
+  hint,
   onClick,
 }: {
   n: number;
   label: string;
   active: boolean;
   activeBg: string;
+  hint?: string;
   onClick: () => void;
 }) {
   return (
     <span
       onClick={onClick}
+      title={hint}
       style={{
         cursor: "pointer",
         padding: "3px 12px",
@@ -76,6 +79,7 @@ function emptyTextFor({
   teamFilter,
   mineOnly,
   subOnly,
+  idleOnly,
   showRecycle,
 }: {
   rawQ: string | null;
@@ -83,12 +87,14 @@ function emptyTextFor({
   teamFilter: string | null;
   mineOnly: boolean;
   subOnly: boolean;
+  idleOnly: boolean;
   showRecycle: boolean;
 }): string {
   const where = showRecycle ? "回收站里" : "";
   if (rawQ?.trim()) return `没有匹配「${rawQ}」的任务`;
   if (noTeamYet) return "你还不属于任何团队 —— 请联系平台管理员把你加入团队后才能新建任务";
   if (teamFilter) return "该团队下暂无任务";
+  if (idleOnly) return "没有闲置的任务 —— 已上线的任务最近都有人在跑";
   if (mineOnly && subOnly) return `${where}没有既是你开发、又被你订阅的任务`;
   if (mineOnly) return `${where}没有你开发的任务`;
   if (subOnly) return `${where}没有你订阅的任务`;
@@ -122,20 +128,47 @@ export default function TasksPage() {
     setView(v);
     localStorage.setItem(VIEW_KEY, v);
   };
-  // 状态筛选与搜索词一样走 URL(?status=),刷新/深链可保留,与 ?q= 同一套来源
-  const statusFilter = sp.get("status"); // null=全部
-  const setStatusFilter = (s: string | null) => {
-    if (s) sp.set("status", s);
-    else sp.delete("status");
+  // 回收站视图:同页切换(?recycle=1),只看已下线任务;与顶栏那排筛选片互斥
+  const showRecycle = sp.get("recycle") === "1";
+  // 闲置阈值(天):服务端下发在每一行上,全局同一个值,取任一行即可;0 = 这项提示关着。
+  // 只用来拼一句悬停解释 —— 判定本身在服务端(is_idle),前端不拿它去算。
+  // **不给默认值**:写 `?? 90` 就是前端自己推导规则,一个配了 30 天的部署会被那句话骗
+  //(而且它恰好在「列表还没加载完 + 深链 ?idle=1」时才露出来,最不容易被发现)
+  const idleThreshold: number = tasks[0]?.idle_threshold_days ?? 0;
+  // 提示关着时 ?idle=1 一律当没写过:否则深链会筛出一张空列表、空态还说「最近都有人在跑」,
+  // 而真相是功能关着;此时筛选片也不渲染,人连退出这个筛选的入口都没有。
+  // 列表还没加载完(tasks 为空、阈值无从得知)时先按「开着」算,免得全量先闪一下再收窄。
+  const idleUsable = !tasks.length || idleThreshold > 0;
+  // 顶栏那一排片是**单选**:此刻在看哪一批,只有这一个答案。
+  // 互斥由**读取侧**保证,而不是只靠 selectChip 写的时候删干净 —— 否则一条手敲的
+  // ?status=draft&idle=1(或收藏夹里的旧链接)会同时套两个谓词:列表恒空、高亮显示「闲置」、
+  // 空态却说「已上线的任务最近都有人在跑」,三者互相矛盾且没人解释得清。
+  // 在这里收口,坏 URL 就只是被归一化成一个合法选中态,下游(filtered / 计数 / 空态)
+  // 都只看 activeChip 一个值。
+  // 闲置 ⊂ 已上线,所以「已上线 + 闲置」同时选本就多余、「草稿 + 闲置」必然是空集,
+  // 单选不损失任何能力,却省掉一整套「这两个能不能同时勾」的解释。
+  // isManager 兜底同 mineOnly:闲置标记本就只给 can_manage 的人(taskActions.showIdle)。
+  const activeChip =
+    !showRecycle && isManager && idleUsable && sp.get("idle") === "1"
+      ? "idle"
+      : sp.get("status"); // null=全部
+  const idleOnly = activeChip === "idle";
+  // URL 上仍分两个键而不是把 idle 混进 ?status= —— status 是任务的状态字段,
+  // idle 是算出来的属性,混成一个枚举以后就会有人拿 ?status=idle 去后端查。
+  const selectChip = (key: string | null) => {
+    sp.delete("status");
+    sp.delete("idle");
+    if (key === "idle") sp.set("idle", "1");
+    else if (key) sp.set("status", key);
     setSp(sp, { replace: true });
   };
-  // 回收站视图:同页切换(?recycle=1),只看已下线任务;与状态筛选互斥
-  const showRecycle = sp.get("recycle") === "1";
   const toggleRecycle = () => {
     if (showRecycle) sp.delete("recycle");
     else {
       sp.set("recycle", "1");
       sp.delete("status");
+      // 已下线的任务不参与闲置判定,带着一个必然为空的筛选进回收站是纯粹的困惑源
+      sp.delete("idle");
     }
     setSp(sp, { replace: true });
   };
@@ -226,31 +259,70 @@ export default function TasksPage() {
       if ((t.team_name || "").toLowerCase().includes(q)) return true;
       return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
     };
-    return scoped.filter((t) =>
+    const rows = scoped.filter((t) =>
       showRecycle
         ? t.status === "archived" && matchQ(t)
-        : t.status !== "archived" && matchQ(t) && (!statusFilter || t.status === statusFilter)
+        : t.status !== "archived" &&
+          matchQ(t) &&
+          (idleOnly ? showIdle(t) : !activeChip || t.status === activeChip)
     );
-  }, [scoped, q, statusFilter, showRecycle]);
+    // 闲置的沉到最后。视觉降噪只是让它不抢眼,沉底才真正把一屏的位置还给还在用的任务 ——
+    // 「三年前建的僵尸任务」与「上周建的活跃任务」谁在前面,本来完全取决于建得早晚
+    // (后端按 id DESC 给)。sort 是稳定的,所以两组内部仍保持后端给的顺序,
+    // 不会顺手打乱既有的「新建在前」;组内也不按闲置程度再排 —— 一个默认顺序不该同时
+    // 回答两个问题,要按「闲置最久」看就用闲置筛选片 + 列表视图的时间列升序。
+    // 就地 sort 安全:filter() 返回的已经是新数组,改不到 tasks / scoped。
+    // 判定走 showIdle 而不是 t.is_idle —— 看不到闲置标记的人,也不该被悄悄换掉顺序。
+    // 列表视图里这只是「默认顺序」:点了列头排序后由 AntD 的 sorter 接管,那是使用者的
+    // 明确指令,该听他的。
+    // 次序补全到「总」:同组内按 id 倒序(= 新建在前)。不写这一条的话,组内顺序
+    // 完全靠「后端给的是 id DESC」+「sort 稳定」两个隐含前提撑着 —— 哪天后端把
+    // ORDER BY 改成 updated_at,卡片视图的默认顺序会跟着变,而前端一行 diff 都没有。
+    return rows.sort((a, b) => Number(showIdle(a)) - Number(showIdle(b)) || b.id - a.id);
+  }, [scoped, q, activeChip, idleOnly, showRecycle]);
 
   const summary = useMemo(() => {
-    const s = { published: 0, draft: 0, archived: 0, total: 0 };
+    const s = { published: 0, draft: 0, archived: 0, idle: 0, total: 0 };
     for (const t of scoped) {
       if (t.status === "archived") {
         s.archived++; // 下线任务只进回收站,不计入本页统计
         continue;
       }
       s.total++;
-      if (t.status === "published") s.published++;
-      else if (t.status === "draft") s.draft++;
+      if (t.status === "published") {
+        s.published++;
+        // 与卡片读同一个 showIdle:顶栏说「3 个闲置」,列表里就必须正好找得到那 3 个。
+        // 它含 can_manage 那道门,所以没有编辑权的人既看不到标记、也不会被算进这个数
+        if (showIdle(t)) s.idle++;
+      } else if (t.status === "draft") s.draft++;
     }
     return s;
   }, [scoped]);
 
-  // 顶部筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选
-  const statChips: { key: string | null; label: string; n: number; tint: string }[] = [
+  // 顶部筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选。
+  // 「闲置」只在真有闲置任务时才插进来 —— 一个恒为 0 的筛选片是噪声,而它本身就是来降噪的;
+  // 但 idleOnly 时无论如何都要渲染,否则「筛完只剩 0 个」会把这枚片连同关掉它的唯一入口
+  // 一起抹掉,人就困在空列表里了。
+  // 没有闲置任务时不占位(一个恒为 0 的片是噪声,而它本身就是来降噪的);但 idleOnly 时
+  // 无论如何都要渲染,否则「筛完只剩 0 个」会把这枚片连同关掉它的唯一入口一起抹掉。
+  // 提示关着时 idleOnly 已经恒为 false(见 idleUsable),这里不必再判一次阈值。
+  // 不叠 isManager:summary.idle 数的是 showIdle(含 can_manage),idleOnly 自己也带了
+  // 那道门,再加一层只会让这个闸看起来是按角色开的,而它其实是按权限开的。
+  const showIdleChip = summary.idle > 0 || idleOnly;
+  const statChips: { key: string | null; label: string; n: number; tint: string; hint?: string }[] = [
     { key: "published", label: "已上线", n: summary.published, tint: TEMPLATE_STATUS.published.tint! },
     { key: "draft", label: "草稿", n: summary.draft, tint: TEMPLATE_STATUS.draft.tint! },
+    ...(showIdleChip
+      ? [
+          {
+            key: "idle",
+            label: "闲置",
+            n: summary.idle,
+            tint: TASK_IDLE.tint,
+            hint: `已上线但超过 ${idleThreshold} 天没有运行记录的任务(含作者试跑与定时运行)—— 可以考虑下线`,
+          },
+        ]
+      : []),
     { key: null, label: "总数", n: summary.total, tint: "#eef0f7" },
   ];
 
@@ -264,6 +336,7 @@ export default function TasksPage() {
     teamFilter,
     mineOnly,
     subOnly,
+    idleOnly,
     showRecycle,
   });
 
@@ -369,9 +442,10 @@ export default function TasksPage() {
                   key={c.label}
                   n={c.n}
                   label={c.label}
-                  active={statusFilter === c.key}
+                  active={activeChip === c.key}
                   activeBg={c.tint}
-                  onClick={() => setStatusFilter(statusFilter === c.key ? null : c.key)}
+                  hint={c.hint}
+                  onClick={() => selectChip(activeChip === c.key ? null : c.key)}
                 />
               ))}
             </Space>
