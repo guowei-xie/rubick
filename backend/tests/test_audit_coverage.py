@@ -57,6 +57,8 @@ AUDITED: dict[str, frozenset[str]] = {
     ),
     # 转移任务所属团队:同时改变可见范围与取数身份,治理上是大事
     "PUT /api/tasks/{template_id}/team": frozenset({A.ACTION_TASK_TEAM_TRANSFER}),
+    # 转移任务作者(离职交接):在不产生任何 task_edit_* 行的前提下换掉了两个人的编辑权
+    "PUT /api/tasks/{template_id}/author": frozenset({A.ACTION_TASK_AUTHOR_TRANSFER}),
     # 任务订阅:订阅/退订都留痕(自动清退的 task_auto_unsubscribe 由 worker 侧写,
     # 不对应任何写接口,见 subscription_service.settle_on_success)
     "PUT /api/tasks/{template_id}/subscription": frozenset({A.ACTION_TASK_SUBSCRIBE}),

@@ -204,6 +204,62 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
     return note
 
 
+# ---------------------------------------------------------------- 任务作者转移
+
+
+def notify_author_transferred(
+    db: Session, tmpl: SqlTemplate, *, old_author_id: int, operator: User
+) -> None:
+    """任务作者转移 → 新旧作者各收一条,**两边说的话不同**。
+
+    新作者要知道「这件事从今天起归你」以及权限从哪来;原作者要知道「你不再能改它」
+    **以及真要改怎么办** —— 少了后半句,他只会在列表里发现编辑按钮没了然后来问人。
+    两条都写明操作人:团队管理员代办的离职交接里,收信的两个人都不是发起人。
+
+    原作者已停用时跳过他那条(离职清理置 is_active=False,人已经登录不进来了)。
+    这道判断刻意留在本函数里、不塞进 _push:那里是所有通知的公共出口,给它加一条
+    全局过滤会连带改掉订阅、取数失败等所有通知的行为,爆炸半径远超本功能。
+    """
+    link = _records_link(tmpl.id)
+    team = f"团队《{tmpl.team_name}》" if tmpl.team_name else "该团队"
+    by = f"(由 {operator.name} 操作)"
+
+    # 新作者不另传:调用点在 commit 之后,tmpl.author_id 就是他,
+    # 多一个参数只是多一个能与事实矛盾的入口
+    _push(
+        db,
+        user_id=tmpl.author_id,
+        title="你被指定为任务作者",
+        body=(
+            f"{team}的任务《{tmpl.name}》的作者已转给你{by}。"
+            "你现在可以编辑、上下线这个任务,并为业务同事授权;"
+            "该任务的定时运行失败时也会通知你。"
+        ),
+        level="info",
+        link=link,
+        job_id=None,
+        template_id=tmpl.id,
+    )
+
+    old = db.get(User, old_author_id)
+    if old is None or not old.is_active:
+        return
+    _push(
+        db,
+        user_id=old_author_id,
+        title="你的任务已移交他人",
+        body=(
+            f"{team}的任务《{tmpl.name}》的作者已由你转为他人{by}。"
+            "除非你是本团队的团队管理员,否则你对该任务不再有编辑权(仍可见、可运行);"
+            "如仍需编辑,请让团队管理员单独授予你该任务的编辑权。"
+        ),
+        level="info",
+        link=link,
+        job_id=None,
+        template_id=tmpl.id,
+    )
+
+
 # ---------------------------------------------------------------- 任务订阅(定时运行)
 
 def notify_subscription_run_failed(

@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.audit import (
+    ACTION_TASK_AUTHOR_TRANSFER,
     ACTION_TASK_EDIT_GRANT,
     ACTION_TASK_EDIT_REVOKE,
     ACTION_TASK_ENUM_REFRESH,
@@ -24,7 +25,13 @@ from app.models.template import SqlTemplate, TemplateVersion
 from app.models.user import User
 from app.schemas.common import ParamDef
 from app.schemas.query import JobOut, TaskOut
-from app.schemas.team import EditorIn, TaskEditorOut, TaskTeamIn
+from app.schemas.team import (
+    EditorIn,
+    TaskAuthorIn,
+    TaskEditorOut,
+    TaskTeamIn,
+    TeamMemberOut,
+)
 from app.schemas.template import EnumRefreshIn, SharedEnumValuesOut
 from app.services import (
     audit_service,
@@ -45,6 +52,14 @@ def _load(db: Session, template_id: int) -> SqlTemplate:
     if tmpl is None:
         raise NotFoundError("任务不存在")
     return tmpl
+
+
+def _load_user(db: Session, user_id: int) -> User:
+    """取用户或 404。同 _load ——「按 id 取一个人」在本文件的两个入口走同一句话。"""
+    user = db.get(User, user_id)
+    if user is None:
+        raise NotFoundError("用户不存在")
+    return user
 
 
 @router.get("", response_model=list[TaskOut])
@@ -99,6 +114,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 can_manage=permission_service.can_edit(scope, t),
                 can_view_detail=permission_service.is_insider(scope, t),
                 developed_by_me=permission_service.is_author_or_grantee(scope, t),
+                can_transfer_author=permission_service.can_transfer_author(scope, t),
                 can_run=permission_service.can_run(scope, t),
                 credential_ready=t.id in cred_ready,
                 authorized_users=authorized.get(t.id, []),
@@ -232,9 +248,7 @@ def grant_task_editor(
     """把某任务的编辑权授予一名**本团队成员**。仅团队管理员或平台管理员可操作。"""
     tmpl = _load(db, template_id)
     team = team_service.require_team_admin_of_template(db, user, tmpl)
-    target = db.get(User, data.user_id)
-    if target is None:
-        raise NotFoundError("用户不存在")
+    target = _load_user(db, data.user_id)
     if not team_service.is_member(db, target, team.id):
         raise RubicError(f"{target.name} 不是团队《{team.name}》的成员,不能授予编辑权")
     created = permission_service.grant_edit(
@@ -313,3 +327,67 @@ def transfer_task_team(
         ip=ip,
     )
     return {"ok": True, "team_id": target.id, "team_name": target.name}
+
+
+# ---------------------------------------------------------------- 转移作者(离职交接)
+
+
+@router.get("/{template_id}/author-candidates", response_model=list[TeamMemberOut])
+def task_author_candidates(
+    template_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """可以接手这个任务的人:该任务所属团队的**在职成员**,排除当前作者。
+
+    **刻意不让前端拿 GET /teams/{id} 自己筛**:候选集的三条规则(同团队 / 在职 /
+    不是当前作者)必须与 template_service.transfer_author 的校验逐条对齐,在前端复述
+    一遍就是两份会漂移的规则 —— 漂移的表现是「下拉里选得到、点了报错」。
+
+    守卫用与转移同一个 require_can_transfer_author:**能看到候选名单的人恰好就是能转移的人**。
+    """
+    tmpl = _load(db, template_id)
+    team, _ = permission_service.require_can_transfer_author(db, user, tmpl)
+    return template_service.author_candidates(db, tmpl, team=team)
+
+
+@router.put("/{template_id}/author")
+def transfer_task_author(
+    template_id: int,
+    data: TaskAuthorIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    ip: str | None = Depends(client_ip),
+):
+    """把任务的作者转给同团队的另一名成员(离职交接)。
+
+    发起人 = 作者本人 / 该任务所属团队的团队管理员 / 平台管理员,**不含**被授予该任务
+    编辑权的人 —— 口径见 permission_service.can_transfer_author。故守卫既不是
+    require_admin(那是转移团队的),也不是 require_team_admin_of_template(那会把作者本人挡在外面)。
+    """
+    tmpl = _load(db, template_id)
+    team, initiated_as = permission_service.require_can_transfer_author(db, user, tmpl)
+    target = _load_user(db, data.user_id)
+    # 必须在改 author_id 之前取(同 transfer_task_team 取 from_name)
+    from_name = tmpl.author_name
+    from_id, revoked_edit = template_service.transfer_author(
+        db, tmpl, target, team=team, operator=user
+    )
+    audit_service.log(
+        db, user=user, action=ACTION_TASK_AUTHOR_TRANSFER,
+        resource_type=RESOURCE_TEMPLATE, resource_id=tmpl.id, resource_name=tmpl.name,
+        detail={
+            "from_user_id": from_id, "from_user_name": from_name,
+            "to_user_id": target.id, "to_user_name": target.name,
+            # 同名同事在交接复盘里区分不开(同 team_service.members_by_team 带邮箱的理由)
+            "to_user_email": target.email,
+            "team_id": team.id, "team_name": team.name,
+            # 以什么身份发起的。离职复盘要分得清「本人主动交接」与「管理员代办」——
+            # 光看 user_id 还得再查一次他当时是不是团队管理员
+            "initiated_as": initiated_as,
+            # 新作者原先那条显式 edit 授权已成冗余,随本次清掉(见 transfer_author)
+            "revoked_redundant_edit": revoked_edit,
+        },
+        ip=ip,
+    )
+    return {"ok": True, "author_id": target.id, "author_name": target.name}

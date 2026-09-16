@@ -23,6 +23,9 @@ export type TaskHandlers = {
   onArchive: (r: any) => void;
   onSubscribeToggle: (r: any) => void; // 订阅/退订(按 r.subscribed 二态)
   onSubscribers: (r: any) => void; // 订阅者名单与订阅记录(can_manage)
+  // 转移作者(离职交接)。门是 can_transfer_author 而**不是** can_manage:
+  // 被授予该任务编辑权的人有 can_manage,却不该能处分归属
+  onTransferAuthor: (r: any) => void;
 };
 
 /** 卡片/行内的点击不该冒泡成「取数」。菜单项与弹层虽在 DOM 上走 portal,
@@ -53,6 +56,14 @@ export function taskMenuItems(r: any, h: TaskHandlers): any[] {
     );
     if (r.subscribe_enabled) {
       items.push({ key: "subscribers", label: "订阅者名单", onClick: () => h.onSubscribers(r) });
+    }
+    // 归属变更,不是日常编辑动作:另起一组放最后,免得跟「编辑/上下线」混在一起误点。
+    // 条件是服务端下发的独立布尔位 —— 用 can_manage 会把被授予编辑权的人也放进来
+    if (r.can_transfer_author) {
+      items.push(
+        { type: "divider" },
+        { key: "transfer-author", label: "转移作者", onClick: () => h.onTransferAuthor(r) }
+      );
     }
   } else if (r.can_view_detail) {
     // 团队内部人但对这个任务没有编辑权:给一个只读入口。没有它,他在列表里看得见这个任务,

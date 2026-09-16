@@ -124,7 +124,7 @@ def members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
     rows = db.execute(
         select(
             TeamMember.team_id,
-            User.id, User.name, User.avatar, User.email, User.role,
+            User.id, User.name, User.avatar, User.email, User.role, User.is_active,
             TeamMember.is_team_admin, TeamMember.created_at,
         )
         .join(TeamMember, TeamMember.user_id == User.id)
@@ -133,21 +133,31 @@ def members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
         .order_by(TeamMember.team_id, TeamMember.is_team_admin.desc(), User.id)
     ).all()
     out: dict[int, list[dict]] = {tid: [] for tid in ids}
-    for team_id, uid, name, avatar, email, role, is_admin, joined in rows:
+    for team_id, uid, name, avatar, email, role, is_active, is_admin, joined in rows:
         out[team_id].append(
             {
                 # 带邮箱:同名同事在成员表里区分不开,而「谁在这个团队」等于「谁能读这些数据」,
                 # 认错人的代价是一次误授权
                 "user_id": uid, "name": name, "avatar": avatar, "email": email, "role": role,
+                # 离职清理只置 is_active、不删 TeamMember 行,所以「还在名单里」不等于
+                # 「还能接活」。作者转移的候选名单据此过滤(见 routes/tasks.py)
+                "is_active": bool(is_active),
                 "is_team_admin": bool(is_admin), "joined_at": joined,
             }
         )
     return out
 
 
-def members_of(db: Session, team_id: int) -> list[dict]:
-    """单个团队的成员名单。批量版见 members_by_team —— 名单的形状只在那里定义一次。"""
-    return members_by_team(db, [team_id])[team_id]
+def members_of(db: Session, team_id: int, *, active_only: bool = False) -> list[dict]:
+    """单个团队的成员名单。批量版见 members_by_team —— 名单的形状只在那里定义一次。
+
+    active_only:只要**在职**成员。离职清理只把 users.is_active 置 False、不删 TeamMember 行,
+    所以「还在名单里」不等于「还能接活」。给这件事一个具名参数,而不是让每个调用点自己
+    记得写 `and m["is_active"]` —— 忘了不会报错、不会有测试挂,只会在某天把活派给一个
+    已经登录不进来的人时才暴露。
+    """
+    rows = members_by_team(db, [team_id])[team_id]
+    return [m for m in rows if m["is_active"]] if active_only else rows
 
 
 def member_of(db: Session, team_id: int, user_id: int) -> dict | None:
@@ -219,15 +229,22 @@ def can_admin_team(db: Session, user: User, team_id: int) -> bool:
     return is_platform_admin(user) or is_team_admin(db, user, team_id)
 
 
-def require_team_admin_of_template(db: Session, user: User, tmpl) -> Team:
-    """任务维度的团队管理员守卫:把「无主任务」这个特例收在一处。
+def team_of_template(db: Session, tmpl) -> Team:
+    """任务的所属团队,**把「无主任务」这个特例收在一处**。
 
-    任务的 team_id 在 DB 层可空(见 models/template.py),所以每个「按任务找团队管理员」的
-    入口都要先处理它为空的情形。写在这里,新增入口自动继承,不必各自记得补一遍。
+    任务的 team_id 在 DB 层可空(见 models/template.py),所以每个「按任务找团队」的入口都要
+    先处理它为空的情形 —— 连同那句面向用户的下一步指引。写在这里,新增入口自动继承,
+    不必各自记得补一遍(否则同一句中文会散落在若干个守卫里,改一个字要满仓库找)。
     """
     if tmpl.team_id is None:
         raise RubicError("该任务还没有所属团队,请先联系平台管理员为它指定团队")
-    return require_team_admin(db, user, tmpl.team_id)
+    return get_team(db, tmpl.team_id)
+
+
+def require_team_admin_of_template(db: Session, user: User, tmpl) -> Team:
+    """任务维度的团队管理员守卫。"""
+    team = team_of_template(db, tmpl)
+    return require_team_admin(db, user, team.id)
 
 
 def require_member(db: Session, user: User, team_id: int) -> Team:

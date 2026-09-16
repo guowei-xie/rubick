@@ -67,3 +67,9 @@ export const connectOkMsg = (
     };
   return { level: "success", text: head };
 };
+
+/** 选人下拉里「这是谁」的一行:姓名 · 邮箱。同名同事在名单里区分不开,
+ *  而选错人的代价是把任务/权限交给了另一个人,所以带上邮箱。 */
+export function personLabel(p: { name?: string | null; email?: string | null }): string {
+  return [p.name, p.email].filter(Boolean).join(" · ");
+}

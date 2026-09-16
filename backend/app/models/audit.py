@@ -35,6 +35,11 @@ ACTION_TASK_ENUM_REFRESH = "task_enum_refresh"
 # 任务转移团队:改的是任务的可见范围与取数身份,治理上是大事,单独一个码
 ACTION_TASK_TEAM_TRANSFER = "task_team_transfer"
 
+# 任务转移作者(离职交接):改的是「这份资产归谁」。它在**不产生任何 task_edit_* 行**的
+# 前提下同时改变了两个人的有效编辑权(见 permission_service.can_edit 第 3 条),
+# 所以必须独立成码 —— 否则审计页上的编辑权时间线会出现一个无法解释的断点。
+ACTION_TASK_AUTHOR_TRANSFER = "task_author_transfer"
+
 # 任务授权(业务侧 view/run/download)
 ACTION_PERMISSION_GRANT = "permission_grant"
 ACTION_PERMISSION_REVOKE = "permission_revoke"
@@ -99,6 +104,7 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_RESTORE: ("任务从回收站恢复", GROUP_TASK),
     ACTION_TASK_ENUM_REFRESH: ("更新枚举候选值", GROUP_TASK),
     ACTION_TASK_TEAM_TRANSFER: ("转移任务所属团队", GROUP_TASK),
+    ACTION_TASK_AUTHOR_TRANSFER: ("转移任务作者", GROUP_TASK),
     ACTION_TASK_SUBSCRIBE: ("订阅任务", GROUP_TASK),
     ACTION_TASK_UNSUBSCRIBE: ("退订任务", GROUP_TASK),
     ACTION_TASK_AUTO_UNSUBSCRIBE: ("连续未消费自动退订", GROUP_TASK),

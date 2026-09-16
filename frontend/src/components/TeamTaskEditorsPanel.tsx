@@ -10,6 +10,7 @@ import {
   teamTaskEditors,
 } from "../api";
 import StatusTag, { EDITOR_SOURCE, EDITOR_SOURCE_HINT, TEMPLATE_STATUS } from "./StatusTag";
+import TransferAuthorModal from "./TransferAuthorModal";
 
 /**
  * 「任务编辑权」面板 —— 团队管理员按任务把编辑权授予团队成员。
@@ -29,6 +30,7 @@ export default function TeamTaskEditorsPanel({
   const [loading, setLoading] = useState(true);
   const [editorsOf, setEditorsOf] = useState<Record<number, TaskEditor[]>>({});
   const [open, setOpen] = useState<any | null>(null);
+  const [transferTarget, setTransferTarget] = useState<any | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -83,12 +85,21 @@ export default function TeamTaskEditorsPanel({
       ? [
           {
             title: "操作",
-            width: 110,
+            width: 190,
             // 「管理」而非「授予」:撤销也在同一个弹窗里,叫「授予编辑权」会让人以为撤不了
             render: (_: any, t: any) => (
-              <Button type="link" size="small" onClick={() => setOpen(t)}>
-                管理编辑权
-              </Button>
+              <Space size={0}>
+                <Button type="link" size="small" onClick={() => setOpen(t)}>
+                  管理编辑权
+                </Button>
+                {/* 团队管理员在这一页做离职交接最顺手:作者与可编辑的人就并排在左边两列。
+                    门仍是服务端下发的 can_transfer_author,不是本面板的 canManage */}
+                {t.can_transfer_author && (
+                  <Button type="link" size="small" onClick={() => setTransferTarget(t)}>
+                    转移作者
+                  </Button>
+                )}
+              </Space>
             ),
           },
         ]
@@ -119,6 +130,11 @@ export default function TeamTaskEditorsPanel({
         editors={(open && editorsOf[open.id]) || []}
         onClose={() => setOpen(null)}
         onChanged={load}
+      />
+      <TransferAuthorModal
+        task={transferTarget}
+        onClose={() => setTransferTarget(null)}
+        onDone={load}
       />
     </>
   );

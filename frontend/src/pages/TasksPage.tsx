@@ -22,6 +22,7 @@ import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
 import GrantModal from "../components/GrantModal";
 import SubscribersModal from "../components/SubscribersModal";
+import TransferAuthorModal from "../components/TransferAuthorModal";
 import TaskCard from "../components/TaskCard";
 import TaskTable from "../components/TaskTable";
 import { showIdle, TaskHandlers } from "../components/taskActions";
@@ -124,6 +125,7 @@ export default function TasksPage() {
   // 漏配一次就是一个不报错的陈旧高亮
   const [records, setRecords] = useState<{ task: any; jobId: number | null } | null>(null);
   const [subscribersTarget, setSubscribersTarget] = useState<any>(null);
+  const [transferTarget, setTransferTarget] = useState<any>(null);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
   const [view, setView] = useState<ViewMode>(() =>
@@ -374,6 +376,7 @@ export default function TasksPage() {
       onArchive: doArchive,
       onSubscribeToggle: doSubscribeToggle,
       onSubscribers: setSubscribersTarget,
+      onTransferAuthor: setTransferTarget,
     }),
     [doPublish, doArchive, doSubscribeToggle]
   );
@@ -536,6 +539,13 @@ export default function TasksPage() {
         task={subscribersTarget}
         open={!!subscribersTarget}
         onClose={() => setSubscribersTarget(null)}
+      />
+      <TransferAuthorModal
+        task={transferTarget}
+        onClose={() => setTransferTarget(null)}
+        // 必须重拉列表:作者本人转出后 can_manage / can_transfer_author / developed_by_me
+        // 全都翻转,不重拉他还看得到「编辑」入口,点进去才 403
+        onDone={load}
       />
     </Card>
   );

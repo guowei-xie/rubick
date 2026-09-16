@@ -71,3 +71,15 @@ class TaskEditorOut(BaseModel):
 
 class TaskTeamIn(BaseModel):
     team_id: int
+
+
+class TaskAuthorIn(BaseModel):
+    """作者转移的接收人。**只能是该任务所属团队的在职成员**(服务端校验),
+    与 EditorIn 同一个取值范围,故同住本文件而不在 schemas/template.py。
+
+    刻意不进 TemplateUpdateIn:作者转移会同时改变编辑权归属与「我开发的」筛选,
+    是一次治理动作而非任务编辑的一部分 —— 理由与 team_id 不进 TemplateUpdateIn
+    完全相同(见 schemas/template.py 里 TemplateUpdateIn 的说明)。
+    """
+
+    user_id: int

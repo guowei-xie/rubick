@@ -40,6 +40,7 @@ from app.services import (
     query_service,
     result_service,
     subscription_service,
+    team_service,
 )
 
 
@@ -239,6 +240,82 @@ def archive(db: Session, tmpl: SqlTemplate) -> None:
         subs = subscription_service.subscribers_of(db, tmpl.id)
         if subs:
             notify_service.notify_subscription_paused(db, tmpl, [s.user_id for s in subs])
+
+
+# ---------------------------------------------------------------- 转移作者(离职交接)
+
+
+def transfer_author(
+    db: Session, tmpl: SqlTemplate, target: User, *, team, operator: User
+) -> tuple[int, bool]:
+    """把任务的作者转给同团队的另一名成员。返回 (原作者 id, 是否清掉了冗余的 edit 授权)。
+
+    发起人资格由路由层的 permission_service.require_can_transfer_author 判完;这里只负责
+    接收人校验与连带规则 —— 两者都**只在这里写一次**(同 team_service.transfer_template)。
+
+    **跟着 author_id 自动走的**(这里什么都不用做):编辑权第 3 条
+    (permission_service.can_edit)、任务列表的「我开发的」、编辑人名单里的 source="author"、
+    订阅定时运行失败的收件人(notify_service._team_fixers(include_author=True))、
+    以及各处展示的作者名(SqlTemplate.author_name 是 join 出来的 property,不落库)。
+
+    **刻意不动的**:
+      - TemplateVersion.author_id 与 accepted_by —— 那是「这一版是谁保存的 / 谁上线的」
+        不可变历史快照,不是归属。改了会让审计里的 task_update 与版本表互相打脸,
+        「谁写坏了这版 SQL」也就永久查不出。同构先例见 add_version:被授予编辑权的人
+        保存新版本时,版本作者记他,任务作者不变。
+      - 该任务上**其他人**的 edit 授权 —— 与转移团队的连带撤销适用条件正好相反:
+        那边的前提(同团队)已不成立,这边团队没变,前提仍然成立。
+      - 业务授权(view/run/download)、订阅关系、运行记录、共享候选值 —— 都不以作者为键。
+      - **不给原作者补一条 edit 授权**:本功能的场景是离职交接,「让他不再能改」正是目的。
+        况且在这里偷偷造一条 Permission 行,等于一个没有 task_edit_grant 事件的权限 ——
+        审计上查无此授权。确有需要时由团队管理员在「任务编辑权」里显式授予,那才留得下痕。
+
+    **唯一主动做的连带清理**是新作者原先那条 edit 授权行:作者身份已经覆盖它,而
+    editors_by_template 里 author 会盖住 granted,那行从此在 UI 上看不见、也就撤不掉;
+    等哪天作者再被转走,它会静默复活成一条编辑权。
+    """
+    # 读到最新已提交值再判「已经是作者」——两个管理员同时点同一个人时,
+    # 这能把静默双写降级成一条干净的 400(不为此引入乐观锁,transfer_template 也没有)
+    db.refresh(tmpl)
+
+    # 「谁可以接手」只有 author_candidates 一个出处:下拉列的和这里放行的必须是同一批人,
+    # 否则就会出现它自己要防的那种症状 ——「下拉里选得到、点了报错」。
+    # 下面的分支只负责**把拒绝的理由说清楚**,不再各自重述一遍规则。
+    if target.id not in {m["user_id"] for m in author_candidates(db, tmpl, team=team)}:
+        if target.id == tmpl.author_id:
+            raise RubicError(f"《{tmpl.name}》的作者已经是 {target.name},无需转移")
+        if not target.is_active:
+            raise RubicError(f"{target.name} 的账号已停用,不能接手任务")
+        raise RubicError(
+            f"{target.name} 不是团队《{team.name}》的成员,不能成为该任务的作者"
+        )
+
+    old_author_id = tmpl.author_id
+    # 不提交,与下面的 author_id 一起进同一个事务(故不能用 revoke_edit,它自带 commit)
+    revoked = permission_service.discard_edit_grant(
+        db, template_id=tmpl.id, user_id=target.id
+    )
+    tmpl.author_id = target.id
+    db.commit()
+
+    notify_service.notify_author_transferred(
+        db, tmpl, old_author_id=old_author_id, operator=operator
+    )
+    return old_author_id, revoked
+
+
+def author_candidates(db: Session, tmpl: SqlTemplate, *, team) -> list[dict]:
+    """能接手这个任务的人:所属团队的**在职**成员,排除当前作者。
+
+    这是「谁可以成为作者」的唯一出处 —— transfer_author 的放行判据就是「在不在这份名单里」,
+    候选人接口也直接回它。规则只要有两份表述(哪怕都在后端),迟早会长出第四条口径时
+    只改到一处,而症状就是下拉里选得到、点了报错。
+    """
+    return [
+        m
+        for m in team_service.members_of(db, team.id, active_only=True)
+        if m["user_id"] != tmpl.author_id
+    ]
 
 
 # ---------------------------------------------------------------- 闲置(长期没人运行)

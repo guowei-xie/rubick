@@ -89,6 +89,11 @@ class TaskOut(BaseModel):
     # 「我开发的」:我建的,或被授予该任务编辑权的 —— 见 permission_service.is_author_or_grantee
     # (不含管理员的治理权限,故它 ≠ can_manage)
     developed_by_me: bool = False
+    # 能不能把这个任务的作者转给别人(离职交接)。⊆ can_manage:口径 = can_manage **减去**
+    # 「被授予该任务编辑权」那一条(见 permission_service.can_transfer_author)。
+    # 前端只消费这个布尔,**不要**用 `can_manage && ...` 自己推 —— 那正好会把被授予
+    # edit 的人放进来,而处分归属恰恰是不该给他们的那一项
+    can_transfer_author: bool = False
     # 可填参取数(已发布且有运行权限)。注意它只表达「授权够不够」,
     # 跑得起来还要 credential_ready —— 那是别人的配置,不属于本人的权限
     can_run: bool = False

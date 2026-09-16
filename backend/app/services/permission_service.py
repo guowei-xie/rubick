@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, delete as sa_delete, false, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import PermissionDeniedError, RubicError
 from app.models.permission import (
     ACTION_DOWNLOAD,
     ACTION_EDIT,
@@ -168,6 +168,71 @@ def can_edit(scope: TeamScope, tmpl) -> bool:
     if tmpl.team_id not in scope.team_ids:
         return False
     return is_author_or_grantee(scope, tmpl)
+
+
+def can_transfer_author(scope: TeamScope, tmpl) -> bool:
+    """能不能把这个任务的作者转给别人(离职交接)。
+
+    口径 = can_edit **减去**「被授予该任务 edit」那一条:
+      平台管理员 / 该任务所属团队的团队管理员 / 作者本人(且仍在团队内)。
+
+    **为什么被授予 edit 的人不算**:edit 是「来帮着改这个 SQL」的委托,不是「这份资产归谁」
+    的处分权。让它包含转移,等于任何一个被临时拉来改 SQL 的同事都能把作者改成自己,
+    而授予他 edit 的团队管理员事后只能从审计里发现 —— 与 models/permission.py 把 edit
+    和业务授权分成两个入口所防的是同一类提权。
+
+    写成「can_edit 为前置 + 再挑一次」而不是重列四条阶梯:团队约束(仍在团队内、
+    team_id 为空 fail-closed)只在 can_edit 里表述一次,那里放宽或收紧,这里自动跟随。
+    刻意不用 is_author_or_grantee —— 它把 edit_ids 也 OR 了进来,正是要排除的那一条。
+
+    无主任务恒 False,**连平台管理员也是**:接收人被定义为「该任务所属团队的成员」,
+    没有团队就没有任何合法接收人。与其让他点开一个空下拉,不如在守卫里说清下一步。
+    """
+    if tmpl.team_id is None:
+        return False
+    if not can_edit(scope, tmpl):
+        return False
+    return (
+        scope.is_admin
+        or tmpl.team_id in scope.admin_team_ids
+        or tmpl.author_id == scope.user_id
+    )
+
+
+def transfer_author_role(scope: TeamScope, tmpl) -> str:
+    """发起人是**以什么身份**转移这个作者的:author / team_admin / platform_admin。
+
+    与 can_transfer_author 的三条放行条件一一对应,且**紧挨着它**:审计要靠这个标签分清
+    「本人主动交接」与「管理员代办」,而阶梯一旦加条目(代管人、副管理员……),在别处
+    重新数一遍的那份会静默把新身份记成 author —— 不报错、不挂测试,只在半年后的复盘里
+    给出一个假答案。
+
+    优先级是「最贴身的主张优先」,同 editors_by_template 的 source 分类:作者本人哪怕
+    同时是团队管理员,他转自己的任务也是**本人交接**,不是代办。
+    """
+    if tmpl.author_id == scope.user_id:
+        return "author"
+    return "team_admin" if tmpl.team_id in scope.admin_team_ids else "platform_admin"
+
+
+def require_can_transfer_author(db: Session, user: User, tmpl) -> tuple[object, str]:
+    """作者转移的守卫。返回 (任务所属团队, 发起人身份)。
+
+    身份一并回来,免得调用方为了拼审计标签再建一次 TeamScope(那是固定 2 次查询),
+    更免得它在路由里把放行条件重新数一遍。
+
+    三种拒绝要给三句不同的话:「无权」若盖住了「这个任务还没有团队」或「你的编辑权不含
+    处分权」,人只会反复重试同一个按钮。
+    """
+    team = team_service.team_of_template(db, tmpl)
+    scope = team_scope(db, user)
+    if can_transfer_author(scope, tmpl):
+        return team, transfer_author_role(scope, tmpl)
+    if can_edit(scope, tmpl):
+        raise PermissionDeniedError(
+            f"任务编辑权不含「转移作者」;请让作者本人或团队《{team.name}》的团队管理员操作"
+        )
+    raise PermissionDeniedError("无权修改该任务")
 
 
 def can_run(scope: TeamScope, tmpl) -> bool:
@@ -504,12 +569,26 @@ def grant_edit(db: Session, *, template_id: int, user_id: int, granted_by: int |
     return bool(created)
 
 
-def revoke_edit(db: Session, *, template_id: int, user_id: int) -> bool:
+def discard_edit_grant(db: Session, *, template_id: int, user_id: int) -> bool:
+    """清掉某人在某任务上的 edit 授权行。**不提交,跟随调用方事务**(同
+    revoke_edit_for_template 的约定)。「怎么删一条编辑权」只在这里写一次。
+    """
     n = db.execute(
         sa_delete(Permission).where(_edit_where(user_id=user_id, template_id=template_id))
     ).rowcount or 0
-    db.commit()
     return bool(n)
+
+
+def revoke_edit(db: Session, *, template_id: int, user_id: int) -> bool:
+    """「撤销编辑权」这个独立动作的入口:自成一个事务。
+
+    作者转移走的是上面那支不提交的 —— 它要把这次删除与 author_id 的更新放进**同一个**
+    事务,中途 commit 会让「授权已撤、作者没改」成为一种可能落库的中间态。
+    两者的差别就只有这一个 commit,故删除语句不再各存一份。
+    """
+    n = discard_edit_grant(db, template_id=template_id, user_id=user_id)
+    db.commit()
+    return n
 
 
 def _edit_rows_for(db: Session, *, user_id: int, template_ids: list[int]) -> list[int]:

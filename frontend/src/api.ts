@@ -259,6 +259,17 @@ export const revokeTaskEditor = (templateId: number, userId: number) =>
 export const transferTaskTeam = (templateId: number, teamId: number) =>
   http.put(`/tasks/${templateId}/team`, { team_id: teamId }).then((r) => r.data);
 
+// ---- 任务作者转移(离职交接)----
+/** 可以接手这个任务的人:该任务所属团队的**在职成员**,排除当前作者。
+ *  候选集的三条规则由服务端算好 —— 在前端复述一遍就是两份会漂移的规则,
+ *  而漂移的表现是「下拉里选得到、点了报错」。 */
+export const taskAuthorCandidates = (templateId: number) =>
+  http.get(`/tasks/${templateId}/author-candidates`).then((r) => r.data as TeamMember[]);
+/** 转移任务作者。发起人 = 作者本人 / 该团队的团队管理员 / 平台管理员
+ *  (**不含**被授予该任务编辑权的人,见 TaskOut.can_transfer_author)。 */
+export const transferTaskAuthor = (templateId: number, userId: number) =>
+  http.put(`/tasks/${templateId}/author`, { user_id: userId }).then((r) => r.data);
+
 // ---- credentials(团队取数账号)----
 // 任务用**所属团队**的库账号取数,数据权限交由数据库裁决。
 // 密码只写不读:接口永不回传。库用户名是半机密(Hive auth=NONE 下它本身就是完整凭证),
