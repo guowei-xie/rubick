@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Button, Card, Checkbox, Empty, message, Modal, Segmented, Select, Space, Tooltip } from "antd";
 import {
   AppstoreOutlined,
+  BookOutlined,
   DeleteOutlined,
   PlusOutlined,
   UnorderedListOutlined,
@@ -32,6 +33,10 @@ import { TASK_IDLE, TEMPLATE_STATUS } from "../components/StatusTag";
  *  键名沿用 rubic_ 前缀(与 rubic_token、取数抽屉的运行记录折叠状态同一套)。 */
 const VIEW_KEY = "rubic_tasks_view";
 type ViewMode = "card" | "list";
+
+/** 使用文档(飞书版《用户手册》)。任务列表是所有人的落地页,手册入口就放在这里,
+ *  仓库版在 docs/user-manual.md —— 两者内容同步,但飞书版才是给非开发者看的那份。 */
+const MANUAL_URL = "https://wrpnn3mat2.feishu.cn/docx/ZlYBdS3fGoBosXx5btpcWs8yn8Y";
 
 /** 标题栏里两个筛选勾选框的字重/字号 —— 与状态筛选片一样,是次要信息不抢标题 */
 const FILTER_CHECK_STYLE = { fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" };
@@ -377,6 +382,18 @@ export default function TasksPage() {
   // 图标不能是唯一的信息载体:原生 title 给鼠标、aria-label 给读屏。
   const extra = (
     <Space size={8}>
+      <Tooltip title="使用文档(飞书文档,新标签页打开)">
+        <Button
+          type="text"
+          icon={<BookOutlined />}
+          href={MANUAL_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "var(--ink-secondary)" }}
+        >
+          使用文档
+        </Button>
+      </Tooltip>
       <Segmented<ViewMode>
         size="small"
         value={view}
