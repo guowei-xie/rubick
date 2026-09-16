@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Button, message, Modal } from "antd";
+import { copyText } from "../clipboard";
 import { affectedLines } from "../sqlParams";
 import SqlLines from "./SqlLines";
 import "../styles/sql-highlight.css";
@@ -22,9 +23,11 @@ export default function SqlModal({
   /** 代入参数之前的原始 SQL。执行 SQL 里 `:x` 已被字面量替换,靠源 SQL 的行号定位受影响行。 */
   sourceSql?: string | null;
 }) {
-  const copy = () => {
-    navigator.clipboard?.writeText(sql || "");
-    message.success("已复制");
+  // 成功与否由 copyText 返回(它为什么必须返回布尔,见 clipboard.ts):**不许无条件报成功**
+  const copy = async () => {
+    (await copyText(sql || ""))
+      ? message.success("已复制")
+      : message.error("复制失败,请手动选中 SQL 复制");
   };
 
   const highlighted = useMemo(

@@ -6,7 +6,8 @@ import StatusTag, {
   TEMPLATE_STATUS,
   templateStatusRank,
 } from "./StatusTag";
-import { dash } from "../format";
+import { byTaskName, dash } from "../format";
+import { TASK_ID_COLUMN } from "./TaskIdTag";
 import {
   AuthorizedAvatars,
   credentialWarnText,
@@ -31,8 +32,10 @@ const CURSOR_RUN = { cursor: "pointer" };
  *  (长期没人运行),与「点不动」是两件事,同名两个 idle 迟早被读混。 */
 const CURSOR_PLAIN = { cursor: "default" };
 
-/** 排序器里现建 collator 会按次比较重建一份;整表排一次是上千次比较,建一次就够。 */
-const ZH = new Intl.Collator("zh");
+/** 行样式类名的四种取值。见下方 rowClassName。 */
+const ROW_IDLE = "rk-row-idle";
+const ROW_HIT = "rk-row-hit";
+const ROW_IDLE_HIT = "rk-row-idle rk-row-hit";
 
 /** 记录整行替换才算变了(load() → setTasks 是唯一的写入路径,排序与筛选都不改记录本身),
  *  所以行内容只随记录身份失效。少了这一句,rc-table 会在每次父级渲染时重跑所有单元格的
@@ -47,15 +50,25 @@ const shouldCellUpdate = (next: any, prev: any) => next !== prev;
  *
  *  只排序、不分页:任务再多也是一页看完,顶部的状态计数与筛选就仍是「全部」的口径,
  *  不必再解释「这一页 20 条 / 总共 137 条」。 */
-export default function TaskTable({ tasks, h }: { tasks: any[]; h: TaskHandlers }) {
+export default function TaskTable({
+  tasks,
+  h,
+  hitId,
+}: {
+  tasks: any[];
+  h: TaskHandlers;
+  /** 按 ID 精确搜时命中的那一条,给它整行高亮。见下方 rowClassName 的理由。 */
+  hitId?: number | null;
+}) {
   const columns: TableColumnType<any>[] = useMemo(() => {
     const cols: TableColumnType<any>[] = [
+      TASK_ID_COLUMN,
       {
         title: "任务名",
         dataIndex: "name",
         width: 260,
         ellipsis: true,
-        sorter: (a: any, b: any) => ZH.compare(a.name || "", b.name || ""),
+        sorter: byTaskName,
         render: (_: any, r: any) => (
           <span
             style={{ display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%" }}
@@ -169,10 +182,29 @@ export default function TaskTable({ tasks, h }: { tasks: any[]; h: TaskHandlers 
     return cols.map((c) => ({ ...c, shouldCellUpdate }));
   }, [h]);
 
-  /** 闲置行整行退一档墨色(样式见 global.css 的 .rk-row-idle)。
+  /** 闲置行整行退一档墨色(样式见 global.css 的 .rk-row-idle);按 ID 搜中的那一行复用
+   *  深链高亮 .rk-row-hit(它的语义本就是「被点名的那一行」)。
+   *
+   *  **为什么高亮要存在**:默认顺序下 ID 命中那条会被置顶(见 TasksPage 的 sort),但一点
+   *  列头排序就由 AntD 的 sorter 接管、置顶失效 —— 那是使用者的明确指令,不该去对抗它。
+   *  顺序回答「先看哪条」,颜色回答「就是这条」,后者不受排序影响,正好补上那个洞。
+   *  卡片视图**不加**这个高亮,不是漏做:卡片没有 sorter,置顶从未失效过。
+   *
    *  useCallback 只是跟着同文件 onRow 的写法,别指望它省下重渲 —— antd 每次渲染都会另建
    *  一个 internalRowClassName 包一层传给 rc-table,这里的引用稳不稳它都看不见。 */
-  const rowClassName = useCallback((r: any) => (showIdle(r) ? "rk-row-idle" : ""), []);
+  const rowClassName = useCallback(
+    // 四个常量而不是每行拼模板串:结果只有这四种,而本函数每次渲染都会对每一行重跑一遍。
+    // hitId 至多命中一行,先判它还能替绝大多数行省掉一次 showIdle 调用。
+    (r: any) =>
+      r.id === hitId
+        ? showIdle(r)
+          ? ROW_IDLE_HIT
+          : ROW_HIT
+        : showIdle(r)
+          ? ROW_IDLE
+          : "",
+    [hitId]
+  );
 
   const onRow = useCallback(
     (r: any) => ({

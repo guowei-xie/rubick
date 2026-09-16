@@ -27,6 +27,7 @@ import TaskCard from "../components/TaskCard";
 import TaskTable from "../components/TaskTable";
 import { showIdle, TaskHandlers } from "../components/taskActions";
 import { TASK_IDLE, TEMPLATE_STATUS } from "../components/StatusTag";
+import { idHitFirst, parseTaskQuery, taskMatcher } from "../taskSearch";
 
 /** 卡片 / 列表两种视图的选择:存本地,不进 URL。
  *  它是「这个人习惯怎么看」而不是「此刻在看哪一批」—— 筛选与搜索走 ?q= / ?status= 是为了刷新与深链
@@ -81,6 +82,7 @@ function StatChip({
 /** 空态文案。早返回而不是层层三元:每加一个筛选项就多一层缩进,读的人得数括号。 */
 function emptyTextFor({
   rawQ,
+  qid,
   noTeamYet,
   teamFilter,
   mineOnly,
@@ -89,6 +91,7 @@ function emptyTextFor({
   showRecycle,
 }: {
   rawQ: string | null;
+  qid: number | null;
   noTeamYet: boolean;
   teamFilter: string | null;
   mineOnly: boolean;
@@ -97,6 +100,10 @@ function emptyTextFor({
   showRecycle: boolean;
 }): string {
   const where = showRecycle ? "回收站里" : "";
+  // 搜的是个编号却没命中时,多给一句 —— 否则人会以为编号记错了,反复核对一个没错的数字。
+  // 真正的原因通常是「这个任务没授权给我」(列表本就只有我看得见的那些)。
+  if (rawQ?.trim() && qid !== null)
+    return `没有编号 ${qid} 的任务 —— 也可能是它没授权给你,列表里只有你看得见的任务`;
   if (rawQ?.trim()) return `没有匹配「${rawQ}」的任务`;
   if (noTeamYet) return "你还不属于任何团队 —— 请联系平台管理员把你加入团队后才能新建任务";
   if (teamFilter) return "该团队下暂无任务";
@@ -239,9 +246,13 @@ export default function TasksPage() {
     });
   }, [load]);
 
-  // 顶栏搜索:按 任务名 / 作者 / 被授权人 客户端过滤(大小写不敏感)。
+  // 顶栏搜索:按 任务编号(精确) / 任务名 / 作者 / 团队 / 被授权人 客户端过滤(大小写不敏感)。
+  // 解析与组合律见 taskSearch,与团队页「任务编辑权」共用一份。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
-  const q = (sp.get("q") ?? "").trim().toLowerCase();
+  // 不套 useMemo:下游依赖的全是 q / qid 两个**原始值**,没人消费这个对象的引用,
+  // 而它本身只是一次 trim + toLowerCase + 一个六字符正则。
+  // (反过来说也别把这个对象塞进 useMemo 的依赖数组 —— 它每次渲染都是新的,会让 memo 失效。)
+  const { text: q, id: qid } = parseTaskQuery(sp.get("q"));
   // 「团队筛选」「我开发的」「我订阅的」都先于状态筛选与统计生效:顶部计数与卡片同源,
   // 筛选后数字不会自相矛盾(这是既有约定,以后新增的筛选也必须并进同一层)
   const scoped = useMemo(() => {
@@ -259,13 +270,15 @@ export default function TasksPage() {
     return [...m].map(([value, label]) => ({ value: String(value), label }));
   }, [tasks]);
   const filtered = useMemo(() => {
-    const matchQ = (t: any) => {
-      if (!q) return true;
-      if ((t.name || "").toLowerCase().includes(q)) return true;
-      if ((t.author_name || "").toLowerCase().includes(q)) return true;
-      if ((t.team_name || "").toLowerCase().includes(q)) return true;
-      return (t.authorized_users || []).some((u: any) => (u.name || "").toLowerCase().includes(q));
-    };
+    // 组合律(空串放行 / 编号精确 ∪ 文本包含)在 taskSearch 里,这里只说本页搜哪些字段。
+    const match = taskMatcher({ text: q, id: qid });
+    const matchQ = (t: any) =>
+      match(t, [
+        t.name,
+        t.author_name,
+        t.team_name,
+        ...(t.authorized_users || []).map((u: any) => u.name),
+      ]);
     const rows = scoped.filter((t) =>
       showRecycle
         ? t.status === "archived" && matchQ(t)
@@ -285,8 +298,16 @@ export default function TasksPage() {
     // 次序补全到「总」:同组内按 id 倒序(= 新建在前)。不写这一条的话,组内顺序
     // 完全靠「后端给的是 id DESC」+「sort 稳定」两个隐含前提撑着 —— 哪天后端把
     // ORDER BY 改成 updated_at,卡片视图的默认顺序会跟着变,而前端一行 diff 都没有。
-    return rows.sort((a, b) => Number(showIdle(a)) - Number(showIdle(b)) || b.id - a.id);
-  }, [scoped, q, activeChip, idleOnly, showRecycle]);
+    //
+    // 最前面还有一层:**按编号精确搜中的那一条置顶**,压过上面的「闲置沉底」。
+    // 闲置沉底是我们**替**使用者做的默认降噪;而拿着编号来搜是他**点名**要这一条。
+    // 被点名的任务恰好闲置时把它沉到几十条模糊命中之后,等于我们的降噪压过了他的指令 ——
+    // 这与上一段「点了列头就该听使用者的」是同一条原则的另一次应用。
+    // (它对默认顺序为什么是无害的,见 taskSearch.idHitFirst。)
+    return rows.sort(
+      (a, b) => idHitFirst(qid, a, b) || Number(showIdle(a)) - Number(showIdle(b)) || b.id - a.id
+    );
+  }, [scoped, q, qid, activeChip, idleOnly, showRecycle]);
 
   const summary = useMemo(() => {
     const s = { published: 0, draft: 0, archived: 0, idle: 0, total: 0 };
@@ -339,6 +360,7 @@ export default function TasksPage() {
   const noTeamYet = isManager && !isPlatformAdmin(user) && !hasTeam(user);
   const emptyText = emptyTextFor({
     rawQ: sp.get("q"),
+    qid,
     noTeamYet,
     teamFilter,
     mineOnly,
@@ -500,7 +522,7 @@ export default function TasksPage() {
       {filtered.length === 0 ? (
         <Empty style={{ padding: "48px 0" }} description={emptyText} />
       ) : view === "list" ? (
-        <TaskTable tasks={filtered} h={handlers} />
+        <TaskTable tasks={filtered} h={handlers} hitId={qid} />
       ) : (
         <div
           style={{

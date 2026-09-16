@@ -1,5 +1,20 @@
-import { useEffect, useState } from "react";
-import { Alert, Avatar, Button, Modal, Select, Space, Table, Tag, Tooltip, message } from "antd";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import {
+  Alert,
+  Avatar,
+  Button,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Table,
+  TableColumnType,
+  Tag,
+  Tooltip,
+  message,
+} from "antd";
+import { SearchOutlined } from "@ant-design/icons";
 import {
   TaskEditor,
   TeamDetail,
@@ -10,7 +25,10 @@ import {
   teamTaskEditors,
 } from "../api";
 import StatusTag, { EDITOR_SOURCE, EDITOR_SOURCE_HINT, TEMPLATE_STATUS } from "./StatusTag";
+import { TASK_ID_COLUMN } from "./TaskIdTag";
 import TransferAuthorModal from "./TransferAuthorModal";
+import { byTaskName } from "../format";
+import { idHitFirst, parseTaskQuery, taskMatcher } from "../taskSearch";
 
 /**
  * 「任务编辑权」面板 —— 团队管理员按任务把编辑权授予团队成员。
@@ -31,6 +49,7 @@ export default function TeamTaskEditorsPanel({
   const [editorsOf, setEditorsOf] = useState<Record<number, TaskEditor[]>>({});
   const [open, setOpen] = useState<any | null>(null);
   const [transferTarget, setTransferTarget] = useState<any | null>(null);
+  const [sp, setSp] = useSearchParams();
 
   const load = () => {
     setLoading(true);
@@ -50,8 +69,35 @@ export default function TeamTaskEditorsPanel({
     load();
   }, [team.id]);
 
-  const columns = [
-    { title: "任务", dataIndex: "name" },
+  // 搜索词进 URL,与 TeamPage 的 ?tab= 同一套写法(replace:true,不给返回键留一串中间态);
+  // 「搜到某个任务 → 把链接发给另一个团队管理员去授权」是这一页的真实动作。
+  //
+  // **键名不能叫 q**:顶栏那个搜索框在本页也渲染着,它的 value 直接读 URL 的 q,同名会被它
+  // 回填;而且在非 /tasks 页往它里面一输入就会 nav 跳走(见 AppLayout 的 onSearch)。
+  // 真正的修法是让那个框只在 /tasks 渲染,那样这里就能用 q —— 留作后续。
+  const raw = sp.get("taskq") ?? "";
+  const setRaw = (v: string) => {
+    if (v) sp.set("taskq", v);
+    else sp.delete("taskq");
+    setSp(sp, { replace: true });
+  };
+  const { text: q, id: qid } = parseTaskQuery(raw);
+
+  const view = useMemo(() => {
+    if (!q) return rows;
+    // 组合律在 taskSearch,这里只说本页搜哪些字段。「可编辑的人」是本页独有的一路 ——
+    // 「张三能改哪些任务」正是团队管理员在这页最常问的问题,editorsOf 已经在内存里。
+    const match = taskMatcher({ text: q, id: qid });
+    const hit = rows.filter((t) =>
+      match(t, [t.name, t.author_name, ...(editorsOf[t.id] || []).map((e) => e.name)])
+    );
+    // 没搜编号就不排:此时比较器恒返回 0,是一趟纯白跑的 n log n
+    return qid === null ? hit : hit.sort((a, b) => idHitFirst(qid, a, b));
+  }, [rows, q, qid, editorsOf]);
+
+  const columns: TableColumnType<any>[] = [
+    TASK_ID_COLUMN,
+    { title: "任务", dataIndex: "name", sorter: byTaskName },
     {
       title: "状态",
       width: 110,
@@ -123,7 +169,39 @@ export default function TeamTaskEditorsPanel({
           </>
         }
       />
-      <Table rowKey="id" loading={loading} dataSource={rows} columns={columns} />
+      {/* placeholder 与下面 view 里那 4 路匹配一一对应 —— 同 AppLayout 顶栏搜索框的要求:
+          搜得到却没人知道能这么搜,等于没做 */}
+      <Input
+        allowClear
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        prefix={<SearchOutlined style={{ color: "#9aa0b5" }} />}
+        placeholder="搜索任务名 / 编号 / 作者 / 可编辑的人"
+        style={{ maxWidth: 320, marginBottom: 12 }}
+      />
+      <Table
+        rowKey="id"
+        loading={loading}
+        dataSource={view}
+        columns={columns}
+        // 此前没传 pagination,吃 antd 默认的每页 10 条 —— 那正是「任务一多只能翻页硬找」
+        // 的根源,只加搜索框不动它等于只解决一半。
+        // 也**不学任务列表的 pagination={false}**:那边不分页是为了保住「顶部计数 = 全部」
+        // 的口径,本页没有那套计数;而「可编辑的人」是一列会长高的标签云,几十行会很长。
+        pagination={{
+          defaultPageSize: 20,
+          showSizeChanger: true,
+          hideOnSinglePage: true,
+          showTotal: (n) => `共 ${n} 个任务`,
+        }}
+        locale={{
+          // 后半句很重要:本面板是在浏览器里按 team_id 过滤的,搜一个属于别的团队的编号
+          // 会得到空结果,而界面上没有任何线索说明为什么。
+          emptyText: q
+            ? `没有匹配「${raw.trim()}」的任务 —— 这里只列本团队的任务,别的团队的任务要到那个团队页找`
+            : "本团队还没有任务",
+        }}
+      />
       <EditorsModal
         task={open}
         team={team}

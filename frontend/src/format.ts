@@ -73,3 +73,12 @@ export const connectOkMsg = (
 export function personLabel(p: { name?: string | null; email?: string | null }): string {
   return [p.name, p.email].filter(Boolean).join(" · ");
 }
+
+/** 中文排序用的 collator。建一次复用:排序器里现建会按次比较重建一份,整表排一次是上千次比较。 */
+const ZH = new Intl.Collator("zh");
+
+/** 「按任务名排序」的比较器。任务列表与团队页「任务编辑权」两张表共用 ——
+ *  「用哪种中文排序规则」是一个决定,有两个真相源的话,哪天改成
+ *  `zh-Hans-u-kn-true`(让 `报表2` 排在 `报表10` 前)只会有一处被改,另一张表静默用旧规则。 */
+export const byTaskName = (a: { name?: string | null }, b: { name?: string | null }): number =>
+  ZH.compare(a.name || "", b.name || "");

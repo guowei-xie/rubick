@@ -22,6 +22,7 @@ from app.models.query_job import JOB_SUCCESS, SOURCE_RUN, SOURCE_SUBSCRIBE, Quer
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
 from app.schemas.permission import GrantIn
+from app.schemas.query import TaskOut
 from app.schemas.team import EditorIn, TaskTeamIn
 from app.schemas.template import PublishIn, TemplateCreateIn, TemplateUpdateIn
 from app.services import permission_service
@@ -144,6 +145,18 @@ def test_list_tasks_carries_team_and_can_manage_flags(db, people, teams, task_a)
     assert row(people.admin).can_manage is True           # 平台管理员
     # 同队成员可运行(团队就是取数身份的边界,拦住「运行」只是形式)
     assert row(people.other).can_run is True
+
+
+def test_task_out_exposes_id_field(db, people, task_a):
+    """TaskOut 必须下发 id —— 它是前端唯一的任务编号:显示成 `#128`、可一键复制、可按它精确搜。
+
+    断言打在 **schema 的字段集与序列化结果**上,而不是 `_row(...).id == task_a.id`:
+    `_row` 本身就是「在 list_tasks 的结果里按 id 相等找那一行」,拿它去断言 id 存在是同义反复
+    (真删了字段,它会先抛 StopIteration,而那正是本文件其它用例已经覆盖的事)。
+    这里要钉的是另一面:**字段在出参契约里**,删它的人打开 schemas/query.py 就该被拦住。
+    """
+    assert "id" in TaskOut.model_fields
+    assert "id" in _row(db, people.author, task_a).model_dump()
 
 
 def test_developed_by_me_is_author_or_granted_editor(db, people, task_a):

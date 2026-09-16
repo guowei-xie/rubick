@@ -1,6 +1,7 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
 import { ClockCircleOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
 import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
+import TaskIdTag from "./TaskIdTag";
 import {
   AuthorizedAvatars,
   credentialWarnText,
@@ -82,7 +83,7 @@ export default function TaskCard({
         opacity: r.can_run ? 1 : 0.85,
       }}
     >
-      {/* 卡头:状态色点 + 创建时间 + ⋮ */}
+      {/* 卡头:状态色点 + 任务编号 + 创建时间 + ⋮ */}
       <div
         style={{
           display: "flex",
@@ -91,7 +92,11 @@ export default function TaskCard({
           marginBottom: 8,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* 允许**整体换行**:加了编号之后,窄卡上「时间 + 缺取数账号」常常一行放不下。
+            不换行的话告警胶囊会把自己的文字折成三行(卡头从 23px 撑到 61px,还很难看);
+            换行则是整枚胶囊落到第二行,卡头顶多两行。也不用 overflow 裁掉它 ——
+            「缺取数账号」是这张卡上最该被看见的一句话,宁可多一行也不能剪。 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
           {/* 状态只用颜色表达(绿=已上线、黄=草稿、红=已下线),不再占文字位置。
               语义由悬停 title 兜底;title 挂在色点自身上,会盖住卡片外层那句
               「点击填参取数」,两者不会同时弹出(换成 Tooltip 则会叠加)。
@@ -109,6 +114,10 @@ export default function TaskCard({
               flexShrink: 0,
             }}
           />
+          {/* 任务编号:放卡头而不是卡身 —— 卡头这一行本就是「这张卡的元信息带」(状态、
+              时间、告警),清一色 12px 次级墨色,编号天然同档;卡身的标题是两行截断的粗体,
+              把 #128 混进去会被 line-clamp 截掉。放最左还让一列卡片的编号左对齐、可纵向扫。 */}
+          <TaskIdTag id={r.id} />
           <Tooltip title={timeCell.hint}>
             <span
               style={{
@@ -135,6 +144,8 @@ export default function TaskCard({
                   color: CREDENTIAL_STATUS.unconfigured.dot,
                   fontSize: 12,
                   fontWeight: 600,
+                  // 中文可以在任意字之间断行,不写这句它会把「缺取数账号」折成三行
+                  whiteSpace: "nowrap",
                 }}
               >
                 <WarningOutlined />

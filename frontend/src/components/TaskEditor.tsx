@@ -21,6 +21,7 @@ import {
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import SqlHighlightArea from "./SqlHighlightArea";
+import TaskIdTag from "./TaskIdTag";
 import { PasteListButton } from "./ParamForm";
 import { isPlatformAdmin, isTeamAdminOf, myTeams, useAuth } from "../auth";
 import { isListVar, parseVariables } from "../sqlParams";
@@ -537,7 +538,19 @@ export default function TaskEditor({
 
   return (
     <Modal
-      title={readOnly ? "任务详情" : editingId ? "编辑任务" : "新建任务"}
+      title={
+        editingId ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {readOnly ? "任务详情" : "编辑任务"}
+            {/* 编号取自 editingId 而不是详情接口的返回:弹窗一打开就有,不会先渲一遍
+                没编号的标题再跳一下。字号跟着标题走(.rk-idtag 用的是 em),不必传尺寸 */}
+            <TaskIdTag id={editingId} />
+          </span>
+        ) : (
+          // 新建时后端还没分配编号,标题里不该出现 #undefined
+          "新建任务"
+        )
+      }
       open={open}
       onCancel={onClose}
       width={880}

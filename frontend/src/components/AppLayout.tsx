@@ -102,14 +102,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             lineHeight: "normal",
           }}
         >
-          {/* 提示语要与 TasksPage 的 matchQ 覆盖面一致:任务名 / 作者 / 被授权人 / 团队名。
-              任务归属团队后多了团队名这一路匹配,不写出来没人会想到能这么搜。 */}
+          {/* 提示语要与 TasksPage 的 matchQ 覆盖面一致:任务编号 / 任务名 / 作者 / 被授权人 / 团队名。
+              任务归属团队后多了团队名这一路匹配,不写出来没人会想到能这么搜。
+              「编号」摆在最前:它是唯一能精确定位到一条的搜法,也是卡片上那个一键复制的去处
+              (复制给的是纯数字,粘进来直接就能搜;写 #128 也认)。 */}
           <Input
             allowClear
             value={q}
             onChange={(e) => onSearch(e.target.value)}
             prefix={<SearchOutlined style={{ color: "#9aa0b5" }} />}
-            placeholder="搜索任务 / 人 / 团队"
+            placeholder="搜索编号 / 任务 / 人 / 团队"
             variant="borderless"
             style={{
               maxWidth: 420,

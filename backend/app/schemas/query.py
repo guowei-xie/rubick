@@ -39,6 +39,9 @@ class JobOut(BaseModel):
 class AuthorizedUserOut(BaseModel):
     """被授权运行某任务的用户(用于任务卡片的参与者头像)。"""
 
+    # 对外是**任务编号**:界面上显示成 `#128`、可一键复制、可按它精确搜(见前端 taskSearch),
+    # 与审计日志里 `任务 #12` 的读法是同一个数。收窄返回字段时别删 —— 前端不会报错,
+    # 只会静默变成 `#undefined`,搜编号永远搜不到。
     id: int
     name: str
     avatar: str | None = None

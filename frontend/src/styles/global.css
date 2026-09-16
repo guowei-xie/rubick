@@ -110,9 +110,11 @@ body {
   color: #fff;
 }
 
-/* 通知深链点名的那一行运行记录(见 RunRecordsPanel 的 highlightJobId):
-   一个任务攒了几十期定时运行,订阅者点通知进来要的是「本期」那条,
-   不是列表第一行。只做浅底 + 左侧色条,不抢表格本身的可读性。 */
+/* 「被点名的那一行」。两个来源:通知深链点进来的那次运行(RunRecordsPanel 的 highlightJobId ——
+   一个任务攒了几十期定时运行,订阅者要的是「本期」那条,不是列表第一行),
+   以及按编号搜中的那个任务(TaskTable 的 hitId)。
+   共享的类,语义写在共享处 —— 来源是举例,别按其中一个的需要去调它。
+   只做浅底 + 左侧色条,不抢表格本身的可读性。 */
 .rk-row-hit > td {
   /* 底色由品牌色派生(与 sql-highlight.css 的参数行同一写法),品牌色改一处即可 */
   background: color-mix(in srgb, var(--brand) 7%, transparent) !important;
@@ -129,4 +131,38 @@ body {
    不用 !important:.rk-row-hit 的深链高亮与 AntD 的 hover 都该盖得过它。 */
 .rk-row-idle > td {
   color: var(--ink-secondary);
+}
+
+/* 任务编号 + 复制(TaskIdTag)。**整份长相都在这里**,组件里不留内联 style ——
+   内联样式压得过类选择器,混写会让下面 :hover 的换色静默失效(踩过一次)。
+   它是个 <button>,所以前三行是复位。
+   字号用 em 跟着宿主走:卡头/表格 14px 下约 12px,弹窗标题 16px 下约 13.6px,
+   一个组件适配四个宿主,不必为 1px 的差别开一个 size 属性。
+   静止态压到 .65 —— 它在卡头与表格里逐行重复,满墨会成一列噪声;移上去还原成「可点」的样子。
+   **不做 hover 才出现**:出现/消失会让卡头与单元格的宽度抖动,触屏上还永远出不来。 */
+.rk-idtag {
+  padding: 0;
+  border: 0;
+  background: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  /* 等宽:一列 #12 / #128 / #1280 左边对得齐,能纵向扫(与 SQL 共用 --rk-mono) */
+  font-family: var(--rk-mono);
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--ink-secondary);
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.65;
+  transition: opacity 0.15s, color 0.15s;
+}
+.rk-idtag:hover,
+.rk-idtag:focus-visible {
+  opacity: 1;
+  color: var(--brand);
+}
+.rk-idtag .anticon {
+  font-size: 0.9em;
 }
