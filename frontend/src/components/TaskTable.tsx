@@ -32,10 +32,14 @@ const CURSOR_RUN = { cursor: "pointer" };
  *  (长期没人运行),与「点不动」是两件事,同名两个 idle 迟早被读混。 */
 const CURSOR_PLAIN = { cursor: "default" };
 
-/** 行样式类名的四种取值。见下方 rowClassName。 */
+/** 行样式类名的取值。见下方 rowClassName。 */
 const ROW_IDLE = "rk-row-idle";
 const ROW_HIT = "rk-row-hit";
 const ROW_IDLE_HIT = "rk-row-idle rk-row-hit";
+/** 批量交接模式下「这次转不了」的行。与 rk-row-idle 同色不加深:闲置说「没人用」,
+ *  blocked 说「这次转不了」,两者可能同时成立,两级告警会把它们读成一件事。 */
+const ROW_BLOCKED = "rk-row-blocked";
+const CURSOR_NO = { cursor: "not-allowed" };
 
 /** 记录整行替换才算变了(load() → setTasks 是唯一的写入路径,排序与筛选都不改记录本身),
  *  所以行内容只随记录身份失效。少了这一句,rc-table 会在每次父级渲染时重跑所有单元格的
@@ -50,15 +54,30 @@ const shouldCellUpdate = (next: any, prev: any) => next !== prev;
  *
  *  只排序、不分页:任务再多也是一页看完,顶部的状态计数与筛选就仍是「全部」的口径,
  *  不必再解释「这一页 20 条 / 总共 137 条」。 */
+/** 批量交接模式下表格额外需要的东西。**独立于 h 传入,不进 TaskHandlers** ——
+ *  h 被 columns 的 useMemo 依赖着,把随勾选变化的东西塞进去,每勾一行都会让整表列定义
+ *  重建(TasksPage 里那条 useMemo 的注释说的就是这件事)。
+ *  本对象每次勾选都会换新身份,这没关系:它只影响行级 props(onRow / rowClassName /
+ *  rowSelection),单元格仍被 shouldCellUpdate 挡着。 */
+export interface TaskTableBulk {
+  selectedKeys: number[];
+  onSelectedChange: (keys: number[]) => void;
+  /** 这一行现在能不能勾,以及不能勾时那句话。**理由来自服务端**,前端不复述规则 */
+  decisionOf: (r: any) => { ok: boolean; reason: string };
+}
+
 export default function TaskTable({
   tasks,
   h,
   hitId,
+  bulk,
 }: {
   tasks: any[];
   h: TaskHandlers;
   /** 按 ID 精确搜时命中的那一条,给它整行高亮。见下方 rowClassName 的理由。 */
   hitId?: number | null;
+  /** 给了它就进入批量交接模式:多一列勾选,整行点击从「取数」改为「勾选」。 */
+  bulk?: TaskTableBulk;
 }) {
   const columns: TableColumnType<any>[] = useMemo(() => {
     const cols: TableColumnType<any>[] = [
@@ -195,25 +214,56 @@ export default function TaskTable({
   const rowClassName = useCallback(
     // 四个常量而不是每行拼模板串:结果只有这四种,而本函数每次渲染都会对每一行重跑一遍。
     // hitId 至多命中一行,先判它还能替绝大多数行省掉一次 showIdle 调用。
-    (r: any) =>
-      r.id === hitId
-        ? showIdle(r)
-          ? ROW_IDLE_HIT
-          : ROW_HIT
-        : showIdle(r)
-          ? ROW_IDLE
-          : "",
-    [hitId]
+    (r: any) => {
+      // 批量模式下「转不了」压过其它档:此刻人在找「哪些能勾」,闲置与深链高亮都让位
+      if (bulk && !bulk.decisionOf(r).ok) return ROW_BLOCKED;
+      const idle = showIdle(r);
+      if (r.id === hitId) return idle ? ROW_IDLE_HIT : ROW_HIT;
+      return idle ? ROW_IDLE : "";
+    },
+    [hitId, bulk]
   );
 
+  /** 批量模式下整行点击改为「勾选」:一行几十像素宽,只点 16px 的方框在几十行上很难受。
+   *  悬停提示也跟着换成「为什么勾不了」—— 此刻点击不再取数,继续挂「点击填参取数」就是假话。
+   *  依赖里带上 bulk(它随勾选换新)只影响行级 props;单元格仍被 shouldCellUpdate 挡着,
+   *  不会跟着重跑 render。 */
   const onRow = useCallback(
-    (r: any) => ({
-      onClick: () => r.can_run && h.onRun(r),
-      title: runHint(r),
-      style: r.can_run ? CURSOR_RUN : CURSOR_PLAIN,
-    }),
-    [h]
+    (r: any) => {
+      if (bulk) {
+        const d = bulk.decisionOf(r);
+        return {
+          onClick: () => {
+            if (!d.ok) return;
+            const keys = bulk.selectedKeys;
+            bulk.onSelectedChange(
+              keys.includes(r.id) ? keys.filter((k) => k !== r.id) : [...keys, r.id]
+            );
+          },
+          title: d.reason,
+          style: d.ok ? CURSOR_RUN : CURSOR_NO,
+        };
+      }
+      return {
+        onClick: () => r.can_run && h.onRun(r),
+        title: runHint(r),
+        style: r.can_run ? CURSOR_RUN : CURSOR_PLAIN,
+      };
+    },
+    [h, bulk]
   );
+
+  /** 勾选列必须交给 AntD 注入,**不能自己加一列**:本文件给每一列都挂了
+   *  shouldCellUpdate(记录没换就不重渲),自建的勾选列会被它冻住 —— 选中变了而记录对象
+   *  没变,表现是「勾不出勾」。AntD 的选择列走 rc-table 内部路径,不经过我们那份 columns。
+   *  fixed:左钉,理由同操作列的右钉:scroll x 下横滚后勾不到是致命的。 */
+  const rowSelection = bulk && {
+    fixed: true as const,
+    columnWidth: 44,
+    selectedRowKeys: bulk.selectedKeys,
+    onChange: (keys: React.Key[]) => bulk.onSelectedChange(keys.map(Number)),
+    getCheckboxProps: (r: any) => ({ disabled: !bulk.decisionOf(r).ok }),
+  };
 
   return (
     <Table
@@ -225,6 +275,7 @@ export default function TaskTable({
       scroll={SCROLL}
       onRow={onRow}
       rowClassName={rowClassName}
+      rowSelection={rowSelection || undefined}
     />
   );
 }

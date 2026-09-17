@@ -61,7 +61,8 @@ def _refuse_foreign_test_db() -> None:
 
 _refuse_foreign_test_db()
 from app.models.audit import AuditLog  # noqa: E402
-from app.models.credential import TeamDataSourceCredential  # noqa: E402
+from app.models.credential import TeamDataSourceCredential
+from app.models.notification import Notification  # noqa: E402
 from app.models.datasource import DataSource  # noqa: E402
 from app.models.team import Team, TeamMember  # noqa: E402
 from app.models.user import User  # noqa: E402
@@ -275,6 +276,17 @@ def one_audit_row(db, since_id: int) -> AuditLog:
     rows = new_audit_rows(db, since_id)
     assert len(rows) == 1, f"期望恰好 1 条审计记录,实际 {len(rows)} 条:{[r.action for r in rows]}"
     return rows[0]
+
+
+def note_floor(db) -> int:
+    """通知水位线。与 max_audit_id 同一套用法:先记水位,做事,再问「新发了哪些」。
+    库不按用例清理,所以「本次发了什么」只能这么问 —— 查法在这里写一遍,不在各文件重述。"""
+    return db.scalar(select(func.max(Notification.id))) or 0
+
+
+def new_notifications(db, floor: int) -> list[Notification]:
+    db.expire_all()
+    return list(db.scalars(select(Notification).where(Notification.id > floor)))
 
 
 # HiveServer2 开了鉴权时的报错原文:消息只在 infoMessages 里,errorMessage 是空的

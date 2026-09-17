@@ -2,16 +2,23 @@
 任务的「编辑人」与所属团队维护。"""
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import client_ip, get_current_user, require_admin
+from app.api.deps import client_ip, get_current_user, require_admin, require_task_author
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
+from app.core.exceptions import (
+    BatchRejectedError,
+    NotFoundError,
+    PermissionDeniedError,
+    RubicError,
+)
 from app.models.audit import (
     ACTION_TASK_AUTHOR_TRANSFER,
     ACTION_TASK_EDIT_GRANT,
@@ -26,6 +33,12 @@ from app.models.user import User
 from app.schemas.common import ParamDef
 from app.schemas.query import JobOut, TaskOut
 from app.schemas.team import (
+    BATCH_AUTHOR_TRANSFER_LIMIT,
+    AuthorTransferCandidateOut,
+    AuthorTransferCandidatesOut,
+    BatchAuthorTransferIn,
+    BatchAuthorTransferOut,
+    BlockedGroupOut,
     EditorIn,
     TaskAuthorIn,
     TaskEditorOut,
@@ -126,6 +139,146 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
             )
         )
     return out
+
+
+# ---------------------------------------------------------------- 批量转移作者(多选交接)
+# 这两条**必须注册在任何 /{template_id}/... 之前**:FastAPI 按注册顺序匹配,一旦被
+# 路径参数那条抢走,回的是 422 且 detail 是一个 list —— 而前端 errMsg 只取字符串,
+# 用户看到的会是兜底文案「操作失败」,排查成本极高。段数其实已经不同(这里是两段/三段
+# 字面量,那边是三段带参),不会真的打架;顺序是第二道保险,别把它挪到下面去。
+
+
+def _blocked_groups(rejections) -> list[BlockedGroupOut]:
+    """把拒绝清单按 (code, 整句话) 归并成组。
+
+    分组键带上整句话而不只是 code:not_in_team 的话里是团队名(同团队的一批任务归一组),
+    already_author 的话里是任务名(天然一个任务一组)。两种形状都容得下,而文案仍是
+    服务端出的那一句,前端原样显示即可。
+    """
+    groups: dict[tuple[str, str], list[int]] = {}
+    for r in rejections:
+        groups.setdefault((r.code, r.message), []).append(r.template_id)
+    return [
+        BlockedGroupOut(code=code, message=msg, template_ids=ids)
+        for (code, msg), ids in groups.items()
+    ]
+
+
+@router.get("/author-transfer/candidates", response_model=AuthorTransferCandidatesOut)
+def author_transfer_candidates(
+    db: Session = Depends(get_db), user: User = Depends(require_task_author)
+):
+    """批量交接的第一步:**我能把任务交给谁**,以及选了他之后哪些能勾、哪些要置灰。
+
+    与单任务的 /{id}/author-candidates 是两个方向的同一件事:那边「一个任务 → 一批人」,
+    这边「一批任务 → 每个人各自能接哪些」。两者最终都落在 template_service 的同一句规则上,
+    所以下拉里选得到的与点下去放行的永远一致。
+
+    守卫是职能守卫 require_task_author 而不是逐任务 403:批量视角下没有「那一个任务」,
+    守卫退化成**逐行收窄** —— 普通成员因此拿到的是一份全是 blocked 的结果而不是 403。
+    业务用户挡在门口,免得把团队成员名单泄露给一个结果注定为空的调用方。
+    """
+    scope = permission_service.team_scope(db, user)
+    base, candidates = template_service.author_transfer_candidates(db, scope)
+    return AuthorTransferCandidatesOut(
+        blocked=_blocked_groups(base),
+        candidates=[
+            AuthorTransferCandidateOut(
+                user_id=c["user_id"], name=c["name"], avatar=c["avatar"], email=c["email"],
+                eligible_template_ids=[i.tmpl.id for i in c["items"]],
+                blocked=_blocked_groups(c["rejections"]),
+            )
+            for c in candidates
+        ],
+    )
+
+
+@router.post("/author-transfer", response_model=BatchAuthorTransferOut)
+def batch_transfer_task_author(
+    data: BatchAuthorTransferIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_task_author),
+    ip: str | None = Depends(client_ip),
+):
+    """把多个任务的作者一次转给同一个接手人(离职交接)。**全成功才生效。**
+
+    校验相位(author_transfer_plan,只读)与写入相位(transfer_author_batch,一次 commit)
+    完全分开:有任何一条不行,就在**一次写入都还没发生**时抛 BatchRejectedError,
+    连回滚都不需要。「转了一半」在归属这件事上最难向审计解释,所以不给部分成功的余地。
+
+    **找不到的任务 id 进拒绝清单而不是 404**:批量的价值就是一次说清所有问题,为一个已删
+    任务回 404、把另外 11 条问题藏起来,用户要试 12 轮。接手人不存在仍然 404 ——
+    他是整批的前置条件,不是批里的一条。
+
+    审计**逐任务一条**(共享 batch_id),不是一条带数组的汇总:AuditLog.resource_id 是单值,
+    一条汇总会让「任务 X 发生过什么」查不到这次归属变更 —— 而那正是
+    ACTION_TASK_AUTHOR_TRANSFER 独立成码时写下的理由。
+    """
+    ids = list(dict.fromkeys(data.template_ids))  # 去重保序:勾重了不该转两次、记两条审计
+    if not ids:
+        raise RubicError("请先选择要转移的任务")
+    if len(ids) > BATCH_AUTHOR_TRANSFER_LIMIT:
+        raise RubicError(f"一次最多转移 {BATCH_AUTHOR_TRANSFER_LIMIT} 个任务,请分批操作")
+    target = _load_user(db, data.user_id)
+
+    # populate_existing:等价于逐条 db.refresh(单任务路径为防「两个管理员同时点同一个人」
+    # 而做的那次刷新),但只有一次往返。它同样不是并发保护 —— 真正的保护要么 FOR UPDATE
+    # 要么乐观锁版本列,本仓刻意都不引入(transfer_template 同款取舍),窗口只是被收窄
+    rows = list(
+        db.scalars(
+            select(SqlTemplate)
+            .where(SqlTemplate.id.in_(ids))
+            .execution_options(populate_existing=True)
+        )
+    )
+    found = {t.id: t for t in rows}
+    scope = permission_service.team_scope(db, user)  # 建一次,plan 内部全是纯内存判定
+    items, rejections = template_service.author_transfer_plan(
+        db, [found[i] for i in ids if i in found], target, scope=scope
+    )
+    rejections += [
+        template_service.AuthorTransferRejection(
+            template_id=i,
+            template_name=f"任务 #{i}",
+            code="not_found",
+            message="任务不存在(可能已被删除),请刷新后重试",
+        )
+        for i in ids
+        if i not in found
+    ]
+    if rejections:
+        raise BatchRejectedError(
+            f"本次批量转移未生效(全成功才生效):所选 {len(ids)} 个任务中,"
+            f"有 {len(rejections)} 个不能转给 {target.name}。",
+            [asdict(r) for r in rejections],
+        )
+
+    revoked = template_service.transfer_author_batch(db, items, target, operator=user)
+
+    # 审计在业务 commit 之后写(audit_service.log 自带 commit,提前调用会把还没校验完的
+    # 事务一并提交掉)。batch_id 让 N 条行重新聚成「同一次操作」,也回给前端去审计页检索
+    batch_id = uuid4().hex
+    for item in items:
+        audit_service.log(
+            db, user=user, action=ACTION_TASK_AUTHOR_TRANSFER,
+            resource_type=RESOURCE_TEMPLATE, resource_id=item.tmpl.id,
+            resource_name=item.tmpl.name,
+            detail={
+                "from_user_id": item.old_author_id, "from_user_name": item.old_author_name,
+                "to_user_id": target.id, "to_user_name": target.name,
+                "to_user_email": target.email,
+                "team_id": item.tmpl.team_id, "team_name": item.tmpl.team_name,
+                "initiated_as": item.initiated_as,
+                "revoked_redundant_edit": item.tmpl.id in revoked,
+                # 单任务那条 detail 一字不改,只多这两个键。「有 batch_id」就是
+                # 「这是一次批量交接的一部分」的判据
+                "batch_id": batch_id, "batch_size": len(items),
+            },
+            ip=ip,
+        )
+    return BatchAuthorTransferOut(
+        batch_id=batch_id, to_user_id=target.id, to_user_name=target.name, count=len(items)
+    )
 
 
 @router.get("/{template_id}/jobs", response_model=list[JobOut])

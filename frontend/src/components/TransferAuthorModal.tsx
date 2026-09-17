@@ -3,6 +3,7 @@ import { Alert, Modal, Select, Space, Typography, message } from "antd";
 import { TeamMember, errMsg, taskAuthorCandidates, transferTaskAuthor } from "../api";
 import { useAuth } from "../auth";
 import { personLabel } from "../format";
+import TransferConsequence from "./transferConsequence";
 
 /**
  * 转移任务作者 —— 离职交接。
@@ -82,9 +83,7 @@ export default function TransferAuthorModal({
           message={`转移后${who}将不再能编辑此任务`}
           description={
             <>
-              {who}仍是团队成员，<b>仍可见、可运行</b>这个任务，但不再有编辑权
-              （除非{pron}是本团队的团队管理员）。确有需要时，由团队管理员在
-              「任务编辑权」里单独授予一条。
+              <TransferConsequence subject={who} pron={pron} />
               <br />
               接手人只能是<b>本任务所属团队</b>的在职成员；转移后新旧双方都会收到飞书通知。
             </>

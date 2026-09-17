@@ -83,3 +83,69 @@ class TaskAuthorIn(BaseModel):
     """
 
     user_id: int
+
+
+# ---------------------------------------------------------------- 批量转移作者(多选交接)
+
+#: 一次批量交接的任务数上限。无上限等于给自己留一条超时路径:一次请求要写 N 条审计
+#: 并逐人推飞书。200 远高于「一个人名下的任务数」这个真实量级,够用且兜得住。
+BATCH_AUTHOR_TRANSFER_LIMIT = 200
+
+
+class BatchAuthorTransferIn(BaseModel):
+    """多选任务 → 一个接手人。语义是**全成功才生效**,故这里不给任何「跳过失败项」的开关:
+    「转了一半」在归属这件事上最难向审计解释。"""
+
+    user_id: int
+    template_ids: list[int]
+
+
+class BlockedGroupOut(BaseModel):
+    """某个候选人接不了的一组任务,按理由归并。
+
+    **按理由分组而不是逐任务给一句话**:逐任务是「候选人数 × 任务数」条中文,
+    payload 要翻十倍;而理由的取值空间极小(已是作者 / 不在某个团队)。前端悬停时
+    找到含该任务 id 的那一组、读它的 message 即可 —— 文案仍然只由服务端出。
+    """
+
+    code: str                    # already_author | not_in_team | no_team | no_right
+    message: str                 # 给人看的整句话,前端原样显示
+    template_ids: list[int]
+
+
+class AuthorTransferCandidateOut(BaseModel):
+    """一个可能的接手人,以及「选了他之后哪些任务能勾、哪些要置灰」。"""
+
+    user_id: int
+    name: str
+    avatar: str | None = None
+    # 带邮箱:同名同事在名单里区分不开,而选错人的代价是把一批任务交给了另一个人
+    email: str | None = None
+    eligible_template_ids: list[int]
+    blocked: list[BlockedGroupOut] = []
+
+
+class AuthorTransferCandidatesOut(BaseModel):
+    """「先选接手人,再按他过滤可勾选的任务」这一步所需的全部事实,一次取回。
+
+    顶层 blocked 与接手人**无关**(我根本没有处分权、或任务无主),所以只算一次;
+    每个候选人的 eligible + 他自己的 blocked 划分掉其余的。三截合起来恰好覆盖我看得见的
+    全部任务,前端据此三态渲染,**每一句话都来自服务端** —— 它不必也不许自己再推一遍
+    「同团队 ∧ 在职 ∧ 非当前作者」。
+    """
+
+    blocked: list[BlockedGroupOut] = []
+    candidates: list[AuthorTransferCandidateOut]
+
+
+class BatchAuthorTransferOut(BaseModel):
+    """批量转移的回执。batch_id 一并回给前端 —— 拿它去审计页就能捞出「我刚才那一批」。
+
+    刻意不回逐任务明细:那份事实在审计里(每个任务一条,共享 batch_id),
+    多回一份只会变成第三个必须同步维护的行形状。
+    """
+
+    batch_id: str
+    to_user_id: int
+    to_user_name: str
+    count: int

@@ -215,24 +215,58 @@ def transfer_author_role(scope: TeamScope, tmpl) -> str:
     return "team_admin" if tmpl.team_id in scope.admin_team_ids else "platform_admin"
 
 
+def author_transfer_denial(scope: TeamScope, tmpl) -> str | None:
+    """不能由 scope 这个人处分该任务的理由;能处分则返回 None。**纯内存,不碰 db。**
+
+    三种拒绝要给三句不同的话:「无权」若盖住了「这个任务还没有团队」或「你的编辑权不含
+    处分权」,人只会反复重试同一个按钮。这条约定在批量里更要紧 —— 整批拒绝的清单上,
+    12 条「无权修改该任务」等于什么都没说。
+
+    单任务守卫(require_can_transfer_author)与批量计划器(template_service.author_transfer_plan)
+    都转调它:**前端置灰时显示的那句话,与点下去会说的那句话,来自同一次调用**。
+    无主任务的**判据**也收在这里(话术仍只在 team_service 里写一次),否则批量那边会另写
+    一个 `tmpl.team_id is None`,哪天「无主」的定义变了要改两处。
+    团队名取 tmpl.team_name(models/template.py 的 team 关系是 lazy="joined"),
+    不额外查库,故批量里判几百条也是零查询。
+    """
+    if tmpl.team_id is None:
+        return team_service.NO_TEAM_MESSAGE
+    if can_transfer_author(scope, tmpl):
+        return None
+    if can_edit(scope, tmpl):
+        return (
+            f"任务编辑权不含「转移作者」;请让作者本人或团队《{tmpl.team_name}》的团队管理员操作"
+        )
+    return "无权修改该任务"
+
+
 def require_can_transfer_author(db: Session, user: User, tmpl) -> tuple[object, str]:
     """作者转移的守卫。返回 (任务所属团队, 发起人身份)。
 
     身份一并回来,免得调用方为了拼审计标签再建一次 TeamScope(那是固定 2 次查询),
     更免得它在路由里把放行条件重新数一遍。
 
-    三种拒绝要给三句不同的话:「无权」若盖住了「这个任务还没有团队」或「你的编辑权不含
-    处分权」,人只会反复重试同一个按钮。
+    无主任务由 team_of_template 先抛(400,且那句指引只在它那里写一次);其余两种拒绝的
+    话术转调 author_transfer_denial —— 批量路径要把同样的话当成清单里的一行,不能两处各写。
     """
     team = team_service.team_of_template(db, tmpl)
     scope = team_scope(db, user)
-    if can_transfer_author(scope, tmpl):
-        return team, transfer_author_role(scope, tmpl)
-    if can_edit(scope, tmpl):
-        raise PermissionDeniedError(
-            f"任务编辑权不含「转移作者」;请让作者本人或团队《{team.name}》的团队管理员操作"
-        )
-    raise PermissionDeniedError("无权修改该任务")
+    denial = author_transfer_denial(scope, tmpl)
+    if denial is not None:
+        raise PermissionDeniedError(denial)
+    return team, transfer_author_role(scope, tmpl)
+
+
+def visible_templates(db: Session, scope: TeamScope) -> list[SqlTemplate]:
+    """我看得见的任务(整份实体,按 id 倒序)。「可见集怎么取」只在这里写一次。
+
+    任务列表(routes.tasks.list_tasks)与批量交接的候选人接口都走它 —— 两处各写一遍
+    `select + visible_condition` 的话,任何加在可见集上的条件(软删、归档、scope 变形)
+    只会改到其中一处,而另一处的产物正是前端的置灰依据。
+    """
+    stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
+    cond = visible_condition(scope)
+    return list(db.scalars(stmt if cond is None else stmt.where(cond)))
 
 
 def can_run(scope: TeamScope, tmpl) -> bool:
@@ -577,6 +611,19 @@ def discard_edit_grant(db: Session, *, template_id: int, user_id: int) -> bool:
         sa_delete(Permission).where(_edit_where(user_id=user_id, template_id=template_id))
     ).rowcount or 0
     return bool(n)
+
+
+def discard_edit_grants(db: Session, *, template_ids: list[int], user_id: int) -> set[int]:
+    """批量版的 discard_edit_grant:一次查出命中的任务、一次删掉。**不提交。**
+
+    返回命中的任务 id —— 调用方(批量转移作者)要按任务把「清掉了冗余授权吗」记进各自的
+    审计行。逐条调单个版会发 N 条 DELETE 往返(上限 200 条),而谓词与批量删除本仓已有
+    现成写法(_edit_where 支持 template_ids,同 revoke_edit_for_member)。
+    """
+    hit = set(_edit_rows_for(db, user_id=user_id, template_ids=template_ids))
+    if hit:
+        db.execute(sa_delete(Permission).where(_edit_where(user_id=user_id, template_ids=hit)))
+    return hit
 
 
 def revoke_edit(db: Session, *, template_id: int, user_id: int) -> bool:

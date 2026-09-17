@@ -148,16 +148,31 @@ def members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
     return out
 
 
+def active_members_by_team(db: Session, team_ids) -> dict[int, list[dict]]:
+    """一批团队的**在职**成员,一次 join 查完。members_of(active_only=True) 的批量版。
+
+    「在职才算数」这条规则只在本函数里表述一次,members_of 转调它 —— 批量调用方自己写
+    `m["is_active"]` 就是第二份表述,而忘了写不报错、不挂测试(理由见 members_of),
+    只会在某天把一批活派给一个已经登录不进来的人时才暴露。
+    """
+    return {
+        tid: [m for m in rows if m["is_active"]]
+        for tid, rows in members_by_team(db, team_ids).items()
+    }
+
+
 def members_of(db: Session, team_id: int, *, active_only: bool = False) -> list[dict]:
     """单个团队的成员名单。批量版见 members_by_team —— 名单的形状只在那里定义一次。
 
     active_only:只要**在职**成员。离职清理只把 users.is_active 置 False、不删 TeamMember 行,
     所以「还在名单里」不等于「还能接活」。给这件事一个具名参数,而不是让每个调用点自己
     记得写 `and m["is_active"]` —— 忘了不会报错、不会有测试挂,只会在某天把活派给一个
-    已经登录不进来的人时才暴露。
+    已经登录不进来的人时才暴露。过滤本身转调 active_members_by_team,同 members_by_team
+    与本函数的分工:规则在批量版里写一次。
     """
-    rows = members_by_team(db, [team_id])[team_id]
-    return [m for m in rows if m["is_active"]] if active_only else rows
+    if active_only:
+        return active_members_by_team(db, [team_id])[team_id]
+    return members_by_team(db, [team_id])[team_id]
 
 
 def member_of(db: Session, team_id: int, user_id: int) -> dict | None:
@@ -229,6 +244,11 @@ def can_admin_team(db: Session, user: User, team_id: int) -> bool:
     return is_platform_admin(user) or is_team_admin(db, user, team_id)
 
 
+# 「无主任务」那句面向用户的下一步指引。抽成常量而不是内联在 team_of_template 里:
+# 批量作者转移要把它当成**一条拒绝理由**放进清单(不抛异常),而同一句中文只该有一处。
+NO_TEAM_MESSAGE = "该任务还没有所属团队,请先联系平台管理员为它指定团队"
+
+
 def team_of_template(db: Session, tmpl) -> Team:
     """任务的所属团队,**把「无主任务」这个特例收在一处**。
 
@@ -237,7 +257,7 @@ def team_of_template(db: Session, tmpl) -> Team:
     不必各自记得补一遍(否则同一句中文会散落在若干个守卫里,改一个字要满仓库找)。
     """
     if tmpl.team_id is None:
-        raise RubicError("该任务还没有所属团队,请先联系平台管理员为它指定团队")
+        raise RubicError(NO_TEAM_MESSAGE)
     return get_team(db, tmpl.team_id)
 
 

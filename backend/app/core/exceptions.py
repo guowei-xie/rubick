@@ -38,3 +38,30 @@ class SqlSafetyError(RubicError):
     """SQL 安全网关拒绝。"""
 
     status_code = 422
+
+
+class BatchRejectedError(RubicError):
+    """批量操作「全成功才生效」的整批拒绝:一条都没做,并逐条说明为什么。
+
+    **刻意不扩展错误信封**:前端只读 detail 字符串(frontend/src/api.ts 的 errMsg),
+    多加一个字段今天没有任何消费者,却要让**所有**错误响应改形状(登录、取数、订阅……)。
+    结构化明细留在异常对象上(rejections)供测试与日志断言;线上载荷仍然只有 detail,
+    办法是把每条拒绝**写成自成一句的整行**,前端不必解析也读得懂。
+    将来真要给前端结构化数据,给本类加 payload、在 main.py 的 handler 里展开即可,
+    信封是向前兼容的。
+
+    状态码一律 400,**即使整批都是权限类拒绝**:一次响应只有一个码,而一批里天然混着
+    403 类(无权 / 编辑权不含处分权)与 400 类(不在团队 / 已停用 / 已经是作者),
+    挑一个主导码等于让同一个操作的状态码随数据抖动。
+    """
+
+    #: 明细最多列几条。载荷是一个字符串,200 条会变成一堵墙;前端已经把选中的任务
+    #: 逐行列成了表,这里只需给出足够定位问题的头几条
+    LISTED = 10
+
+    def __init__(self, summary: str, rejections: list[dict]):
+        self.rejections = rejections
+        lines = [f"- 《{r['template_name']}》:{r['message']}" for r in rejections[: self.LISTED]]
+        if len(rejections) > self.LISTED:
+            lines.append(f"…… 仅列前 {self.LISTED} 条,共 {len(rejections)} 条")
+        super().__init__("\n".join([summary, *lines]))

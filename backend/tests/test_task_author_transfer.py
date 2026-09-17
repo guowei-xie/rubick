@@ -7,7 +7,7 @@ test_edit_grantee_can_edit_but_cannot_transfer 就是钉死这条减法的那颗
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.api.routes.tasks import (
     grant_task_editor,
@@ -18,7 +18,6 @@ from app.api.routes.tasks import (
 from app.api.routes.templates import create_template, publish, update_template
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.audit import ACTION_TASK_AUTHOR_TRANSFER
-from app.models.notification import Notification
 from app.models.permission import Permission
 from app.models.team import TeamMember
 from app.models.template import TemplateVersion
@@ -27,7 +26,7 @@ from app.schemas.common import ParamDef
 from app.schemas.team import EditorIn, TaskAuthorIn
 from app.schemas.template import PublishIn, TemplateCreateIn, TemplateUpdateIn
 from app.services import notify_service, permission_service
-from tests.conftest import max_audit_id, one_audit_row
+from tests.conftest import max_audit_id, new_notifications, note_floor, one_audit_row
 
 pytestmark = pytest.mark.usefixtures("clean_credentials")
 
@@ -375,12 +374,6 @@ def test_audit_records_from_to_and_initiated_as(db, people, task, actor_key, exp
     assert row.detail["initiated_as"] == expected
 
 
-def _new_notes(db, floor: int):
-    """本次新增的通知。用 id 水位线(同 conftest.max_audit_id 的写法),
-    不把全表 id 读进内存 —— 通知表只会越长越大。"""
-    return list(db.scalars(select(Notification).where(Notification.id > floor)))
-
-
 def test_team_admin_transferring_own_task_is_recorded_as_author(db, ds, people, teams):
     """作者本人恰好也是团队管理员时,记「本人交接」而不是「管理员代办」——
     这条字段存在的全部理由就是分清这两者,优先级取「最贴身的主张」。"""
@@ -391,9 +384,9 @@ def test_team_admin_transferring_own_task_is_recorded_as_author(db, ds, people, 
 
 
 def test_both_parties_are_notified(db, people, task):
-    floor = db.scalar(select(func.max(Notification.id))) or 0
+    floor = note_floor(db)
     _transfer(db, people.a_admin, task, people.other)
-    fresh = _new_notes(db, floor)
+    fresh = new_notifications(db, floor)
     assert {n.user_id for n in fresh} == {people.author.id, people.other.id}
     assert len({n.title for n in fresh}) == 2
 
@@ -403,9 +396,9 @@ def test_inactive_old_author_gets_no_notification(db, people, task):
     people.author.is_active = False
     db.commit()
     try:
-        floor = db.scalar(select(func.max(Notification.id))) or 0
+        floor = note_floor(db)
         _transfer(db, people.a_admin, task, people.other)
-        assert [n.user_id for n in _new_notes(db, floor)] == [people.other.id]
+        assert [n.user_id for n in new_notifications(db, floor)] == [people.other.id]
     finally:
         people.author.is_active = True
         db.commit()

@@ -133,6 +133,15 @@ body {
   color: var(--ink-secondary);
 }
 
+/* 批量交接模式下「这次转不了」的行。与 .rk-row-idle **同色不加深**:闲置说的是
+   「长期没人运行」,blocked 说的是「这个接手人接不了它」,两者可能同时成立;
+   给它更深一档会让人把两件事读成一个两级告警。为什么不加背景/opacity 见上一条。
+   具体原因不进颜色,进行上的原生 title(TaskTable 的 onRow)—— 颜色只说「这行不行」,
+   说不了「为什么」。 */
+.rk-row-blocked > td {
+  color: var(--ink-secondary);
+}
+
 /* 任务编号 + 复制(TaskIdTag)。**整份长相都在这里**,组件里不留内联 style ——
    内联样式压得过类选择器,混写会让下面 :hover 的换色静默失效(踩过一次)。
    它是个 <button>,所以前三行是复位。

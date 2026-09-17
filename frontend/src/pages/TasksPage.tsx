@@ -7,9 +7,13 @@ import {
   DeleteOutlined,
   PlusOutlined,
   UnorderedListOutlined,
+  UserSwitchOutlined,
 } from "@ant-design/icons";
 import {
   archiveTemplate,
+  AuthorTransferCandidate,
+  authorTransferCandidates,
+  BlockedGroup,
   errMsg,
   listTasks,
   publishTemplate,
@@ -23,6 +27,8 @@ import RunRecordsDrawer from "../components/RunRecordsDrawer";
 import GrantModal from "../components/GrantModal";
 import SubscribersModal from "../components/SubscribersModal";
 import TransferAuthorModal from "../components/TransferAuthorModal";
+import BulkTransferBar from "../components/BulkTransferBar";
+import BulkTransferAuthorModal from "../components/BulkTransferAuthorModal";
 import TaskCard from "../components/TaskCard";
 import TaskTable from "../components/TaskTable";
 import { showIdle, TaskHandlers } from "../components/taskActions";
@@ -133,6 +139,16 @@ export default function TasksPage() {
   const [records, setRecords] = useState<{ task: any; jobId: number | null } | null>(null);
   const [subscribersTarget, setSubscribersTarget] = useState<any>(null);
   const [transferTarget, setTransferTarget] = useState<any>(null);
+  // 批量交接模式。**不进 URL**:它是一次未提交的操作过程,不是「此刻在看哪一批」——
+  // 把半勾好的选中集做成可深链的状态,只会让别人点开你的链接时进入一个陌生的半成品
+  const [bulk, setBulk] = useState(false);
+  const [candidates, setCandidates] = useState<AuthorTransferCandidate[]>([]);
+  // 与接手人无关的置灰理由(我没有处分权 / 任务无主),服务端只算一次
+  const [baseBlocked, setBaseBlocked] = useState<BlockedGroup[]>([]);
+  const [candLoading, setCandLoading] = useState(false);
+  const [receiverId, setReceiverId] = useState<number>();
+  const [selectedKeys, setSelectedKeys] = useState<number[]>([]);
+  const [confirming, setConfirming] = useState(false);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
   const [view, setView] = useState<ViewMode>(() =>
@@ -142,6 +158,9 @@ export default function TasksPage() {
     setView(v);
     localStorage.setItem(VIEW_KEY, v);
   };
+  // 批量交接期间强制列表(卡片没有勾选列),但**只改这次渲染读的值、不写偏好** ——
+  // 退出模式自动回到他原本的视图,不需要任何「记住原视图再恢复」的簿记
+  const effectiveView: ViewMode = bulk ? "list" : view;
   // 回收站视图:同页切换(?recycle=1),只看已下线任务;与顶栏那排筛选片互斥
   const showRecycle = sp.get("recycle") === "1";
   // 闲置阈值(天):服务端下发在每一行上,全局同一个值,取任一行即可;0 = 这项提示关着。
@@ -309,6 +328,118 @@ export default function TasksPage() {
     );
   }, [scoped, q, qid, activeChip, idleOnly, showRecycle]);
 
+  // ---------------------------------------------------------------- 批量交接作者
+  // 能勾什么、为什么勾不了,**全部来自服务端算好的候选集**(authorTransferCandidates):
+  // 同团队 ∧ 在职 ∧ 不是当前作者 这三条规则在前端复述一遍就是第二份会漂移的规则,
+  // 而漂移的表现是「勾得上、点了报错」。这里只做查表与计数。
+  const receiver = useMemo(
+    () => candidates.find((c) => c.user_id === receiverId),
+    [candidates, receiverId]
+  );
+  const eligibleIds = useMemo(
+    () => new Set(receiver?.eligible_template_ids ?? []),
+    [receiver]
+  );
+  /** 任务 id → 为什么勾不了。顶层那截与接手人无关(我没处分权 / 无主任务),
+   *  候选人那截是「他接不了」。两截都由服务端给话,前端只合表、不造句。 */
+  const blockedReason = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const g of [...baseBlocked, ...(receiver?.blocked ?? [])])
+      for (const id of g.template_ids) m.set(id, g.message);
+    return m;
+  }, [baseBlocked, receiver]);
+
+  const loadCandidates = useCallback(() => {
+    setCandLoading(true);
+    authorTransferCandidates()
+      .then((d) => {
+        setCandidates(d.candidates);
+        setBaseBlocked(d.blocked);
+      })
+      .catch((e) => message.error(errMsg(e, "取接手人名单失败")))
+      .finally(() => setCandLoading(false));
+  }, []);
+
+  const exitBulk = useCallback(() => {
+    setBulk(false);
+    setReceiverId(undefined);
+    setSelectedKeys([]);
+    setConfirming(false);
+    // 候选集一并清掉:下次进来无条件重拉,留着只是白占内存,还会先闪一帧旧名单
+    setCandidates([]);
+    setBaseBlocked([]);
+  }, []);
+
+  const enterBulk = () => {
+    setBulk(true);
+    setSelectedKeys([]);
+    setReceiverId(undefined);
+    loadCandidates();
+    // 卡片没有勾选列,批量只在列表视图里做。**不写 localStorage** —— 视图偏好是
+    // 「这个人习惯怎么看」,不该被一次临时操作改掉;退出后自动回到他原本的卡片视图
+    if (view === "card") message.info("批量交接需要逐行勾选，已临时切到列表视图");
+  };
+
+  // 换接手人:保留交集,而不是清空。离职交接常要在两个接手人之间比一比,
+  // 全清等于让人把十几行重勾一遍;被剔掉的那些如实说一句,不静默丢弃
+  const pickReceiver = (id?: number) => {
+    setReceiverId(id);
+    if (id === undefined) return;
+    const next = new Set(candidates.find((c) => c.user_id === id)?.eligible_template_ids ?? []);
+    setSelectedKeys((prev) => {
+      const kept = prev.filter((k) => next.has(k));
+      const dropped = prev.length - kept.length;
+      const who = candidates.find((c) => c.user_id === id)?.name ?? "他";
+      if (dropped)
+        message.warning(
+          kept.length
+            ? `已选中的任务里有 ${dropped} 个不能转给 ${who}，已自动取消勾选`
+            : `已选中的任务都不能转给 ${who}，选中已清空`
+        );
+      return kept;
+    });
+  };
+
+  // 勾选保留跨筛选:搜「张三」勾一批、再搜「李四」接着勾,正是交接的用法。
+  // 代价是会出现「选中的行现在看不见」,故计数里把它如实说出来(见 BulkTransferBar)
+  const selectedSet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
+  const filteredIds = useMemo(() => new Set(filtered.map((t) => t.id)), [filtered]);
+  const selectedTasks = useMemo(
+    () => tasks.filter((t) => selectedSet.has(t.id)),
+    [tasks, selectedSet]
+  );
+  // receiver 为空时 eligibleIds 本就是空集,filter 自然得空数组,不必再加一层守卫
+  const visibleEligible = useMemo(
+    () => filtered.filter((t) => eligibleIds.has(t.id)),
+    [filtered, eligibleIds]
+  );
+  const hiddenSelectedCount = useMemo(
+    () => selectedKeys.reduce((n, k) => (filteredIds.has(k) ? n : n + 1), 0),
+    [selectedKeys, filteredIds]
+  );
+
+  /** 这一行现在能不能勾,以及不能勾时那句话。**每一句都来自服务端** ——
+   *  候选接口返回的三截(顶层 blocked / 他的 eligible / 他的 blocked)恰好覆盖我看得见的
+   *  全部任务,所以这里只是查表。落到最后那条兜底,说明服务端的划分与列表不同步了
+   *  (有人刚改了团队或成员),如实让他刷新,而不是替服务端猜一个理由。 */
+  const decisionOf = useCallback(
+    (r: any) => {
+      if (!receiver) return { ok: false, reason: "请先在上方选择接手人" };
+      if (eligibleIds.has(r.id)) return { ok: true, reason: `可转给 ${receiver.name}` };
+      const why = blockedReason.get(r.id);
+      return why
+        ? { ok: false, reason: why }
+        : { ok: false, reason: "这个任务的归属刚刚变过，请刷新页面后重试" };
+    },
+    [receiver, eligibleIds, blockedReason]
+  );
+
+  // 不套 useMemo:selectedKeys 在依赖里,每勾一行都会换新身份 —— 那个 memo 只会让人
+  // 误以为它是稳定的,而 TaskTable 侧本来就不需要它稳定(见那边的说明)
+  const bulkProps = bulk
+    ? { selectedKeys, onSelectedChange: setSelectedKeys, decisionOf }
+    : undefined;
+
   const summary = useMemo(() => {
     const s = { published: 0, draft: 0, archived: 0, idle: 0, total: 0 };
     for (const t of scoped) {
@@ -419,19 +550,35 @@ export default function TasksPage() {
           使用文档
         </Button>
       </Tooltip>
-      <Segmented<ViewMode>
-        size="small"
-        value={view}
-        onChange={changeView}
-        options={[
-          { value: "card", title: "卡片视图", icon: <AppstoreOutlined aria-label="卡片视图" /> },
-          {
-            value: "list",
-            title: "列表视图(信息更密,可点列头排序)",
-            icon: <UnorderedListOutlined aria-label="列表视图" />,
-          },
-        ]}
-      />
+      {/* 批量交接:门不是光 isManager,还要**手上确实有能处分的任务** —— 一个没有任何
+          可转移任务的开发者不该看到一个点进去必然空手而归的入口。判据用服务端下发的
+          can_transfer_author(与 ⋮ 菜单那一项同一个布尔),用 tasks 而不是 filtered,
+          否则按钮会随搜索逐字符闪现 */}
+      {isManager && !bulk && tasks.some((t) => t.can_transfer_author) && (
+        <Tooltip title="多选任务，一次把作者转给同一个接手人（离职交接）">
+          <Button type="text" icon={<UserSwitchOutlined />} onClick={enterBulk}>
+            批量交接
+          </Button>
+        </Tooltip>
+      )}
+      {/* 批量模式下置灰而不是藏起来:静默切走视图会让人以为自己的偏好被改了。
+          偏好其实没动,退出后自动回到原视图(见 effectiveView) */}
+      <Tooltip title={bulk ? "批量交接需要逐行勾选，已临时切到列表视图" : undefined}>
+        <Segmented<ViewMode>
+          size="small"
+          value={effectiveView}
+          disabled={bulk}
+          onChange={changeView}
+          options={[
+            { value: "card", title: "卡片视图", icon: <AppstoreOutlined aria-label="卡片视图" /> },
+            {
+              value: "list",
+              title: "列表视图(信息更密,可点列头排序)",
+              icon: <UnorderedListOutlined aria-label="列表视图" />,
+            },
+          ]}
+        />
+      </Tooltip>
       {isManager && (
         <>
           <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
@@ -519,10 +666,29 @@ export default function TasksPage() {
     >
       {/* 两种视图消费同一个 filtered:顶部计数、筛选、搜索、空态都只有一份,
           切视图不会让「数字与内容对不上」。空态两种视图共用,不必各画一遍。 */}
+      {bulk && (
+        <BulkTransferBar
+          candidates={candidates}
+          loading={candLoading}
+          picked={receiverId}
+          onPick={pickReceiver}
+          selectedCount={selectedKeys.length}
+          hiddenSelectedCount={hiddenSelectedCount}
+          eligibleVisibleCount={visibleEligible.length}
+          blockedGroups={receiver?.blocked ?? []}
+          onSelectAll={() =>
+            setSelectedKeys((prev) => [
+              ...new Set([...prev, ...visibleEligible.map((t) => t.id)]),
+            ])
+          }
+          onSubmit={() => setConfirming(true)}
+          onExit={exitBulk}
+        />
+      )}
       {filtered.length === 0 ? (
         <Empty style={{ padding: "48px 0" }} description={emptyText} />
-      ) : view === "list" ? (
-        <TaskTable tasks={filtered} h={handlers} hitId={qid} />
+      ) : effectiveView === "list" ? (
+        <TaskTable tasks={filtered} h={handlers} hitId={qid} bulk={bulkProps} />
       ) : (
         <div
           style={{
@@ -568,6 +734,19 @@ export default function TasksPage() {
         // 必须重拉列表:作者本人转出后 can_manage / can_transfer_author / developed_by_me
         // 全都翻转,不重拉他还看得到「编辑」入口,点进去才 403
         onDone={load}
+      />
+      <BulkTransferAuthorModal
+        open={confirming}
+        receiver={receiver}
+        tasks={selectedTasks}
+        onClose={() => setConfirming(false)}
+        // 成功后必须退出模式:一次转走 N 个任务,这 N 行的 can_manage /
+        // can_transfer_author / developed_by_me 全部翻转,候选集也整体作废,
+        // 留在模式里只会给出一张已经说谎的表(同上面那条注释,批量下更强)
+        onDone={() => {
+          exitBulk();
+          load();
+        }}
       />
     </Card>
   );

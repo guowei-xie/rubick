@@ -270,6 +270,50 @@ export const taskAuthorCandidates = (templateId: number) =>
 export const transferTaskAuthor = (templateId: number, userId: number) =>
   http.put(`/tasks/${templateId}/author`, { user_id: userId }).then((r) => r.data);
 
+// ---- 批量转移作者(多选离职交接)----
+// 与上面单任务那两个是同一件事的两个方向:那边「一个任务 → 一批人」,这边「一批任务 →
+// 每个人各自能接哪些」。两者最终落在服务端同一句规则上,所以下拉里选得到的与点下去
+// 放行的永远一致 —— 前端**不要**用 team_id / author_id 自己再推一遍。
+
+/** 某个候选人接不了的一组任务,以及服务端写好的整句理由(前端原样显示,不自己编)。 */
+export interface BlockedGroup {
+  code: string;
+  message: string;
+  template_ids: number[];
+}
+export interface AuthorTransferCandidate {
+  user_id: number;
+  name: string;
+  avatar?: string | null;
+  email?: string | null;
+  /** 选了他之后可勾选的任务 */
+  eligible_template_ids: number[];
+  /** 我有处分权、但不能给他的那些,按理由分组 */
+  blocked: BlockedGroup[];
+}
+export interface AuthorTransferCandidates {
+  /** 与接手人**无关**的置灰理由(我根本没有处分权、或任务无主),服务端只算一次 */
+  blocked: BlockedGroup[];
+  candidates: AuthorTransferCandidate[];
+}
+/** 批量交接的第一步:我能把任务交给谁,以及选了他之后哪些能勾、哪些要置灰。 */
+export const authorTransferCandidates = () =>
+  http.get("/tasks/author-transfer/candidates").then((r) => r.data as AuthorTransferCandidates);
+
+export interface BatchAuthorTransferResult {
+  /** 审计页上「我刚才那一批」的检索号 */
+  batch_id: string;
+  to_user_id: number;
+  to_user_name: string;
+  count: number;
+}
+/** 批量转移作者。**全成功才生效**:任一条不合法则整批 400,一个任务都不会被改动,
+ *  detail 是一段多行说明(每条拒绝自成一行),按 errMsg 取出后需以 pre-line 渲染。 */
+export const batchTransferTaskAuthor = (userId: number, templateIds: number[]) =>
+  http
+    .post("/tasks/author-transfer", { user_id: userId, template_ids: templateIds })
+    .then((r) => r.data as BatchAuthorTransferResult);
+
 // ---- credentials(团队取数账号)----
 // 任务用**所属团队**的库账号取数,数据权限交由数据库裁决。
 // 密码只写不读:接口永不回传。库用户名是半机密(Hive auth=NONE 下它本身就是完整凭证),

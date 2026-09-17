@@ -34,13 +34,16 @@ def _push(
     level: str,
     link: str,
     job_id: int | None,
-    template_id: int,
+    template_id: int | None,
 ) -> Notification | None:
     """投递一条通知:先试飞书,再写站内记录(飞书失败也要留下站内那条)。
 
     所有通知都走这一个出口 —— 以后加 Notification 列、加限流、换飞书卡片模板,只改这里。
     job_id 可空:入队阶段就被拦下的取数根本没有运行记录行(见 notify_credential_blocked),
     而那条通知照样要发。
+    template_id 同样可空,理由不同:**汇总类通知横跨多个任务,没有「那一个」可指**
+    (见 notify_author_transferred_batch)。挑一个当代表会让铃铛把人带到一个与标题不符的
+    任务页;留空则前端只标已读、不跳转(NotificationBell 已按 template_id 真值判断)。
 
     **系统用户(定时运行)永远收不到通知**:它不是人,登录不进来,给它的通知没有任何人会读到。
     收件人算成了它,只可能是上游把「定时运行的发起人」当成了「该通知的人」—— 定时运行要通知的
@@ -80,6 +83,12 @@ def _records_link(template_id: int, job_id: int | None = None) -> str:
     """
     url = f"{settings.APP_BASE_URL}/tasks?records={template_id}"
     return f"{url}&job={job_id}" if job_id else url
+
+
+def _tasks_link() -> str:
+    """「去任务列表」这条链接的唯一出处。理由同 _records_link:此前 f"{APP_BASE_URL}/tasks"
+    散在好几处,子路径部署(/rubick 前缀)一改就得满文件找。"""
+    return f"{settings.APP_BASE_URL}/tasks"
 
 
 def _team_fixers(db: Session, tmpl: SqlTemplate, *, include_author: bool = False) -> list[int]:
@@ -205,6 +214,30 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
 
 
 # ---------------------------------------------------------------- 任务作者转移
+# 两条忠告(新作者「权限从哪来」、原作者「不再能改 + 真要改怎么办」)是这个功能唯一会
+# 引发工单的两句话。单任务与批量只差主语和单复数,所以它们只在这里各写一次 ——
+# 分开写两份的结果是改一处漏一处,而且没有任何测试会因此变红。
+
+
+def _new_author_body(subject: str, by: str, *, plural: bool) -> str:
+    these, their = ("这些任务", "它们的") if plural else ("这个任务", "该任务的")
+    return (
+        f"{subject}的作者已转给你{by}。"
+        f"你现在可以编辑、上下线{these},并为业务同事授权;"
+        f"{their}定时运行失败时也会通知你。"
+    )
+
+
+def _old_author_body(subject: str, by: str, *, plural: bool) -> str:
+    # 批量可能横跨几个团队,所以复数那版说「所属团队」而不是「本团队」
+    them, whose, team = (
+        ("它们", "对应任务", "所属团队") if plural else ("该任务", "该任务", "本团队")
+    )
+    return (
+        f"{subject}的作者已由你转为他人{by}。"
+        f"除非你是{team}的团队管理员,否则你对{them}不再有编辑权(仍可见、可运行);"
+        f"如仍需编辑,请让团队管理员单独授予你{whose}的编辑权。"
+    )
 
 
 def notify_author_transferred(
@@ -216,9 +249,8 @@ def notify_author_transferred(
     **以及真要改怎么办** —— 少了后半句,他只会在列表里发现编辑按钮没了然后来问人。
     两条都写明操作人:团队管理员代办的离职交接里,收信的两个人都不是发起人。
 
-    原作者已停用时跳过他那条(离职清理置 is_active=False,人已经登录不进来了)。
-    这道判断刻意留在本函数里、不塞进 _push:那里是所有通知的公共出口,给它加一条
-    全局过滤会连带改掉订阅、取数失败等所有通知的行为,爆炸半径远超本功能。
+    原作者已停用时跳过他那条 —— 判断收在 _is_notifiable(与批量版共用),那里也记着
+    「为什么不塞进 _push」。
     """
     link = _records_link(tmpl.id)
     team = f"团队《{tmpl.team_name}》" if tmpl.team_name else "该团队"
@@ -230,34 +262,111 @@ def notify_author_transferred(
         db,
         user_id=tmpl.author_id,
         title="你被指定为任务作者",
-        body=(
-            f"{team}的任务《{tmpl.name}》的作者已转给你{by}。"
-            "你现在可以编辑、上下线这个任务,并为业务同事授权;"
-            "该任务的定时运行失败时也会通知你。"
-        ),
+        body=_new_author_body(f"{team}的任务《{tmpl.name}》", by, plural=False),
         level="info",
         link=link,
         job_id=None,
         template_id=tmpl.id,
     )
 
-    old = db.get(User, old_author_id)
-    if old is None or not old.is_active:
+    if not _is_notifiable(db, old_author_id):
         return
     _push(
         db,
         user_id=old_author_id,
         title="你的任务已移交他人",
-        body=(
-            f"{team}的任务《{tmpl.name}》的作者已由你转为他人{by}。"
-            "除非你是本团队的团队管理员,否则你对该任务不再有编辑权(仍可见、可运行);"
-            "如仍需编辑,请让团队管理员单独授予你该任务的编辑权。"
-        ),
+        body=_old_author_body(f"{team}的任务《{tmpl.name}》", by, plural=False),
         level="info",
         link=link,
         job_id=None,
         template_id=tmpl.id,
     )
+
+
+def _is_notifiable(db: Session, user_id: int) -> bool:
+    """这个人还收得到通知吗。离职清理置 is_active=False,人已经登录不进来了。
+
+    单任务与批量两条路共用 —— 这道判断刻意留在本模块、**不塞进 _push**:那里是所有通知的
+    公共出口,给它加一条全局过滤会连带改掉订阅、取数失败等所有通知的行为,爆炸半径远超本功能。
+    """
+    user = db.get(User, user_id)
+    return user is not None and user.is_active
+
+
+#: 通知正文里最多点名几个任务。一次交接可能有几十个,全抄进飞书卡片没人读得下去
+_LISTED_TASKS = 10
+
+
+def _task_list(tmpls: list[SqlTemplate]) -> str:
+    """通知正文里的任务清单;超出就收尾成「等共 N 个」。"""
+    head = "、".join(f"《{t.name}》" for t in tmpls[:_LISTED_TASKS])
+    return head if len(tmpls) <= _LISTED_TASKS else f"{head} 等共 {len(tmpls)} 个"
+
+
+def notify_author_transferred_batch(
+    db: Session, *, items: list[tuple[SqlTemplate, int]], operator: User
+) -> None:
+    """一批任务的作者转移 → 新作者收**一条**汇总,每个原作者各收**一条**汇总。
+
+    items = [(任务, 该任务的原作者 id)]。一批里原作者可能不止一个(多选未必都是同一人的
+    任务),故按原作者分组 —— 逐条发会让一次 12 个任务的交接给同一个人发 12 条飞书。
+
+    **只有一条时直接转调单任务版**:批量入口勾了一个任务时,收到的通知应当与从 ⋮ 菜单转
+    逐字一致,而不是第二套措辞。
+
+    **合并的是「收件人条数」,不是「一次 API 发给多人」**:飞书批量接口的坑是一个失效
+    open_id 会让整批 400(见 feishu_service),所以这里仍然逐人 _push —— 坏 id 只毒它自己那条。
+
+    新作者不可能同时是这批里任一条的原作者(那条会在校验阶段被 already_author 拦掉),
+    两组收件人天然不相交,不会有人为同一批收到两条口径相反的通知。
+    """
+    if not items:
+        return
+    if len(items) == 1:
+        tmpl, old_author_id = items[0]
+        notify_author_transferred(db, tmpl, old_author_id=old_author_id, operator=operator)
+        return
+
+    tmpls = [t for t, _ in items]
+    # 新作者不另传:调用点在 commit 之后,author_id 就是他(同 notify_author_transferred)
+    new_author_id = tmpls[0].author_id
+    by = f"(由 {operator.name} 操作)"
+    # 汇总没有「那一个任务」可指:深链落到任务列表,template_id 留空(见 _push 的说明)
+    link = _tasks_link()
+
+    _push(
+        db,
+        user_id=new_author_id,
+        title=f"你被指定为 {len(tmpls)} 个任务的作者",
+        body=_new_author_body(
+            f"以下 {len(tmpls)} 个任务({_task_list(tmpls)})", by, plural=True
+        ),
+        level="info",
+        link=link,
+        job_id=None,
+        template_id=None,
+    )
+
+    grouped: dict[int, list[SqlTemplate]] = {}
+    for tmpl, old_author_id in items:
+        grouped.setdefault(old_author_id, []).append(tmpl)
+    for old_author_id, mine in grouped.items():
+        if not _is_notifiable(db, old_author_id):
+            continue
+        # 这条与单任务版共享同一个要害:不只说「你不再能改」,还要说**真要改怎么办**。
+        # 少了后半句,人只会在列表里发现编辑按钮没了然后来问人(见 notify_author_transferred)
+        _push(
+            db,
+            user_id=old_author_id,
+            title=f"你的 {len(mine)} 个任务已移交他人",
+            body=_old_author_body(
+                f"以下 {len(mine)} 个任务({_task_list(mine)})", by, plural=True
+            ),
+            level="info",
+            link=link,
+            job_id=None,
+            template_id=None,
+        )
 
 
 # ---------------------------------------------------------------- 任务订阅(定时运行)

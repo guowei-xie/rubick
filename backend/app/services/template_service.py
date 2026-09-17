@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.connectors import get_connector
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
+from app.core.logging_setup import get_logger
 from app.core.sql_gateway import validate_readonly
 from app.models.datasource import DataSource
 from app.models.query_job import (
@@ -42,6 +44,8 @@ from app.services import (
     subscription_service,
     team_service,
 )
+
+log = get_logger("rubick.template")
 
 
 # 试跑是**有人在等**的同步请求,不能套用 Hive 的 3600 秒批处理上限占着请求线程一小时。
@@ -245,13 +249,49 @@ def archive(db: Session, tmpl: SqlTemplate) -> None:
 # ---------------------------------------------------------------- 转移作者(离职交接)
 
 
-def transfer_author(
-    db: Session, tmpl: SqlTemplate, target: User, *, team, operator: User
-) -> tuple[int, bool]:
-    """把任务的作者转给同团队的另一名成员。返回 (原作者 id, 是否清掉了冗余的 edit 授权)。
+def eligible_receivers(active_members: list[dict], tmpl: SqlTemplate) -> list[dict]:
+    """在职同团队成员里排除当前作者 —— 「谁可以成为作者」的**唯一一句话**。**纯内存。**
 
-    发起人资格由路由层的 permission_service.require_can_transfer_author 判完;这里只负责
-    接收人校验与连带规则 —— 两者都**只在这里写一次**(同 team_service.transfer_template)。
+    单任务的候选人接口直接回它;批量路径要判的是反向问题(「这个人能不能接这一个任务」),
+    走 receiver_rejection —— 两者共享同一个判据:**在不在该团队的在职名单里,且不是当前作者**。
+    规则要有两份表述(哪怕都在后端),迟早在长出第四条口径时只改到一处,
+    而症状就是下拉里选得到、点了报错。
+    """
+    return [m for m in active_members if m["user_id"] != tmpl.author_id]
+
+
+def receiver_rejection(
+    tmpl: SqlTemplate, *, member_ids: set[int], user_id: int, name: str, is_active: bool
+) -> tuple[str, str] | None:
+    """这个人不能接手 tmpl 的 (代码, 给人看的整句话);能接手则返回 None。**纯内存。**
+
+    放行判据只有一条 —— 「在该团队的在职名单里,且不是当前作者」(= eligible_receivers
+    的逆问题);下面的分支只负责**把拒绝的理由说清楚**,不再各自重述一遍规则。
+    代码(code)只给前端分组计数与测试断言用,面向用户的永远是那句中文。
+
+    刻意只收 id / 姓名 / 在职三个标量而不是一个 ORM User:候选人接口手上是
+    active_members_by_team 回的名单 dict,为了喂一个 User 再查一次库,查回来的也只有
+    这三样(名字叫 AuthorTransferRejection 的那个 dataclass 是结果,不要与本函数混淆)。
+    """
+    if user_id != tmpl.author_id and user_id in member_ids:
+        return None
+    if user_id == tmpl.author_id:
+        return ("already_author", f"《{tmpl.name}》的作者已经是 {name},无需转移")
+    if not is_active:
+        return ("inactive", f"{name} 的账号已停用,不能接手任务")
+    return (
+        "not_in_team",
+        f"{name} 不是团队《{tmpl.team_name}》的成员,不能成为该任务的作者",
+    )
+
+
+def _apply_author_transfers(db: Session, tmpls: list[SqlTemplate], target: User) -> set[int]:
+    """改 author_id,并清掉新作者那些已成冗余的 edit 授权。返回被清掉的任务 id。
+    **不提交、不校验、不通知** —— 校验由调用方在此之前完成。
+
+    「转移到底动了哪些行」只有这一处定义。批量是主入口、单任务传一个元素的列表进来
+    (同 team_service.members_by_team / members_of 的分工):逐条调单个版会发 N 条
+    DELETE 往返,而这件事本来就有批量原语(permission_service.discard_edit_grants)。
 
     **跟着 author_id 自动走的**(这里什么都不用做):编辑权第 3 条
     (permission_service.can_edit)、任务列表的「我开发的」、编辑人名单里的 source="author"、
@@ -274,48 +314,223 @@ def transfer_author(
     editors_by_template 里 author 会盖住 granted,那行从此在 UI 上看不见、也就撤不掉;
     等哪天作者再被转走,它会静默复活成一条编辑权。
     """
+    # 不提交,与下面的 author_id 一起进同一个事务(故不能用 revoke_edit,它自带 commit)
+    revoked = permission_service.discard_edit_grants(
+        db, template_ids=[t.id for t in tmpls], user_id=target.id
+    )
+    for tmpl in tmpls:
+        tmpl.author_id = target.id
+    return revoked
+
+
+def transfer_author(
+    db: Session, tmpl: SqlTemplate, target: User, *, team, operator: User
+) -> tuple[int, bool]:
+    """把任务的作者转给同团队的另一名成员。返回 (原作者 id, 是否清掉了冗余的 edit 授权)。
+
+    发起人资格由路由层的 permission_service.require_can_transfer_author 判完;这里只负责
+    编排 —— 校验(receiver_rejection)与变更(_apply_author_transfers)都与批量路径共用,
+    本函数自己只多做两件事:提交,以及发单任务那两条通知。批量版见 transfer_author_batch,
+    差别正是这两件(同 permission_service 里 discard_edit_grant 与 revoke_edit 的关系:
+    差的只有一个 commit)。
+    """
     # 读到最新已提交值再判「已经是作者」——两个管理员同时点同一个人时,
     # 这能把静默双写降级成一条干净的 400(不为此引入乐观锁,transfer_template 也没有)
     db.refresh(tmpl)
 
-    # 「谁可以接手」只有 author_candidates 一个出处:下拉列的和这里放行的必须是同一批人,
-    # 否则就会出现它自己要防的那种症状 ——「下拉里选得到、点了报错」。
-    # 下面的分支只负责**把拒绝的理由说清楚**,不再各自重述一遍规则。
-    if target.id not in {m["user_id"] for m in author_candidates(db, tmpl, team=team)}:
-        if target.id == tmpl.author_id:
-            raise RubicError(f"《{tmpl.name}》的作者已经是 {target.name},无需转移")
-        if not target.is_active:
-            raise RubicError(f"{target.name} 的账号已停用,不能接手任务")
-        raise RubicError(
-            f"{target.name} 不是团队《{team.name}》的成员,不能成为该任务的作者"
-        )
+    rejection = receiver_rejection(
+        tmpl,
+        member_ids={m["user_id"] for m in team_service.members_of(db, team.id, active_only=True)},
+        user_id=target.id, name=target.name, is_active=target.is_active,
+    )
+    if rejection is not None:
+        raise RubicError(rejection[1])
 
     old_author_id = tmpl.author_id
-    # 不提交,与下面的 author_id 一起进同一个事务(故不能用 revoke_edit,它自带 commit)
-    revoked = permission_service.discard_edit_grant(
-        db, template_id=tmpl.id, user_id=target.id
-    )
-    tmpl.author_id = target.id
+    revoked = _apply_author_transfers(db, [tmpl], target)
     db.commit()
 
     notify_service.notify_author_transferred(
         db, tmpl, old_author_id=old_author_id, operator=operator
     )
-    return old_author_id, revoked
+    return old_author_id, tmpl.id in revoked
 
 
 def author_candidates(db: Session, tmpl: SqlTemplate, *, team) -> list[dict]:
     """能接手这个任务的人:所属团队的**在职**成员,排除当前作者。
 
     这是「谁可以成为作者」的唯一出处 —— transfer_author 的放行判据就是「在不在这份名单里」,
-    候选人接口也直接回它。规则只要有两份表述(哪怕都在后端),迟早会长出第四条口径时
-    只改到一处,而症状就是下拉里选得到、点了报错。
+    候选人接口也直接回它。规则本身写在 eligible_receivers 里(批量路径共用同一句)。
     """
-    return [
-        m
-        for m in team_service.members_of(db, team.id, active_only=True)
-        if m["user_id"] != tmpl.author_id
-    ]
+    return eligible_receivers(team_service.members_of(db, team.id, active_only=True), tmpl)
+
+
+# ---------------------------------------------------------------- 批量转移作者(多选交接)
+# 「一次把 N 个任务交给同一个接手人」。语义是**全成功才生效**:校验相位与写入相位完全
+# 分开 —— author_transfer_plan 只读、不写、不抛,把拒绝当数据回;有任何一条不行,调用方
+# 在**一次写入都还没发生**时就返回。这比「写了再回滚」更强,也不依赖 get_db 的清理行为。
+
+
+@dataclass(frozen=True)
+class AuthorTransferItem:
+    """一条**已通过全部校验**的待转移项。"""
+
+    tmpl: SqlTemplate
+    old_author_id: int
+    old_author_name: str | None       # 必须在改 author_id 之前取(同单任务路由的理由)
+    initiated_as: str                 # permission_service.transfer_author_role,**逐条算**
+
+
+@dataclass(frozen=True)
+class AuthorTransferRejection:
+    """一条不能转的任务,以及为什么。整批拒绝时这些话会原样出现在给用户的回执里。"""
+
+    template_id: int
+    template_name: str | None
+    code: str       # no_team | no_right | already_author | inactive | not_in_team | not_found
+    message: str
+
+
+def _member_ids(rosters: dict[int, list[dict]]) -> dict[int, set[int]]:
+    """名单 → 每队的在职成员 id 集合。**只 build 一次**:候选人接口要拿同一批任务对
+    几十个人各判一遍,而每次判定只问一句 `x in ?` —— 每对都重建一次长度 M 的列表,
+    就是「人数 × 任务数」次无谓拷贝。"""
+    return {tid: {m["user_id"] for m in ms} for tid, ms in rosters.items()}
+
+
+def _reject(tmpl: SqlTemplate, code: str, message: str) -> AuthorTransferRejection:
+    return AuthorTransferRejection(
+        template_id=tmpl.id, template_name=tmpl.name, code=code, message=message
+    )
+
+
+def transfer_author_scope(
+    scope, tmpls: list[SqlTemplate]
+) -> tuple[list[SqlTemplate], list[AuthorTransferRejection]]:
+    """把一批任务分成「我有权处分的」与「我无权处分的(附理由)」。**与接手人无关**,
+    所以候选人接口只算一次,而不是对每个候选人各算一遍。
+
+    理由一律来自 permission_service.author_transfer_denial —— 无主任务、编辑权不含处分权、
+    完全无权三句话都在那里,前端原样显示。
+    """
+    mine: list[SqlTemplate] = []
+    rejections: list[AuthorTransferRejection] = []
+    for tmpl in tmpls:
+        denial = permission_service.author_transfer_denial(scope, tmpl)
+        if denial is None:
+            mine.append(tmpl)
+        else:
+            rejections.append(_reject(tmpl, "no_team" if tmpl.team_id is None else "no_right", denial))
+    return mine, rejections
+
+
+def author_transfer_plan(
+    db: Session, tmpls: list[SqlTemplate], target: User, *, scope, member_ids=None
+) -> tuple[list[AuthorTransferItem], list[AuthorTransferRejection]]:
+    """把「这批任务能不能转给 target」一次算完。**只读、不写、不抛**(拒绝以数据回)。
+
+    两个调用点共用它:批量执行接口(有拒绝就整批拒绝),以及候选人接口(拿通过的 id 当
+    eligible_template_ids、拿 rejections 当置灰理由)。这就是「规则只有一份」在本功能里的
+    落点 —— **前端置灰时显示的那句话,与点下去会说的那句话,来自同一次调用**。
+
+    查询次数与任务数无关:团队与作者随任务 join 回来(lazy="joined"),成员名单一次
+    查完,发起人资格全在 scope 上做纯内存运算(故 scope 由调用方建一次传进来 ——
+    它是固定 2 次查询,在循环里建就是 2N 次)。member_ids 同理可由调用方传入。
+    """
+    if member_ids is None:
+        member_ids = _member_ids(
+            team_service.active_members_by_team(
+                db, {t.team_id for t in tmpls if t.team_id is not None}
+            )
+        )
+    mine, rejections = transfer_author_scope(scope, tmpls)
+    items: list[AuthorTransferItem] = []
+    for tmpl in mine:
+        rejection = receiver_rejection(
+            tmpl,
+            member_ids=member_ids.get(tmpl.team_id, set()),
+            user_id=target.id, name=target.name, is_active=target.is_active,
+        )
+        if rejection is not None:
+            rejections.append(_reject(tmpl, *rejection))
+            continue
+        items.append(
+            AuthorTransferItem(
+                tmpl=tmpl,
+                old_author_id=tmpl.author_id,
+                old_author_name=tmpl.author_name,
+                initiated_as=permission_service.transfer_author_role(scope, tmpl),
+            )
+        )
+    return items, rejections
+
+
+@dataclass(frozen=True)
+class _Receiver:
+    """候选人接口喂给 plan 的「接手人」。名单来自 active_members_by_team,在职恒真 ——
+    为了满足一个 `target.is_active` 再查一遍 users 表,查回来的也只有这三样。"""
+
+    id: int
+    name: str
+    is_active: bool = True
+
+
+def author_transfer_candidates(db: Session, scope) -> tuple[list[AuthorTransferRejection], list[dict]]:
+    """批量交接的第一步:**(与接手人无关的拒绝, 每个候选人各自能接哪些)**。
+
+    返回的两截恰好把「我看得见的全部任务」划分完:第一截是我无权处分的(附理由),
+    第二截里每个候选人的 eligible + blocked 划分掉其余的。前端据此三态渲染,
+    每一句话都来自服务端 —— 它自己不许再推一遍「同团队 ∧ 在职 ∧ 非当前作者」。
+
+    与接手人无关的那部分(无主任务、我有没有处分权)**只算一次**:它不依赖候选人,
+    放进 per-candidate 循环就是把同样的判定与同样的 f-string 重算「候选人数」遍。
+    """
+    tmpls = permission_service.visible_templates(db, scope)
+    mine, base_rejections = transfer_author_scope(scope, tmpls)
+    if not mine:
+        return base_rejections, []
+
+    rosters = team_service.active_members_by_team(db, {t.team_id for t in mine})
+    member_ids = _member_ids(rosters)
+    profiles: dict[int, dict] = {}
+    for ms in rosters.values():
+        for m in ms:
+            profiles.setdefault(m["user_id"], m)
+
+    out: list[dict] = []
+    for uid, profile in profiles.items():
+        items, rejections = author_transfer_plan(
+            db, mine, _Receiver(uid, profile["name"]), scope=scope, member_ids=member_ids
+        )
+        out.append({**profile, "items": items, "rejections": rejections})
+    # 能接得最多的排前面:离职交接时接手人多半是同团队那个,省一次翻找
+    out.sort(key=lambda c: (-len(c["items"]), c["user_id"]))
+    return base_rejections, out
+
+
+def transfer_author_batch(
+    db: Session, items: list[AuthorTransferItem], target: User, *, operator: User
+) -> set[int]:
+    """一个事务改完一批,然后发合并通知。返回「清掉了冗余 edit 授权」的任务 id ——
+    那一位要逐条进审计 detail,与单任务那条的键一模一样。
+
+    **调用方必须先用 author_transfer_plan 校验过**:本函数不再判断 —— 「全成功才生效」
+    要求校验全部发生在任何写入之前,把校验混进循环就等于承认「转到第 7 条才发现不行」。
+
+    通知整段被 try 包住:业务已经 commit 了,此时抛错会让前端收到 500 并重试,而重试
+    会撞上「已经是作者」的整批拒绝 —— 用户看到的是「第一次失败、第二次说我早就转过了」,
+    比不发通知糟得多。单任务路径刻意维持原样(零行为变化),不对称是有意的。
+    """
+    revoked = _apply_author_transfers(db, [i.tmpl for i in items], target)
+    db.commit()
+
+    try:
+        notify_service.notify_author_transferred_batch(
+            db, items=[(i.tmpl, i.old_author_id) for i in items], operator=operator
+        )
+    except Exception:  # noqa: BLE001 通知不能回头连累已经生效的转移
+        log.exception("批量转移作者的通知发送失败(转移本身已生效):to_user_id=%s", target.id)
+    return revoked
 
 
 # ---------------------------------------------------------------- 闲置(长期没人运行)

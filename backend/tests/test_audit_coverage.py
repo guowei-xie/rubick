@@ -59,6 +59,9 @@ AUDITED: dict[str, frozenset[str]] = {
     "PUT /api/tasks/{template_id}/team": frozenset({A.ACTION_TASK_TEAM_TRANSFER}),
     # 转移任务作者(离职交接):在不产生任何 task_edit_* 行的前提下换掉了两个人的编辑权
     "PUT /api/tasks/{template_id}/author": frozenset({A.ACTION_TASK_AUTHOR_TRANSFER}),
+    # 批量交接:同一个动作码,每个任务各一条(共享 detail.batch_id)。刻意不另起一个
+    # 「批量转移作者」的码 —— 那会让按任务筛审计时默认漏掉一半
+    "POST /api/tasks/author-transfer": frozenset({A.ACTION_TASK_AUTHOR_TRANSFER}),
     # 任务订阅:订阅/退订都留痕(自动清退的 task_auto_unsubscribe 由 worker 侧写,
     # 不对应任何写接口,见 subscription_service.settle_on_success)
     "PUT /api/tasks/{template_id}/subscription": frozenset({A.ACTION_TASK_SUBSCRIBE}),
