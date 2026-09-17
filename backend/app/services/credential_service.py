@@ -496,46 +496,76 @@ def overview(db: Session) -> dict:
         for t in teams
     ]
 
-    # 此刻跑不动的已上线任务:所属团队在该任务数据源上压根没有凭证行。
-    # 列级 select + join 取团队/作者名:SqlTemplate 实体会把 description/tags 与三个 joined
-    # 关系一起拉来,而这里只要几个字段。
-    ds_names = {ds.id: ds.name for ds in datasources}
-    team_names = {t.id: t.name for t in teams}
-    not_ready = [
-        {
-            "template_id": tid,
-            "template_name": name,
-            "team_id": team_id,
-            "team_name": team_names.get(team_id),
-            "author_id": author_id,
-            "author_name": author_name,
-            "datasource_id": ds_id,
-            "datasource_name": ds_names.get(ds_id),
-            "reason": "无所属团队" if team_id is None else "未配置",
-        }
-        for tid, name, team_id, author_id, author_name, ds_id in db.execute(
-            select(
-                SqlTemplate.id,
-                SqlTemplate.name,
-                SqlTemplate.team_id,
-                SqlTemplate.author_id,
-                User.name,
-                SqlTemplate.datasource_id,
-            )
-            .join(User, User.id == SqlTemplate.author_id)
-            .where(SqlTemplate.status == STATUS_PUBLISHED)
-            .order_by(SqlTemplate.id)
-        )
-        if team_id is None or (team_id, ds_id) not in creds
-    ]
-
     return {
         "datasources": [
             {"id": ds.id, "name": ds.name, "engine": ds.engine} for ds in datasources
         ],
         "teams": team_rows,
-        "not_ready_templates": not_ready,
+        "not_ready_templates": not_ready_templates(db, configured=set(creds)),
     }
+
+
+def not_ready_templates(
+    db: Session, team_id: int | None = None, *, configured: set | None = None
+) -> list[dict]:
+    """此刻跑不动的已上线任务:所属团队在该任务数据源上压根没有凭证行。
+
+    **「什么算跑不动」只在这里判一次。** 平台看板(overview)与运营分析的团队视角都调它 ——
+    两处各写一遍的话,改了口径只会改动其中一处,而且没有任何报错提示另一处已经不一致了。
+
+    只收「压根没有账号」的两种情形:① 任务没有所属团队;② 所属团队在该数据源上的账号
+    被删/从未登记。**不收「未测通」** —— 测试连接是非必选项(见模块 docstring),
+    未测通的账号照样能跑,把它列进「跑不动」只会制造一份永远清不完、也不该清的清单。
+
+    team_id 非空时只看该团队的任务(团队管理员看不到别队,也就不会出现「无所属团队」)。
+    configured 传已经查好的 (team_id, datasource_id) 凭证集合,免得调用方刚查完这里再查一遍。
+
+    列级 select + join 取团队/作者/数据源名:SqlTemplate 实体会把 description/tags 与三个
+    joined 关系一起拉来,而这里只要几个字段。名字随 join 一起出来、不另建 id→name 的映射表
+    ——那要多查两次库,而这条路径在两个看板的首屏上都要走。
+    team 是 **outerjoin**:「无所属团队」正是要报出来的一种情形,内连接会把它们整批吞掉。
+    """
+    if configured is None:
+        configured = set(
+            db.execute(
+                select(
+                    TeamDataSourceCredential.team_id,
+                    TeamDataSourceCredential.datasource_id,
+                )
+            )
+        )
+    scope = [SqlTemplate.team_id == team_id] if team_id is not None else []
+    return [
+        {
+            "template_id": tid,
+            "template_name": name,
+            "team_id": tm_id,
+            "team_name": team_name,
+            "author_id": author_id,
+            "author_name": author_name,
+            "datasource_id": ds_id,
+            "datasource_name": ds_name,
+            "reason": "无所属团队" if tm_id is None else "未配置",
+        }
+        for tid, name, tm_id, team_name, author_id, author_name, ds_id, ds_name in db.execute(
+            select(
+                SqlTemplate.id,
+                SqlTemplate.name,
+                SqlTemplate.team_id,
+                Team.name,
+                SqlTemplate.author_id,
+                User.name,
+                SqlTemplate.datasource_id,
+                DataSource.name,
+            )
+            .join(User, User.id == SqlTemplate.author_id)
+            .join(DataSource, DataSource.id == SqlTemplate.datasource_id)
+            .outerjoin(Team, Team.id == SqlTemplate.team_id)
+            .where(SqlTemplate.status == STATUS_PUBLISHED, *scope)
+            .order_by(SqlTemplate.id)
+        )
+        if tm_id is None or (tm_id, ds_id) not in configured
+    ]
 
 
 def _is_verified(cred) -> bool:

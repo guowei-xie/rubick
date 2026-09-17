@@ -36,6 +36,18 @@ export function fmtDuration(ms?: number | null): string {
   return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
 }
 
+/**
+ * 比率(0~1)→ 百分比。**空值给 "-",不给 "0%"** —— 与 dash 同一个空值口径:
+ * 「0 次取数里 0 次失败」的失败率不是 0%,是没得算,后端为此专门返回 null。
+ *
+ * 小数位默认 1 位。同一屏上同一个数字一处 96.5%、另一处 97%,读的人只会以为是两个数 ——
+ * 所以精度在这里定一次,调用方别各自 toFixed。
+ */
+export function fmtPercent(v?: number | null, digits = 1): string {
+  if (v == null) return "-";
+  return `${(v * 100).toFixed(digits)}%`;
+}
+
 /** 表格里的空值占位:null/undefined/"" 都显示 "-"。 */
 export function dash(v: unknown): string {
   return v === null || v === undefined || v === "" ? "-" : String(v);

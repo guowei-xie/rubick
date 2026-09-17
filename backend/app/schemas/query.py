@@ -31,6 +31,11 @@ class JobOut(BaseModel):
     # 行喂给 response_model,这一项恒为 null —— 别在运行记录列表里指望它。
     queue_ahead: int | None = None
     created_at: datetime | None = None
+    # 开始执行的时刻,与「排了多久」。duration_ms 只算执行那段,所以运行记录上「耗时 12 秒」
+    # 与「等了半小时」两个数可以同时成立 —— 在这两列出现之前后者无处可查。
+    # **null 不是 0**:早于本列上线的历史行、还没开跑的、以及不入队的试跑,都是 null。
+    started_at: datetime | None = None
+    queue_ms: int | None = None
 
     class Config:
         from_attributes = True

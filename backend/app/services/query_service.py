@@ -187,6 +187,11 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
         ds = db.get(DataSource, job.datasource_id)
 
         job.status = JOB_RUNNING
+        # 排队到此为止。用 DB 时钟对齐 created_at(见 QueryJob.started_at 的注释);
+        # `is None` 的守卫让这次盖章幂等 —— execute_job 对 worker 已认领过的 job 会重入,
+        # 无条件赋值会把开始时刻一路推后。
+        if job.started_at is None:
+            job.started_at = func.now()
         db.commit()
 
         # 必须在 try 之前:失败分支要用它给 job.error 脱敏,而失败可能发生在身份解析之前

@@ -3,7 +3,7 @@
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.core.database import Base, tbl
@@ -47,6 +47,17 @@ def clip_executed_sql(sql: str | None) -> str | None:
 class QueryJob(Base, TimestampMixin):
     __tablename__ = tbl("query_jobs")
 
+    # TimestampMixin 不给 created_at 建索引,而运营分析的每一句聚合都以「created_at 落在
+    # 时间窗内」开头 —— 与 audit_logs 同样处理(那条也是在模型里单独补的)。
+    # 成功率 / 失败归因 / 耗时分位数全是「source=? AND status=? AND 时间窗」,故再加一条复合。
+    # **声明在模型里,而不是只写在 migrate 里**:测试库由 create_all 建表、不跑 migrate,
+    # 只写在迁移里的话,SQL 预算测试量到的执行计划与线上不是同一个。
+    __table_args__ = (
+        Index(f"ix_{tbl('query_jobs')}_created_at", "created_at"),
+        Index(f"ix_{tbl('query_jobs')}_source_status_created",
+              "source", "status", "created_at"),
+    )
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey(tbl("users.id")), index=True)
     template_id: Mapped[int] = mapped_column(ForeignKey(tbl("sql_templates.id")), index=True)
@@ -81,6 +92,20 @@ class QueryJob(Base, TimestampMixin):
     result_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     result_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+    # 开始执行的时刻。`duration_ms` 只算**真正执行**的那段(不含排队),所以在它出现之前
+    # 「排了多久」是算不出来的:created_at 是入队时刻,而 updated_at 会被后续每一次状态
+    # 流转覆盖(成功时再写一次、reclaim_stale_jobs 还会再写一次),反推不出开始时刻。
+    # 排队时长 = started_at - created_at。
+    #
+    # 为空有两种情形,都不该被当成 0:① 这一行早于本列上线;② 它从未离开队列(还在排,
+    # 或在解析身份之前就失败了)。试跑同步执行、压根不入队,也留空 —— 排队统计一律
+    # 排除 source='test',否则一堆 0 会把分位数拉平。
+    #
+    # 用 DB 时钟(func.now())而不是 datetime.now():created_at 由 TimestampMixin 的
+    # server_default=func.now() 生成,同样是 DB 时钟。混用两个时钟会在 worker 与 DB
+    # 不在同一台机器时算出**负数**排队时长 —— 而那只在生产现形。
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # 仅订阅运行(source=subscribe)使用:本期结果被**下一期成功结果**取代的时刻
     # (下一期成功结算时盖章,见 subscription_service.settle_on_success;开发者关闭订阅时
     # 也补盖一次,免得最后一期永不过期)。它驱动订阅结果的保留期:未被取代就不过期,
@@ -104,6 +129,18 @@ class QueryJob(Base, TimestampMixin):
         """赋值即截断。两条写入路径(execute_job / test_run)从前靠调用方自觉先 clip,
         第三条写入路径出现时必然忘 —— 收进模型层,让「装不下的值进不了这一列」成为结构保证。"""
         return clip_executed_sql(value)
+
+    @property
+    def queue_ms(self) -> Optional[int]:
+        """排队等待时长(毫秒)。未开始 / 早于 started_at 上线 / 试跑 一律为 None。
+
+        **不要在这里把 None 兜底成 0**:空值的意思是「没有排队记录」,当成 0 会让全部
+        历史行变成「零排队」,一上线就把这个指标说成假的。
+        """
+        if self.started_at is None or self.created_at is None:
+            return None
+        # 时钟回拨等极端情形下夹到 0:负的排队时长没有意义,但也不该抛
+        return max(0, int((self.started_at - self.created_at).total_seconds() * 1000))
 
     @property
     def result_expired(self) -> bool:

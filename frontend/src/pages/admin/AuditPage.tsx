@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Button, Card, DatePicker, message, Select, Space, Table } from "antd";
 import { DownloadOutlined, ReloadOutlined } from "@ant-design/icons";
+import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import {
   AuditLogRow,
@@ -50,6 +52,11 @@ function asObj(d: any): any {
 const EXPORT_MAX_ROWS = 50000;
 
 export default function AuditPage() {
+  // 筛选条件同步到 URL。两个用处:① 运营分析页点「失败 12 次」能直接落到带筛选的这一屏;
+  // ② 带筛选的审计链接可以发给同事,与任务列表页早就支持的 ?q= 是同一个道理。
+  // **只改初值来源与写回,不动 filters() 的形状** —— 它被列表/计数/导出三处共用,
+  // 那条「导出 = 当前筛选不漂移」的约定靠它。
+  const [sp, setSp] = useSearchParams();
   const [rows, setRows] = useState<AuditLogRow[]>([]);
   const [total, setTotal] = useState(0);
   const [meta, setMeta] = useState<AuditMeta | null>(null);
@@ -58,10 +65,21 @@ export default function AuditPage() {
   const [exporting, setExporting] = useState(false);
   const [viewRow, setViewRow] = useState<AuditLogRow | null>(null);
 
-  const [action, setAction] = useState<string | undefined>();
-  const [resourceType, setResourceType] = useState<string | undefined>();
-  const [userId, setUserId] = useState<number | undefined>();
-  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [action, setAction] = useState<string | undefined>(sp.get("action") || undefined);
+  const [resourceType, setResourceType] = useState<string | undefined>(
+    sp.get("resource_type") || undefined
+  );
+  const [userId, setUserId] = useState<number | undefined>(
+    sp.get("user_id") ? Number(sp.get("user_id")) : undefined
+  );
+  const [range, setRange] = useState<[Dayjs, Dayjs] | null>(() => {
+    // start/end 必须成对才认:半截区间会查出一段谁也没打算查的范围。
+    // 解析用 dayjs 而不是 new Date —— 与下面 format(FMT) 用的是同一套,
+    // 且后端 created_at 是朴素本地时间,两边都按本地时间理解,不做时区转换。
+    const s0 = sp.get("start");
+    const e0 = sp.get("end");
+    return s0 && e0 ? [dayjs(s0), dayjs(e0)] : null;
+  });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   // 条件变了但页码没变时也要重查,靠这个计数器触发
@@ -96,8 +114,22 @@ export default function AuditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize, reload]);
 
+  /** 把当前筛选写回 URL,让这一屏可收藏、可转发。replace 避免每次查询都塞一条历史记录。 */
+  const syncUrl = () => {
+    const next = new URLSearchParams();
+    if (action) next.set("action", action);
+    if (resourceType) next.set("resource_type", resourceType);
+    if (userId) next.set("user_id", String(userId));
+    if (range?.[0] && range?.[1]) {
+      next.set("start", range[0].format(FMT));
+      next.set("end", range[1].format(FMT));
+    }
+    setSp(next, { replace: true });
+  };
+
   /** 应用当前筛选并回到第 1 页(两个 setState 会批成一次渲染,effect 只跑一次) */
   const refetch = () => {
+    syncUrl();
     setPage(1);
     setReload((n) => n + 1);
   };

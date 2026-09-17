@@ -19,6 +19,15 @@ export const JOB_SOURCE: TagMap = {
   subscribe: { color: "purple", label: "定时" },
 };
 
+/** 运行来源的**全称**。表格里的 Tag 要短(列宽有限),而运营分析的图例、卡片标题要能
+ *  离开「来源」那一列独立读懂 ——「试跑」两个字单独摆在图例上没人知道在说什么。
+ *  与 JOB_SOURCE 同键、紧挨着放:新增一种来源时两处一起补,不会漏。 */
+export const JOB_SOURCE_LONG: Record<string, string> = {
+  run: "正式取数",
+  test: "作者试跑",
+  subscribe: "定时运行",
+};
+
 export const TEMPLATE_STATUS: TagMap = {
   draft: { color: "gold", label: "草稿", dot: "#faad14", tint: "#fdf3e2" },
   published: { color: "green", label: "已上线", dot: "#52c41a", tint: "#e8f6ec" },

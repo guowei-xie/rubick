@@ -28,7 +28,7 @@ _CFG.write_text(
 os.environ["CONFIG_FILE"] = str(_CFG)
 
 import pytest  # noqa: E402
-from sqlalchemy import func, select  # noqa: E402
+from sqlalchemy import func, select, update  # noqa: E402
 
 import app.models  # noqa: F401,E402  注册所有模型
 from app.connectors.base import DataSourceConnector  # noqa: E402
@@ -65,6 +65,7 @@ from app.models.credential import TeamDataSourceCredential
 from app.models.notification import Notification  # noqa: E402
 from app.models.datasource import DataSource  # noqa: E402
 from app.models.team import Team, TeamMember  # noqa: E402
+from app.models.template import STATUS_PUBLISHED, SqlTemplate  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services import (  # noqa: E402
     credential_service,
@@ -382,5 +383,95 @@ def spy_connector(monkeypatch):
 def clean_credentials(db):
     """每个用例从「无凭证」起步,免得用例之间通过库里的残留互相影响。"""
     db.query(TeamDataSourceCredential).delete()
+    db.commit()
+    yield
+
+
+@pytest.fixture
+def template_factory(db):
+    """get-or-create 一张任务。运营分析的四个板块测试共用。
+
+    **按名字 get-or-create**,同 team_factory:这些用例之间不清 sql_templates
+    (clean_jobs 只清运行记录),同名再建会撞唯一约束,而各文件的名字本来就带自己的前缀。
+
+    created_at 建完再 UPDATE 回去:它由 TimestampMixin 的 server_default 生成,
+    构造函数里传不进去 —— 而闲置口径要的正是一个「很久以前建的」任务。
+    """
+
+    def make(author, ds, team, name, *, status=STATUS_PUBLISHED, created_at=None):
+        t = db.scalar(select(SqlTemplate).where(SqlTemplate.name == name))
+        if t is None:
+            t = SqlTemplate(
+                name=name, datasource_id=ds.id, dialect="mysql", status=status,
+                author_id=author.id, team_id=team.id,
+            )
+            db.add(t)
+            db.commit()
+            if created_at is not None:
+                db.execute(
+                    update(SqlTemplate).where(SqlTemplate.id == t.id)
+                    .values(created_at=created_at)
+                )
+                db.commit()
+            db.refresh(t)
+        return t
+
+    return make
+
+
+@pytest.fixture
+def job_factory(db):
+    """直接造一条运行记录,**不走 query_service.enqueue**。
+
+    运营分析的用例要的是「三个月前那天跑了 5 次、其中 2 次超时」这类历史分布,而 enqueue
+    只会在当下造 queued 行,还要带齐权限/凭证/连接器的一整套前置。这里直接落行,
+    把 created_at / started_at 显式写进去(绕开 server_default 与 onupdate)。
+
+    **只在分析类用例里用**:它刻意跳过了所有前置校验,拿它去验取数链路等于把护栏测成假的。
+    """
+    from app.models.query_job import JOB_SUCCESS, SOURCE_RUN, QueryJob
+
+    def make(
+        *, user, template, datasource, status=JOB_SUCCESS, source=SOURCE_RUN,
+        created_at=None, started_at=None, duration_ms=None, row_count=None,
+        error=None, run_as_team_id=None,
+    ):
+        job = QueryJob(
+            user_id=user.id, template_id=template.id, datasource_id=datasource.id,
+            params={}, status=status, source=source, duration_ms=duration_ms,
+            row_count=row_count, error=error, run_as_team_id=run_as_team_id,
+        )
+        db.add(job)
+        db.commit()
+        # created_at 有 server_default、updated_at 有 onupdate —— 都得显式 UPDATE 才压得住
+        values = {}
+        if created_at is not None:
+            values["created_at"] = created_at
+        if started_at is not None:
+            values["started_at"] = started_at
+        if values:
+            from sqlalchemy import update as _update
+
+            db.execute(_update(QueryJob).where(QueryJob.id == job.id).values(**values))
+            db.commit()
+        db.refresh(job)
+        return job
+
+    return make
+
+
+@pytest.fixture
+def clean_jobs(db):
+    """每个用例从「零运行记录」起步 —— 运营分析类用例专用。
+
+    其余测试靠各文件独占的 ID 段互不干扰,但运行记录没有稳定主键可占:聚合是按团队/时间窗
+    横扫的,上一个用例留下的行会原封不动地落进下一个用例的窗口里,于是断言「跑了 1 次」
+    变成「跑了 4 次」。与 clean_credentials 同一取舍 —— 聚合类断言需要一个确定的空盘。
+    """
+    from app.models.audit import DownloadEvent
+    from app.models.query_job import QueryJob
+
+    db.query(DownloadEvent).delete()
+    db.query(QueryJob).delete()
     db.commit()
     yield

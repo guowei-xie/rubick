@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     admin,
+    analytics,
     audit,
     auth,
     credentials,
@@ -100,6 +101,7 @@ app.include_router(permissions.router, prefix=api)
 app.include_router(audit.router, prefix=api)
 app.include_router(notifications.router, prefix=api)
 app.include_router(admin.router, prefix=api)
+app.include_router(analytics.router, prefix=api)
 app.include_router(lookup.router, prefix=api)
 
 

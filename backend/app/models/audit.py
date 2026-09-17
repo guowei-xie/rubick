@@ -182,6 +182,8 @@ class DownloadEvent(Base, TimestampMixin):
     """结果下载事件,单列以便高频检索与配额统计。"""
 
     __tablename__ = tbl("download_events")
+    # 这张表从前只写不读;运营分析开始读它的「窗口内下载了多少次」,时间列就得有索引
+    __table_args__ = (Index(f"ix_{tbl('download_events')}_created_at", "created_at"),)
 
     id: Mapped[int] = mapped_column(BigIntPk, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)

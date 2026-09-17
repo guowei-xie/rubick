@@ -469,6 +469,27 @@ def main() -> None:
     # 非订阅行恒为空。订阅三张表 task_schedules / task_subscriptions /
     # task_subscription_events 由上面的 create_all 建出,无增量列。
     _ensure_column(tbl("query_jobs"), "superseded_at", "DATETIME")
+
+    # 开始执行的时刻 —— 有了它才算得出排队等待时长(duration_ms 只含执行)。
+    # 存量行留空:它们确实没有这个记录,运营分析据此只统计有值的样本,不拿 0 充数。
+    _ensure_column(tbl("query_jobs"), "started_at", "DATETIME")
+
+    # 运营分析要的三条索引。**定义在模型的 __table_args__ 里**(QueryJob / DownloadEvent),
+    # 这里只是给存量库补建 —— create_all 不会给已存在的表加索引。与 audit_logs.created_at
+    # 同一套两处写法:模型描述表的全貌,迁移负责把老库追上来。
+    _ensure_index(tbl("query_jobs"), f"ix_{tbl('query_jobs')}_created_at", "created_at")
+    _ensure_index(
+        tbl("query_jobs"), f"ix_{tbl('query_jobs')}_source_status_created",
+        "source, status, created_at",
+    )
+    _ensure_index(
+        tbl("download_events"), f"ix_{tbl('download_events')}_created_at", "created_at"
+    )
+    # 刻意**不加**的索引,写下来免得后人以为漏了:
+    #   · query_jobs(template_id, created_at) —— 团队视角的 `template_id IN (...) AND 时间窗`。
+    #     与上面那条复合索引有部分重叠,先不叠加,实测慢了再补;
+    #   · template_versions / sql_templates / task_subscription_events / permissions ——
+    #     行数在千级以内,全扫的代价低于多一个索引的写入与维护成本。
     # 增量列 + 索引:任务所属团队(可见性边界 + 取数身份来源)。
     # 只能加**可空**列(_ensure_column 的固有限制;补 NOT NULL 需 MySQL MODIFY / SQLite 重建表,
     # 既测不到又会挡住代码回滚)——「恒有值」靠下面的回填 + 体检 + 应用层必填三处保证。

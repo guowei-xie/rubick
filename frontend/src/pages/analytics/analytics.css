@@ -1,0 +1,266 @@
+/* 运营分析页。颜色一律走 global.css 里那几个变量,不新起一套调色板。 */
+
+.rk-ana {
+  padding-bottom: 24px;
+}
+
+/* ---- 页头:标题 + 口径行 + 控件 ---- */
+
+.rk-ana-header {
+  margin-bottom: 16px;
+}
+
+.rk-ana-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.rk-ana-title h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 口径行:左侧一道品牌色竖条,与侧边栏选中态同一个视觉语汇。
+   **两种身份都有这一行** —— 靠内容区分「全平台」与「本团队」,
+   而不是靠「有没有提示」区分:后者会让人把「没有提示」读成「这是全平台」。 */
+.rk-ana-scope {
+  margin: 10px 0 14px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--brand) 5%, transparent);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+
+.rk-ana-scope-main {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.rk-ana-scope-note {
+  margin-top: 2px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+
+.rk-ana-controls {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  background: var(--bg-layout, #f3f6fd);
+}
+
+/* ---- 板块 ---- */
+
+.rk-section-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* 板块标题上的范围后缀。页头的口径行会随滚动离开视野,而这一行不会 ——
+   滚到第三屏的人靠它记得自己在看谁的数据。 */
+.rk-section-scope {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-secondary);
+}
+
+.rk-ana-subtitle {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.rk-ana-subtitle-note {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-secondary);
+}
+
+.rk-ana-caption {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-secondary);
+}
+
+/* ---- 指标卡 ---- */
+
+.rk-metric {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 2px 6px 0 rgba(136, 148, 171, 0.14);
+  height: 100%;
+}
+
+.rk-metric-link {
+  display: block;
+  color: inherit;
+  transition: 0.15s;
+}
+
+.rk-metric-link:hover .rk-metric {
+  box-shadow: 0 8px 20px -10px rgba(79, 63, 240, 0.4);
+  transform: translateY(-1px);
+}
+
+.rk-metric-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+/* 「此刻」:这个数不吃时间范围。不标的话,用户切了范围看见它纹丝不动会当成 bug */
+.rk-metric-asof {
+  padding: 0 5px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--ink-secondary);
+  background: rgba(136, 148, 171, 0.14);
+}
+
+.rk-metric-value {
+  margin-top: 4px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+/* 「从来没有过」与「本区间是 0」必须看着就不一样 —— 前者是灰的破折号,
+   后者是实打实的 0 加一句绿色的好消息 */
+.rk-metric-empty {
+  color: #b9bfcc;
+  font-weight: 400;
+}
+
+.rk-metric-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  min-height: 18px;
+  color: var(--ink-secondary);
+}
+
+.rk-metric-good {
+  color: #52c41a;
+}
+
+.rk-metric-up {
+  color: #52c41a;
+}
+
+.rk-metric-down {
+  color: #ff7875;
+}
+
+.rk-metric-sub {
+  color: var(--ink-secondary);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+/* ---- 成功率条 ---- */
+
+.rk-ana-rate {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 2px 6px 0 rgba(136, 148, 171, 0.14);
+}
+
+.rk-ana-rate-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.rk-ana-rate-head span {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.rk-ana-rate-bar {
+  margin: 8px 0 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(136, 148, 171, 0.16);
+  overflow: hidden;
+}
+
+.rk-ana-rate-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.rk-ana-rate-sub {
+  font-size: 12px;
+  color: var(--ink-secondary);
+}
+
+/* ---- 排行表里的行内条形 ---- */
+
+.rk-rankbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 20px;
+}
+
+.rk-rankbar-fill {
+  position: absolute;
+  left: 0;
+  height: 100%;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--brand) 16%, transparent);
+}
+
+.rk-rankbar-num {
+  position: relative;
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rk-ana-id {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-secondary);
+}
+
+/* ---- 治理动作标签(点进审计页带筛选)---- */
+
+.rk-ana-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rk-ana-action {
+  cursor: pointer;
+  margin-inline-end: 0;
+}
+
+.rk-ana-action:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+
+/* 排行表整行可点时给个手势 */
+.rk-ana .ant-table-tbody > tr {
+  cursor: pointer;
+}

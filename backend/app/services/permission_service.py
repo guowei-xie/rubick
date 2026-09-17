@@ -44,9 +44,14 @@ from app.services import team_service, user_service
 AUTHOR_ROLES = (ROLE_ADMIN, ROLE_DEVELOPER)
 
 
-def _as_int(v) -> int | None:
+def parse_subject_id(v) -> int | None:
     """Permission 的 subject_id / resource_id 是自由字符串列(将来可能是组 id 等),
-    非数字一律跳过。解析规则只在这里写一次。"""
+    非数字一律跳过。解析规则只在这里写一次。
+
+    公开而不是私有,是因为运营分析也要配对这两列:它算「授权了但从没跑过」时必须用
+    **同一条**解析规则,否则两边对「哪些授权行算数」的判断会悄悄分家 ——
+    一边跳过的脏行另一边当成了合法 id。
+    """
     try:
         return int(v)
     except (TypeError, ValueError):
@@ -101,7 +106,7 @@ def team_scope(db: Session, user: User) -> TeamScope:
             Permission.resource_type == RESOURCE_TEMPLATE,
         )
     ):
-        tid = _as_int(rid)
+        tid = parse_subject_id(rid)
         if tid is not None:
             by_action.setdefault(action, set()).add(tid)
 
@@ -302,6 +307,11 @@ def visible_condition(scope: TeamScope):
     刻意返回谓词而不是 id 集合:开发者的可见集是「我所属团队的全部任务」,materialize 成
     id 再 IN(...) 会在落地页上多一次全表扫 + 一条巨长 SQL。谓词让数据库用 team_id 索引。
     什么都看不到时返回 false(),比 id.in_({-1}) 诚实。
+
+    **它还是一条不变量的基准**:运营分析自己按团队收窄(analytics_service.job_conditions,
+    刻意不复用本函数 —— 那边问的是「这一个团队的资产」,不是「这个人看得见什么」),
+    但它的结果必须恒 ⊆ 本函数放行的集合,否则就成了一条绕过本模块的提权侧门。
+    这条由 tests/test_analytics_scope.py 钉住;放宽本函数的语义前先看一眼那个测试。
     """
     if scope.is_admin:
         return None
@@ -471,7 +481,7 @@ def authorized_run_users(db: Session, template_ids: list[int]) -> dict[int, list
     if not rows:
         return {}
 
-    pairs = [(_as_int(rid), _as_int(sid)) for rid, sid in rows]
+    pairs = [(parse_subject_id(rid), parse_subject_id(sid)) for rid, sid in rows]
     uid_ints = {uid for _, uid in pairs if uid is not None}
     if not uid_ints:
         return {}
@@ -646,7 +656,7 @@ def _edit_rows_for(db: Session, *, user_id: int, template_ids: list[int]) -> lis
             _edit_where(user_id=user_id, template_ids=template_ids)
         )
     )
-    return [tid for tid in map(_as_int, rows) if tid is not None]
+    return [tid for tid in map(parse_subject_id, rows) if tid is not None]
 
 
 def revoke_edit_for_member(db: Session, *, team_id: int, user_id: int) -> list[int]:
@@ -670,7 +680,7 @@ def revoke_edit_for_template(db: Session, template_id: int) -> list[int]:
     """任务转移团队时清掉它的全部 edit 授权(前提「同团队」已不成立)。
     返回被撤销的 user_id 列表。不提交,跟随调用方事务。"""
     rows = db.scalars(select(Permission.subject_id).where(_edit_where(template_id=template_id)))
-    uids = [uid for uid in map(_as_int, rows) if uid is not None]
+    uids = [uid for uid in map(parse_subject_id, rows) if uid is not None]
     if uids:
         db.execute(sa_delete(Permission).where(_edit_where(template_id=template_id)))
     return sorted(uids)
@@ -694,7 +704,7 @@ def editors_by_template(db: Session, tmpls: list[SqlTemplate]) -> dict[int, list
             _edit_where(template_ids=[t.id for t in tmpls])
         )
     ):
-        tid, uid = _as_int(rid), _as_int(sid)
+        tid, uid = parse_subject_id(rid), parse_subject_id(sid)
         if tid is not None and uid is not None:
             granted.setdefault(tid, []).append(uid)
 

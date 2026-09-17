@@ -10,9 +10,10 @@ import {
   SearchOutlined,
   LogoutOutlined,
   KeyOutlined,
+  LineChartOutlined,
 } from "@ant-design/icons";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { isManager, useAuth } from "../auth";
+import { canSeeAnalytics, isManager, useAuth } from "../auth";
 import NotificationBell from "./NotificationBell";
 import { ROLE } from "./StatusTag";
 
@@ -36,6 +37,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // 侧边栏第一个「管理者可见但非管理员专属」的入口。团队页是一等公民(任务归属、
   // 团队账号、编辑权都在那儿),故上移到侧边栏而不是藏在头像下拉里。
   if (manager) items.push({ key: "/teams", label: "我的团队", icon: <TeamOutlined /> });
+  // 运营分析:平台管理员看全平台,团队管理员只看自己的队。判据与路由守卫共用
+  // canSeeAnalytics,菜单与路由不会漂移。放在团队之后、管理员那批之前 ——
+  // 它不是管理员专属,但也不是所有人都有。
+  if (canSeeAnalytics(user))
+    items.push({ key: "/analytics", label: "运营分析", icon: <LineChartOutlined /> });
   if (user?.role === "admin")
     items.push(
       // 用户管理做的是身份/角色,让 TeamOutlined 归给团队

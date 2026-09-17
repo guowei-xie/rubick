@@ -123,6 +123,16 @@ export default function RunRecordsPanel({
       render: (ms: number | null) => (ms == null ? EMPTY : fmtDuration(ms)),
     },
     {
+      // 排队那一段,与「耗时」互补 —— 两个数加起来才是「我从点运行到拿到结果等了多久」。
+      // 空值有三种,都**不能**当 0:还没开跑、试跑(同步执行不入队)、以及早于这一列上线的
+      // 历史运行。把没有记录的显示成「0 秒」,等于告诉排了半小时的人「你没排队」。
+      title: <Tooltip title="从提交到真正开始执行之间等了多久。试跑不入队、早期的运行没有记录,都显示为 -">排队</Tooltip>,
+      dataIndex: "queue_ms",
+      width: w.dur,
+      hideInCompact: true,
+      render: (ms: number | null) => (ms == null ? EMPTY : fmtDuration(ms)),
+    },
+    {
       title: "参数",
       width: w.params,
       render: (_: any, r: any) => {

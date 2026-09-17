@@ -36,6 +36,17 @@ export function parseTaskQuery(raw: string | null | undefined): TaskQuery {
 }
 
 /**
+ * 按编号精确搜某张任务的任务列表链接。
+ *
+ * `#` 前缀这条**词法**由 parseTaskQuery 定义,所以拼链接也归这里 —— 散在各处手写
+ * `?q=%23${id}` 的话,词法一改,那些链接会静默退化成一次文本搜索:不报错、
+ * 落在一张看起来很合理的错列表上,没人会发现。
+ */
+export function taskLink(id: number): string {
+  return `/tasks?q=${encodeURIComponent(`#${id}`)}`;
+}
+
+/**
  * 「什么算命中」:空串放行 → 编号精确 → 任意一个文本字段包含(大小写不敏感)。
  *
  * 编号与文本是**并集**不是二选一:同事丢来一个 128,他要的既可能是 #128 本体,

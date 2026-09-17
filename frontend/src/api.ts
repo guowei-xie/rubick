@@ -427,3 +427,269 @@ export const listUsers = (q?: string) =>
   http.get("/admin/users", { params: { q } }).then((r) => r.data);
 export const setUserRole = (userId: number, role: string) =>
   http.post(`/admin/users/${userId}/role`, { role }).then((r) => r.data);
+
+// ---- analytics(运营分析)----
+//
+// 给平台管理员与团队管理员看平台被用得怎么样。四个板块各自一个接口:切时间范围时治理块
+// 不必重算、某块慢不拖累整页、团队管理员被隐藏的块直接不请求。
+//
+// 两条贯穿全模块的约定,读这些类型前先知道:
+//   · 每个标量都是 Metric,**不是裸数字**。`value: null` 是「算不出来」(没有样本),
+//     与 0 完全是两回事 —— 都渲染成 0,新部署的人会以为失败率完美;
+//   · `windowed` 区分「本区间」与「此刻」。任务总数、缺账号数这类不吃时间范围,
+//     切了范围纹丝不动,卡片上必须挂「此刻」标记,否则第一次切范围就会被当成 bug。
+
+/** 一个指标。三种状态:有值 / 值为 0 但历史上有过 / 从来没有过。 */
+export interface Metric {
+  value: number | null;
+  /** 历史上有没有过数据。与 value 是否为 0 无关 —— 前者决定说「0 次失败」还是「还没有数据」 */
+  has_data: boolean;
+  /** true=吃时间范围;false=「此刻」的快照 */
+  windowed: boolean;
+  last_event_at?: string | null;
+  prev_value?: number | null;
+}
+
+export interface AnalyticsScopeInfo {
+  level: "platform" | "team";
+  team_id: number | null;
+  team_name: string | null;
+}
+
+export interface AnalyticsWindow {
+  start: string;
+  end: string;
+  days: number;
+}
+
+/** 板块响应的统一外壳 —— 范围与时间窗永远跟着数字一起下发,分两处取迟早会配错。 */
+export interface AnalyticsEnvelope {
+  scope: AnalyticsScopeInfo;
+  window: AnalyticsWindow;
+}
+
+export interface ScopeOption {
+  team_id: number | null; // null = 全平台,只会出现在平台管理员的列表里
+  name: string;
+}
+
+export interface MetricNote {
+  key: string;
+  label: string;
+  windowed: boolean;
+  note: string;
+}
+
+export interface AnalyticsMeta {
+  scope_options: ScopeOption[];
+  /** 进来默认看哪个范围(null = 全平台)。**与 scope_options 同源** —— 前端别再从
+   *  /auth/me 的团队顺序里自己挑一个,两边挑出不同的队时界面与数据会对不上 */
+  default_team_id: number | null;
+  /** 时间范围快捷档(天)。与后端的 PRESET_DAYS 同源,前端不再硬编码一份 */
+  presets: number[];
+  /** 每条指标的中文口径。**服务端下发** —— 前端不自己维护一份,否则口径改了文案不改 */
+  metric_notes: MetricNote[];
+  /** 平台还没被用起来 ⇒ 整页换成一句话 + 下一步指引,而不是四屏「—」 */
+  bootstrapped: boolean;
+  counts: { teams: number; templates: number; runs: number };
+}
+
+export interface DailyPoint {
+  date: string;
+  run: number;
+  test: number;
+  subscribe: number;
+}
+
+export interface AdoptionData extends AnalyticsEnvelope {
+  run_jobs: Metric;
+  test_jobs: Metric;
+  scheduled_jobs: Metric;
+  active_users: Metric;
+  active_authors: Metric;
+  download_events: Metric;
+  download_per_success: Metric;
+  self_service_ratio: Metric;
+  reuse_multiple: Metric;
+  automation_ratio: Metric;
+  daily_series: DailyPoint[];
+  /** 仅平台视角。团队视角下这两个键**不存在**(不是 null)—— 前端据此整块不渲染 */
+  new_users?: Metric;
+  retention_rate?: Metric;
+  /** 仅团队视角:窗口内首次跑过本团队任务的人 */
+  new_task_users?: Metric;
+}
+
+export interface SourceRate {
+  total: number;
+  success: number;
+  failed: number;
+  /** 分母只含终态;0 次取数时是 null 而不是 0 —— 「没得算」不等于「0%」 */
+  success_rate: number | null;
+}
+
+export interface HealthData extends AnalyticsEnvelope {
+  by_source: Record<"run" | "test" | "subscribe", SourceRate>;
+  /** 顶部那几张卡。**服务端已经包成信封** —— has_data 是全期口径,前端拿 by_source /
+   *  queue 里的裸数字自己拼,会把「从来没跑过」渲染成一个绿色的 0 */
+  run_success_rate: Metric;
+  run_failed: Metric;
+  queue_p50_ms: Metric;
+  queue_over_60s: Metric;
+  queued_now: Metric;
+  daily_series: { date: string; success: number; failed: number }[];
+  duration_by_engine: Record<
+    string,
+    {
+      samples: number;
+      p50_ms: number | null;
+      p90_ms: number | null;
+      p95_ms: number | null;
+      buckets: { label: string; count: number }[];
+    }
+  >;
+  queue: {
+    samples: number;
+    /** 有排队记录的样本占比。偏低时页面要说明「排队数据自 X 起可用」 */
+    coverage: number | null;
+    stats_since: string | null;
+    p50_ms: number | null;
+    p90_ms: number | null;
+    p95_ms: number | null;
+    over_60s: number;
+  };
+  zero_row_jobs: Metric;
+  failure_buckets: { code: string; label: string; count: number }[];
+  /** other 桶的去重样例 —— 让失败归因规则表能继续演进 */
+  unbucketed_samples: string[];
+  failure_truncated: boolean;
+  /** 「此刻」的快照,不吃时间范围 */
+  in_flight: { queued: number; running: number; oldest_queued_at: string | null };
+  by_datasource: {
+    datasource_id: number;
+    name: string;
+    engine: string;
+    total: number;
+    success: number;
+    failed: number;
+    fail_rate: number | null;
+  }[];
+}
+
+export interface TopTemplate {
+  template_id: number;
+  name: string | null;
+  team_name: string | null;
+  author_name: string | null;
+  run_count: number;
+  /** 几个不同的人在跑。只有作者自己跑 = 没被业务用起来,比「跑了多少次」更能说明问题 */
+  distinct_users: number;
+  success_rate: number | null;
+}
+
+export interface AssetsData extends AnalyticsEnvelope {
+  as_of: {
+    total: Metric;
+    published: Metric;
+    draft: Metric;
+    archived: Metric;
+    idle: Metric;
+    /** 0 = 闲置提示功能关闭 ⇒ 前端必须把「闲置」卡与它的下钻一起隐藏,否则点过去是空列表 */
+    idle_threshold_days: number;
+    never_run: Metric;
+    schedules_enabled: Metric;
+    subscribers: Metric;
+    at_risk_subscriptions: Metric;
+  };
+  window_changes: {
+    new_templates: Metric;
+    new_versions: Metric;
+    publishes?: Metric; // 仅平台视角(上线次数只能从审计里数)
+  };
+  top_templates: TopTemplate[];
+  top10_share: Metric;
+  tail_count: Metric;
+  idle_list: {
+    template_id: number;
+    name: string;
+    team_name: string | null;
+    author_name: string | null;
+    idle_days: number;
+    last_run_at: string | null;
+  }[];
+}
+
+export interface GovernanceData extends AnalyticsEnvelope {
+  as_of: {
+    grants_total: Metric;
+    dormant_grants: Metric;
+    dormant_ratio: Metric;
+    stale_edit_grants: Metric;
+    credentials: {
+      configured: number;
+      required: number;
+      /** 此刻就跑不动的已上线任务。口径由 credential_service.not_ready_templates 独家持有 */
+      not_ready: Metric;
+      /** 已配置 ÷ 需要配置。分母为 0 时是 null(「没得算」),不是 0% */
+      coverage: Metric;
+    };
+  };
+  dormant_detail: {
+    user_id: number;
+    user_name: string | null;
+    template_id: number;
+    template_name: string | null;
+    team_name: string | null;
+    granted_by_name: string | null;
+    granted_at: string | null;
+  }[];
+  wide_access_tasks: {
+    template_id: number;
+    name: string | null;
+    team_name: string | null;
+    granted_users: number;
+  }[];
+  downloads: {
+    total: Metric;
+    top_users: { user_id: number; user_name: string | null; downloads: number; max_rows: number | null }[];
+    concentration: Metric;
+  };
+  /** 仅平台视角。团队视角下这个键**不存在** */
+  platform?: {
+    role_distribution: Record<string, number>;
+    teams_total: number;
+    teams_without_admin: Metric;
+    audit_actions: { action: string; label: string; count: number }[];
+  };
+}
+
+/** 四个板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
+export interface AnalyticsQuery {
+  team_id?: number | null;
+  start?: string;
+  end?: string;
+  days?: number;
+}
+
+// signal 一路传到 axios:快速连点「近7天/近30天/近90天」会并发出三个请求,光靠丢弃过期响应
+// 只是不让界面错乱,那几个请求仍在库上跑。带上 signal 才是真的取消掉。
+const analyticsParams = (q: AnalyticsQuery, signal?: AbortSignal) => ({
+  params: {
+    team_id: q.team_id ?? undefined,
+    start: q.start || undefined,
+    end: q.end || undefined,
+    days: q.days || undefined,
+  },
+  signal,
+});
+
+export const analyticsMeta = (signal?: AbortSignal) =>
+  http.get("/analytics/meta", { signal }).then((r) => r.data as AnalyticsMeta);
+export const analyticsAdoption = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
+  http.get("/analytics/adoption", analyticsParams(q, signal)).then((r) => r.data as AdoptionData);
+export const analyticsHealth = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
+  http.get("/analytics/health", analyticsParams(q, signal)).then((r) => r.data as HealthData);
+export const analyticsAssets = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
+  http.get("/analytics/assets", analyticsParams(q, signal)).then((r) => r.data as AssetsData);
+export const analyticsGovernance = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
+  http.get("/analytics/governance", analyticsParams(q, signal)).then((r) => r.data as GovernanceData);

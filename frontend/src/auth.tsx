@@ -30,6 +30,19 @@ export const myTeams = (user: User | null | undefined) => user?.teams ?? [];
 /** 有没有团队 —— 没有就**不能建任务**(需求:开发者必须先有团队)。 */
 export const hasTeam = (user: User | null | undefined): boolean => myTeams(user).length > 0;
 
+/** 我管理的团队(**不含**平台管理员的全通 —— 他走全平台口径,不属于任何一队)。 */
+export const managedTeams = (user: User | null | undefined) =>
+  myTeams(user).filter((t) => t.is_team_admin);
+
+/** 能不能看运营分析 = 平台管理员(全平台),或任一团队的团队管理员(只看那个团队)。
+ *
+ *  与后端 analytics_service.resolve_scope 同一口径。它只回答「有没有这项职能」,
+ *  **真正的闸门在后端** —— 这里只负责不显示一个点了会 403 的入口。
+ *  注意不能写成 roles=["admin","developer"]:团队管理员的 role 就是 developer,
+ *  那样会把所有开发者都放进来。 */
+export const canSeeAnalytics = (user: User | null | undefined): boolean =>
+  isPlatformAdmin(user) || managedTeams(user).length > 0;
+
 /** 我在某团队是不是团队管理员。平台管理员对任意团队恒为真(与后端
  *  team_service.require_team_admin 的豁免同一口径)。 */
 export const isTeamAdminOf = (user: User | null | undefined, teamId?: number | null): boolean =>

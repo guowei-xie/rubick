@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import client_ip, require_admin
+from app.core import timewindow
 from app.core.database import SessionLocal, get_db
 from app.models.audit import (
     ACTION_EXPORT_AUDIT,
@@ -25,12 +26,6 @@ from app.services import audit_service, result_service
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
-def _naive(dt: datetime | None) -> datetime | None:
-    """审计表 created_at 是朴素本地时间;带时区的入参统一转本地再去掉 tzinfo,
-    否则「带时区 vs 朴素列」的比较会静默出错。"""
-    return dt if dt is None or dt.tzinfo is None else dt.astimezone().replace(tzinfo=None)
-
-
 def _conditions(
     user_id: int | None,
     action: str | None,
@@ -38,7 +33,13 @@ def _conditions(
     start: datetime | None,
     end: datetime | None,
 ) -> list:
-    """筛选条件,列表/计数/导出三处共用 —— 保证「导出=当前筛选」不漂移。"""
+    """筛选条件,列表/计数/导出三处共用 —— 保证「导出=当前筛选」不漂移。
+
+    时间用 timewindow.naive 归一:审计表 created_at 是朴素本地时间,带时区的入参直接比
+    会静默出错,而那条转换全库只有一处实现。
+    注意本页是**闭区间**(`created_at <= end`),与 timewindow.Window 的半开区间不同:
+    存量导出已按闭区间发出去过,改口径会让旧 CSV 对不上。
+    """
     conds = []
     if user_id:
         conds.append(AuditLog.user_id == user_id)
@@ -47,9 +48,9 @@ def _conditions(
     if resource_type:
         conds.append(AuditLog.resource_type == resource_type)
     if start:
-        conds.append(AuditLog.created_at >= _naive(start))
+        conds.append(AuditLog.created_at >= timewindow.naive(start))
     if end:
-        conds.append(AuditLog.created_at <= _naive(end))
+        conds.append(AuditLog.created_at <= timewindow.naive(end))
     return conds
 
 
