@@ -53,9 +53,15 @@ class Settings(BaseSettings):
     # 飞书 OAuth 回调地址;留空则自动派生为 {APP_BASE_URL}/auth/callback
     FEISHU_REDIRECT_URI: str = ""
 
-    # ---- 结果落地(本地文件系统)----
-    # 结果 CSV 存放根目录(相对路径以 backend/ 为基准)
-    RESULT_DIR: str = "data/results"
+    # ---- 数据产物落地(本地文件系统)----
+    # 平台**所有**数据产物的根目录:取数结果 CSV 在 `results/`,维护脚本的行级备份在
+    # `backups/`。相对路径以 backend/ 为基准;**生产应指到独立数据盘**(如 /data/rubick)
+    # —— 这里的体积由业务用量决定(单份结果可上百 MB),系统盘的余量却不由它决定。
+    #
+    # 子目录名**刻意不可配**:位置是部署的决定,布局是代码的决定。给每类产物各开一个键,
+    # 「产物到底在哪」就会有好几个答案 —— backups/ 从前就是写死在 cleanup_mock_users
+    # 里的第二个答案,换盘时它不会跟着走。
+    DATA_DIR: str = "data"
     # 下载签名链接有效期
     DOWNLOAD_URL_EXPIRE_SECONDS: int = 3600
     # 结果文件保留天数。worker 每小时清一次过期文件(启动时也先清一次)
@@ -93,7 +99,7 @@ class Settings(BaseSettings):
     # 不含编辑器里的「测试运行」—— 那些跑在 API 进程里、不受这个数约束(见 template_service
     # .test_run),所以目标库的连接数要按「这个数 + 同时可能试跑的人数」来备。
     # 内存不再随结果行数增长(取数是流式落盘),但磁盘会:并发跑的大结果同时占着
-    # RESULT_DIR,按「这个数 × 单份结果可能多大 × RESULT_RETENTION_DAYS」估容量。
+    # 结果目录(DATA_DIR/results),按「这个数 × 单份结果可能多大 × RESULT_RETENTION_DAYS」估容量。
     WORKER_CONCURRENCY: int = 2
 
     # ---- 任务订阅(定时自动运行)----
@@ -237,9 +243,35 @@ class Settings(BaseSettings):
         return self.MAX_RESULT_ROWS if self.MAX_RESULT_ROWS > 0 else None
 
     @property
-    def result_dir_path(self) -> Path:
-        p = Path(self.RESULT_DIR)
+    def data_dir_path(self) -> Path:
+        """数据产物根目录的绝对路径。下面两个属性都从它派生,**换盘只改 DATA_DIR 一处**。"""
+        p = Path(self.DATA_DIR)
         return p if p.is_absolute() else BACKEND_DIR / p
+
+    @property
+    def result_dir_path(self) -> Path:
+        """取数结果 CSV 的根目录;object_key 即相对它的路径(见 result_service)。"""
+        return self.data_dir_path / "results"
+
+    @property
+    def backup_dir_path(self) -> Path:
+        """维护脚本落行级备份的目录(见 cleanup_mock_users)。"""
+        return self.data_dir_path / "backups"
+
+
+# 已废弃的配置键 -> 该怎么改。命中即**拒绝启动**。
+#
+# 为什么要专门拦:`extra="ignore"` 会把不认识的键静默丢掉,而这一类键说的是「产物落在哪」。
+# 静默丢掉的后果不是报错 —— 服务照常起、取数照常成功、运行记录照常显示「成功 N 行」,
+# 只有点下载的人才会发现文件不在那儿(线上 2026-08-25 已经出过一次「有记录、无结果」,
+# 排查成本远高于启动时当场报错)。
+_REMOVED_KEYS = {
+    "RESULT_DIR": (
+        "结果目录不再单独配置,改配数据产物根目录 DATA_DIR(结果固定落在它的 results/ 下)。"
+        "原先 `RESULT_DIR = /x/results` 的,现在写 `DATA_DIR = /x`;"
+        "原先是默认值 `data/results` 的,删掉这行即可(DATA_DIR 默认就是 data)。"
+    ),
+}
 
 
 def _load_ini() -> dict:
@@ -252,7 +284,11 @@ def _load_ini() -> dict:
     parser.read(path, encoding="utf-8")
     if not parser.has_section(CONFIG_SECTION):
         return {}
-    return dict(parser.items(CONFIG_SECTION))
+    items = dict(parser.items(CONFIG_SECTION))
+    for key, hint in sorted(_REMOVED_KEYS.items()):
+        if key in items:
+            raise ValueError(f"{path} 里的 {key} 已不再生效:{hint}")
+    return items
 
 
 @lru_cache

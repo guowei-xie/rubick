@@ -21,8 +21,8 @@ _CFG.write_text(
     f"DATABASE_URL = sqlite:///{_TMP}/test.db\n"
     "JWT_SECRET = test-secret\n"
     "MOCK_AUTH = false\n"
-    # 结果文件也进临时目录:订阅/下载类用例会真的落 CSV,不许写进仓库的 data/results
-    f"RESULT_DIR = {_TMP}/results\n",
+    # 数据产物也进临时目录:订阅/下载类用例会真的落 CSV,不许写进仓库的 backend/data
+    f"DATA_DIR = {_TMP}\n",
     encoding="utf-8",
 )
 os.environ["CONFIG_FILE"] = str(_CFG)

@@ -106,6 +106,7 @@ cp backend/config.example.ini backend/config.ini
 - `DATABASE_URL`:线上 MySQL 连接串,如 `mysql+pymysql://用户:密码@主机:3306/库名`
 - `ALLOW_REMOTE_DB = true`:**线上这台必须打开**。`DATABASE_URL` 指向本机以外的库时,API / worker / migrate 一律拒绝启动(默认 `false`,挡的是开发机连线上库 —— 那样的 worker 会替线上认领并执行真实取数,结果文件落在开发机上)。本机开发与测试用 sqlite(`DATABASE_URL = sqlite:///./rubick.db`)时不必管这一项
 - `JWT_SECRET`:改成随机长字符串(如 `openssl rand -hex 32`)
+- `DATA_DIR`:平台数据产物的根目录(取数结果 CSV 在 `results/`、维护脚本的行级备份在 `backups/`)。默认 `data`(即 `backend/data`),**生产请指到独立数据盘**,如 `DATA_DIR = /data/rubick` —— 结果体积由业务用量决定,单份可上百 MB,不该去吃系统盘的余量。日后要换盘:先建新目录、把旧目录内容整体搬过去(库里存的是相对路径,不用改任何一行)、再改这一行并重启
 - `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)。前面挂了反向代理时设成 `127.0.0.1`,不要用 `0.0.0.0` 把端口直接暴露到公网
 - `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;独占域名填 `https://rubick.example.com`;挂在网关子路径下则填到子路径为止(如 `https://htba.example.com/rubick`)。`FEISHU_REDIRECT_URI`、`FRONTEND_ORIGIN` 与前端构建的基路径都自动跟随它
 - 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET`;飞书开发者后台的「重定向 URL」需与 `{APP_BASE_URL}/auth/callback` 逐字一致

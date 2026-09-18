@@ -21,7 +21,7 @@
 
 **破坏性、一次性脚本**,不接入 deploy.sh / migrate.py 的常规路径。安全设计:
   - 默认 dry-run,只打印计划;--apply 才写库;
-  - --apply 前自动把所有待删行整行备份成 JSON(data/backups/),可据此还原;
+  - --apply 前自动把所有待删行整行备份成 JSON(落在 DATA_DIR/backups/),可据此还原;
   - 全部删除在**单个事务**内完成,删完当场复核引用面归零才提交,任何异常整体回滚;
   - 本地缺表(SQLite 老库没有 teams 等)自动跳过,便于先在本地演练。
 
@@ -42,6 +42,7 @@ from pathlib import Path
 from sqlalchemy import inspect, text
 
 import app.models  # noqa: F401  注册所有模型
+from app.core.config import settings
 from app.core.database import engine, tbl
 
 # 假账号的唯一判定依据:飞书 open_id 精确匹配(与 frontend LoginPage 的 MOCK_USERS 一致)。
@@ -303,7 +304,7 @@ def backup(conn, plan: Plan) -> Path:
                 conn, f"SELECT * FROM {tbl(table)} WHERE id IN ({_in_csv(ids)})"
             )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = Path(__file__).resolve().parent.parent / "data" / "backups" / f"mock_cleanup_{stamp}.json"
+    path = settings.backup_dir_path / f"mock_cleanup_{stamp}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "database": str(engine.url),

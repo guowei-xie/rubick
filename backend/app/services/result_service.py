@@ -1,6 +1,7 @@
 """结果落地:CSV 序列化 + 本地文件系统存储 + 预览 + 过期清理。
 
-结果文件存放在 settings.RESULT_DIR 下,object_key 即相对该目录的路径(如 jobs/12/xxx.csv)。
+结果文件存放在 settings.result_dir_path(即 DATA_DIR/results)下,object_key 即相对该目录的
+路径(如 jobs/12/xxx.csv)—— 相对,所以换存储位置只是改配置 + 搬文件,库里不用动。
 下载通过带签名 token 的后端端点(见 query 路由),不再依赖对象存储签名 URL。
 """
 from __future__ import annotations

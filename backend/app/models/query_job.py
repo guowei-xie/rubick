@@ -88,7 +88,8 @@ class QueryJob(Base, TimestampMixin):
     run_as_team_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     run_as_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    # 结果文件在本地结果目录(RESULT_DIR)下的相对路径 key;下载时换带签名 token 的 URL
+    # 结果文件在本地结果目录(DATA_DIR/results)下的相对路径 key;下载时换带签名 token 的 URL
+    # —— 存的是**相对** key,所以换存储盘(改 DATA_DIR + 搬文件)不必改库里的任何一行
     result_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     result_filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
