@@ -72,9 +72,12 @@ export default function TeamTaskEditorsPanel({
   // 搜索词进 URL,与 TeamPage 的 ?tab= 同一套写法(replace:true,不给返回键留一串中间态);
   // 「搜到某个任务 → 把链接发给另一个团队管理员去授权」是这一页的真实动作。
   //
-  // **键名不能叫 q**:顶栏那个搜索框在本页也渲染着,它的 value 直接读 URL 的 q,同名会被它
-  // 回填;而且在非 /tasks 页往它里面一输入就会 nav 跳走(见 AppLayout 的 onSearch)。
-  // 真正的修法是让那个框只在 /tasks 渲染,那样这里就能用 q —— 留作后续。
+  // 键名带 task 前缀而不是裸 q:本路由是**多面板**的 —— ?tab= 切三个页签,且切页签时
+  // 刻意保留其它页签的参数(见 TeamPage 的 onChange)。一个裸 q 在这里回答不了「搜的是
+  // 哪个面板」,第二个想加搜索的页签一来就撞。
+  // **路由级的筛选用裸键,多面板里的一个面板用主语前缀** —— 这是全仓唯一的面板级键。
+  // 也别改名:这一页的链接本来就是拿来发给另一个团队管理员的,改了会让已经发出去的那些
+  // 静默退化成没有搜索词的面板(不报错、打开就是全量,收到的人不知道自己看的不是那一屏)。
   const raw = sp.get("taskq") ?? "";
   const setRaw = (v: string) => {
     if (v) sp.set("taskq", v);
@@ -169,13 +172,13 @@ export default function TeamTaskEditorsPanel({
           </>
         }
       />
-      {/* placeholder 与下面 view 里那 4 路匹配一一对应 —— 同 AppLayout 顶栏搜索框的要求:
+      {/* placeholder 与下面 view 里那 4 路匹配一一对应 —— 同任务列表页那个搜索框的要求:
           搜得到却没人知道能这么搜,等于没做 */}
       <Input
         allowClear
         value={raw}
         onChange={(e) => setRaw(e.target.value)}
-        prefix={<SearchOutlined style={{ color: "#9aa0b5" }} />}
+        prefix={<SearchOutlined style={{ color: "var(--icon-muted)" }} />}
         placeholder="搜索任务名 / 编号 / 作者 / 可编辑的人"
         style={{ maxWidth: 320, marginBottom: 12 }}
       />

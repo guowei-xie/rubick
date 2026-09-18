@@ -3,13 +3,16 @@
   --app-bg: #f3f6fd;
   --ink: #1f1c2e;
   --ink-secondary: #6b6880;
+  /* 比 --ink-secondary 再弱一档的灰:搜索框的前缀图标、卡头那行日期/闲置天数。
+     用在「读者扫过去就行、不必停下来读」的那一层,三处共用同一档才像同一套控件 */
+  --icon-muted: #9aa0b5;
   --brand: #4f3ff0;
   /* SQL 等代码文本统一用这一份等宽栈:裸 monospace 各机器解析不一,而 SQL 高亮的
      镜像层与 textarea 必须落到同一字体才能对齐(见 styles/sql-highlight.css) */
   --rk-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", "Courier New", monospace;
   --card-shadow: 0 8px 20px -16px rgba(71, 82, 107, 0.4);
-  --search-shadow: 0 2px 6px 0 rgba(136, 148, 171, 0.2),
+  --pill-shadow: 0 2px 6px 0 rgba(136, 148, 171, 0.2),
     0 24px 20px -24px rgba(71, 82, 107, 0.1);
 }
 

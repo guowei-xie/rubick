@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Button, Card, Checkbox, Empty, message, Modal, Segmented, Select, Space, Tooltip } from "antd";
+import { Button, Card, Checkbox, Empty, Input, message, Modal, Segmented, Select, Space, Tooltip } from "antd";
 import {
   AppstoreOutlined,
   BookOutlined,
   DeleteOutlined,
   PlusOutlined,
+  SearchOutlined,
   UnorderedListOutlined,
   UserSwitchOutlined,
 } from "@ant-design/icons";
@@ -47,8 +48,8 @@ type ViewMode = "card" | "list";
  *  仓库版在 docs/user-manual.md —— 两者内容同步,但飞书版才是给非开发者看的那份。 */
 const MANUAL_URL = "https://wrpnn3mat2.feishu.cn/docx/ZlYBdS3fGoBosXx5btpcWs8yn8Y";
 
-/** 标题栏里两个筛选勾选框的字重/字号 —— 与状态筛选片一样,是次要信息不抢标题 */
-const FILTER_CHECK_STYLE = { fontSize: 13, fontWeight: 400, color: "var(--ink-secondary)" };
+/** 筛选排里两个勾选框的字号/颜色 —— 与状态筛选片同一档,是次要信息 */
+const FILTER_CHECK_STYLE = { fontSize: 13, color: "var(--ink-secondary)" };
 
 /** 顶部可点击的状态筛选小片:点击切换只看该状态,再点或点「总数」清除。 */
 function StatChip({
@@ -97,7 +98,7 @@ function emptyTextFor({
   idleOnly,
   showRecycle,
 }: {
-  rawQ: string | null;
+  rawQ: string;
   qid: number | null;
   noTeamYet: boolean;
   teamFilter: string | null;
@@ -109,9 +110,9 @@ function emptyTextFor({
   const where = showRecycle ? "回收站里" : "";
   // 搜的是个编号却没命中时,多给一句 —— 否则人会以为编号记错了,反复核对一个没错的数字。
   // 真正的原因通常是「这个任务没授权给我」(列表本就只有我看得见的那些)。
-  if (rawQ?.trim() && qid !== null)
+  if (rawQ.trim() && qid !== null)
     return `没有编号 ${qid} 的任务 —— 也可能是它没授权给你,列表里只有你看得见的任务`;
-  if (rawQ?.trim()) return `没有匹配「${rawQ}」的任务`;
+  if (rawQ.trim()) return `没有匹配「${rawQ}」的任务`;
   if (noTeamYet) return "你还不属于任何团队 —— 请联系平台管理员把你加入团队后才能新建任务";
   if (teamFilter) return "该团队下暂无任务";
   if (idleOnly) return "没有闲置的任务 —— 已上线的任务最近都有人在跑";
@@ -162,7 +163,7 @@ export default function TasksPage() {
   // 批量交接期间强制列表(卡片没有勾选列),但**只改这次渲染读的值、不写偏好** ——
   // 退出模式自动回到他原本的视图,不需要任何「记住原视图再恢复」的簿记
   const effectiveView: ViewMode = bulk ? "list" : view;
-  // 回收站视图:同页切换(?recycle=1),只看已下线任务;与顶栏那排筛选片互斥
+  // 回收站视图:同页切换(?recycle=1),只看已下线任务;与标题栏那排筛选片互斥
   const showRecycle = sp.get("recycle") === "1";
   // 闲置阈值(天):服务端下发在每一行上,全局同一个值,取任一行即可;0 = 这项提示关着。
   // 只用来拼一句悬停解释 —— 判定本身在服务端(is_idle),前端不拿它去算。
@@ -173,7 +174,7 @@ export default function TasksPage() {
   // 而真相是功能关着;此时筛选片也不渲染,人连退出这个筛选的入口都没有。
   // 列表还没加载完(tasks 为空、阈值无从得知)时先按「开着」算,免得全量先闪一下再收窄。
   const idleUsable = !tasks.length || idleThreshold > 0;
-  // 顶栏那一排片是**单选**:此刻在看哪一批,只有这一个答案。
+  // 标题栏那一排片是**单选**:此刻在看哪一批,只有这一个答案。
   // 互斥由**读取侧**保证,而不是只靠 selectChip 写的时候删干净 —— 否则一条手敲的
   // ?status=draft&idle=1(或收藏夹里的旧链接)会同时套两个谓词:列表恒空、高亮显示「闲置」、
   // 空态却说「已上线的任务最近都有人在跑」,三者互相矛盾且没人解释得清。
@@ -187,31 +188,33 @@ export default function TasksPage() {
       ? "idle"
       : sp.get("status"); // null=全部
   const idleOnly = activeChip === "idle";
-  // URL 上仍分两个键而不是把 idle 混进 ?status= —— status 是任务的状态字段,
-  // idle 是算出来的属性,混成一个枚举以后就会有人拿 ?status=idle 去后端查。
-  const selectChip = (key: string | null) => {
-    sp.delete("status");
-    sp.delete("idle");
-    if (key === "idle") sp.set("idle", "1");
-    else if (key) sp.set("status", key);
-    setSp(sp, { replace: true });
+  // 本页所有 URL 筛选的**唯一**写入口:给一张「键 → 新值」的表,null 即删键,一律 replace
+  //(不给返回键留一串中间态)。签名与 analytics/useAnalyticsScope 的 patch 逐字同形 ——
+  // 哪天要把这套写法提到共享模块,那是一次搬家,不是一次重新设计。
+  //
+  // **收多键而不是单键**:互斥筛选(选了状态就得清掉 idle、进回收站要清掉两者)本就是
+  // 一次原子的多键写。做成单键的话这些地方只能自己手写一遍 sp.delete,于是「互斥关系」
+  // 就散回到几行时序里;收成一张表之后它在一个表达式里读得出来。
+  //
+  // 复制 sp 而不是原地改:sp 是 useSearchParams 每次渲染给的对象,原地改它等于在渲染期
+  // 改一个还要被读的值。useAnalyticsScope 一直是复制的,这里跟上。
+  const patch = (next: Record<string, string | null>) => {
+    const sp2 = new URLSearchParams(sp);
+    for (const [k, v] of Object.entries(next)) v === null ? sp2.delete(k) : sp2.set(k, v);
+    setSp(sp2, { replace: true });
   };
-  const toggleRecycle = () => {
-    if (showRecycle) sp.delete("recycle");
-    else {
-      sp.set("recycle", "1");
-      sp.delete("status");
-      // 已下线的任务不参与闲置判定,带着一个必然为空的筛选进回收站是纯粹的困惑源
-      sp.delete("idle");
-    }
-    setSp(sp, { replace: true });
-  };
-  // 布尔型 URL 开关(?mine=1 / ?sub=1):勾上写 1,取消删键。与状态/团队筛选同一套约定
-  const toggleFlag = (key: string) => () => {
-    if (sp.get(key) === "1") sp.delete(key);
-    else sp.set(key, "1");
-    setSp(sp, { replace: true });
-  };
+  // URL 上仍分两个键而不是把 idle 混进 ?status= —— status 是任务的状态字段,idle 是算出来的
+  // 属性,混成一个枚举以后就会有人拿 ?status=idle 去后端查。于是选一枚片 = 一次两键写:
+  // 选中的那个置位、另一个清空。互斥由这一个表达式保证,读取侧的 activeChip 再兜一道底。
+  const selectChip = (key: string | null) =>
+    patch({ status: key === "idle" ? null : key, idle: key === "idle" ? "1" : null });
+  // 进回收站要连状态与闲置一起清:已下线的任务不参与闲置判定,
+  // 带着一个必然为空的筛选进回收站是纯粹的困惑源
+  const toggleRecycle = () =>
+    patch(showRecycle ? { recycle: null } : { recycle: "1", status: null, idle: null });
+  // 布尔型 URL 开关(?mine=1 / ?sub=1):勾上写 1,取消删键
+  const toggleFlag = (key: string) => () =>
+    patch({ [key]: sp.get(key) === "1" ? null : "1" });
   // 我开发的(?mine=1):口径 = 我建的 + 被授予编辑权的,由服务端逐行算好
   // (task.developed_by_me),前端不自己算。isManager 兜底 —— 普通用户看到的本来就只是
   // 授权给自己的任务,手改 URL 也不生效
@@ -222,11 +225,10 @@ export default function TasksPage() {
   // 团队筛选(?team=<id>):与 ?q= / ?status= / ?recycle= / ?mine= / ?sub= 同一套约定,纯客户端过滤。
   // 服务端已按团队收窄过一遍,这里只是在「我看得到的那些」里再挑一个团队看。
   const teamFilter = sp.get("team");
-  const setTeamFilter = (v: string | null) => {
-    if (v) sp.set("team", v);
-    else sp.delete("team");
-    setSp(sp, { replace: true });
-  };
+  const setTeamFilter = (v: string | null) => patch({ team: v });
+  // 搜索词(?q=)。逐字符写 URL 而不是等回车 —— 结果是即时的,中途停手也能把当前这一屏
+  // 的链接发给同事。
+  const setQ = (v: string) => patch({ q: v || null });
 
   const load = useCallback(() => {
     setLoading(true);
@@ -244,9 +246,7 @@ export default function TasksPage() {
     if (!rid || !tasks.length) return;
     const t = tasks.find((x) => String(x.id) === rid);
     if (t) setRecords({ task: t, jobId: Number(sp.get("job")) || null });
-    sp.delete("records");
-    sp.delete("job");
-    setSp(sp, { replace: true });
+    patch({ records: null, job: null });
   }, [tasks]);
 
   // 收进回收站。草稿与已上线是**同一个接口、两套说法**:草稿从来就不可运行,
@@ -291,13 +291,14 @@ export default function TasksPage() {
     });
   }, [load]);
 
-  // 顶栏搜索:按 任务编号(精确) / 任务名 / 作者 / 团队 / 被授权人 客户端过滤(大小写不敏感)。
+  // 列表搜索:按 任务编号(精确) / 任务名 / 作者 / 团队 / 被授权人 客户端过滤(大小写不敏感)。
   // 解析与组合律见 taskSearch,与团队页「任务编辑权」共用一份。
   // 默认视图排除下线(archived)任务;回收站视图则只看下线任务。
   // 不套 useMemo:下游依赖的全是 q / qid 两个**原始值**,没人消费这个对象的引用,
   // 而它本身只是一次 trim + toLowerCase + 一个六字符正则。
   // (反过来说也别把这个对象塞进 useMemo 的依赖数组 —— 它每次渲染都是新的,会让 memo 失效。)
-  const { text: q, id: qid } = parseTaskQuery(sp.get("q"));
+  const rawQ = sp.get("q") ?? "";
+  const { text: q, id: qid } = parseTaskQuery(rawQ);
   // 「团队筛选」「我开发的」「我订阅的」都先于状态筛选与统计生效:顶部计数与卡片同源,
   // 筛选后数字不会自相矛盾(这是既有约定,以后新增的筛选也必须并进同一层)
   const scoped = useMemo(() => {
@@ -476,7 +477,7 @@ export default function TasksPage() {
       s.total++;
       if (t.status === "published") {
         s.published++;
-        // 与卡片读同一个 showIdle:顶栏说「3 个闲置」,列表里就必须正好找得到那 3 个。
+        // 与卡片读同一个 showIdle:标题栏说「3 个闲置」,列表里就必须正好找得到那 3 个。
         // 它含 can_manage 那道门,所以没有编辑权的人既看不到标记、也不会被算进这个数
         if (showIdle(t)) s.idle++;
       } else if (t.status === "draft") s.draft++;
@@ -484,7 +485,7 @@ export default function TasksPage() {
     return s;
   }, [scoped]);
 
-  // 顶部筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选。
+  // 标题栏筛选片:已上线/草稿读共享状态色(tint),「总数」清除筛选。
   // 「闲置」只在真有闲置任务时才插进来 —— 一个恒为 0 的筛选片是噪声,而它本身就是来降噪的;
   // 但 idleOnly 时无论如何都要渲染,否则「筛完只剩 0 个」会把这枚片连同关掉它的唯一入口
   // 一起抹掉,人就困在空列表里了。
@@ -516,7 +517,7 @@ export default function TasksPage() {
   // 否则一个不入队的管理员会看到灰按钮和一句不适用的提示。
   const noTeamYet = isManager && !isPlatformAdmin(user) && !hasTeam(user);
   const emptyText = emptyTextFor({
-    rawQ: sp.get("q"),
+    rawQ,
     qid,
     noTeamYet,
     teamFilter,
@@ -543,7 +544,7 @@ export default function TasksPage() {
   }, [load]);
 
   // 身份稳定:TaskTable 的列定义与 onRow 都按 h 记忆,h 每次渲染换新的话
-  // 几百行的单元格会跟着白跑一遍(顶栏搜索是逐字符触发渲染的)
+  // 几百行的单元格会跟着白跑一遍(搜索框是逐字符触发渲染的)
   const handlers: TaskHandlers = useMemo(
     () => ({
       onRun: setRunTarget,
@@ -645,7 +646,7 @@ export default function TasksPage() {
       style={{ borderRadius: 28, minHeight: "calc(100vh - 120px)" }}
       loading={loading && !tasks.length}
       title={
-        <Space size={20} align="center">
+        <Space size={16} align="center">
           <span style={{ fontSize: 22, fontWeight: 700 }}>{showRecycle ? "回收站" : "任务列表"}</span>
           {showRecycle ? (
             <span style={{ fontSize: 13, color: "var(--ink-secondary)" }}>
@@ -667,33 +668,49 @@ export default function TasksPage() {
               ))}
             </Space>
           )}
-          {/* 团队下拉只在看得到的任务跨越多个团队时出现:单团队开发者不需要它 */}
-          {isManager && teamChoices.length > 1 && (
-            <Select
-              variant="borderless"
-              allowClear
-              size="small"
-              placeholder="全部团队"
-              style={{ minWidth: 130, fontWeight: 400 }}
-              value={teamFilter ?? undefined}
-              onChange={(v) => setTeamFilter(v ?? null)}
-              options={teamChoices}
-            />
-          )}
-          {isManager && (
-            <Checkbox checked={mineOnly} onChange={toggleFlag("mine")} style={FILTER_CHECK_STYLE}>
-              我开发的
-            </Checkbox>
-          )}
-          <Checkbox checked={subOnly} onChange={toggleFlag("sub")} style={FILTER_CHECK_STYLE}>
-            我订阅的
-          </Checkbox>
         </Space>
       }
       extra={extra}
     >
-      {/* 两种视图消费同一个 filtered:顶部计数、筛选、搜索、空态都只有一份,
-          切视图不会让「数字与内容对不上」。空态两种视图共用,不必各画一遍。 */}
+      {/* 筛选排。搜索框排头,后面跟着团队 / 我开发的 / 我订阅的 —— 它们是同一类东西
+          (都只过滤这一页、都写进 URL),放一起才不必解释「这个框管的是哪张列表」。
+          此前搜索框在全局顶栏里:它只服务这一页,却在其余每个页面上照样渲染,
+          在那些页面里敲第一个字符就会把人弹到 /tasks(而且框里显示的永远是空的)。
+          放在 BulkTransferBar **之前**:交接横幅里那句「用上方搜索框搜离职同事的姓名」
+          说的就是它。 */}
+      <Space size={16} align="center" wrap style={{ marginBottom: 16 }}>
+        {/* placeholder 要盖住 matchQ 的**全部**覆盖面(编号 / 任务名 / 作者 / 被授权人 / 团队名)——
+            搜得到却没人知道能这么搜,等于没做。
+            「编号」摆在最前:它是唯一能精确定位到一条的搜法,也是卡片上那个一键复制的去处
+            (复制给的是纯数字,粘进来直接就能搜;写 #128 也认)。 */}
+        <Input
+          allowClear
+          value={rawQ}
+          onChange={(e) => setQ(e.target.value)}
+          prefix={<SearchOutlined style={{ color: "var(--icon-muted)" }} />}
+          placeholder="搜索编号 / 任务 / 人 / 团队"
+          style={{ width: 320 }}
+        />
+        {/* 团队下拉只在看得到的任务跨越多个团队时出现:单团队开发者不需要它 */}
+        {isManager && teamChoices.length > 1 && (
+          <Select
+            allowClear
+            placeholder="全部团队"
+            style={{ minWidth: 150 }}
+            value={teamFilter ?? undefined}
+            onChange={(v) => setTeamFilter(v ?? null)}
+            options={teamChoices}
+          />
+        )}
+        {isManager && (
+          <Checkbox checked={mineOnly} onChange={toggleFlag("mine")} style={FILTER_CHECK_STYLE}>
+            我开发的
+          </Checkbox>
+        )}
+        <Checkbox checked={subOnly} onChange={toggleFlag("sub")} style={FILTER_CHECK_STYLE}>
+          我订阅的
+        </Checkbox>
+      </Space>
       {bulk && (
         <BulkTransferBar
           candidates={candidates}
@@ -713,6 +730,8 @@ export default function TasksPage() {
           onExit={exitBulk}
         />
       )}
+      {/* 两种视图消费同一个 filtered:顶部计数、筛选、搜索、空态都只有一份,
+          切视图不会让「数字与内容对不上」。空态两种视图共用,不必各画一遍。 */}
       {filtered.length === 0 ? (
         <Empty style={{ padding: "48px 0" }} description={emptyText} />
       ) : effectiveView === "list" ? (

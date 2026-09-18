@@ -80,7 +80,7 @@ export default function BulkTransferBar({
           />
           {!picked ? (
             <Typography.Text type="secondary">
-              先选接手人，再按他能不能接手来勾任务；也可以在顶栏搜索框输入离职同事的姓名，只看他的任务。
+              先选接手人，再按他能不能接手来勾任务；也可以在上方搜索框输入离职同事的姓名，只看他的任务。
             </Typography.Text>
           ) : (
             <Space size={8} wrap align="center">

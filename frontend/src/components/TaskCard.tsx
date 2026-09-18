@@ -121,7 +121,7 @@ export default function TaskCard({
           <Tooltip title={timeCell.hint}>
             <span
               style={{
-                color: "#9aa0b5",
+                color: "var(--icon-muted)",
                 fontSize: 12,
                 whiteSpace: "nowrap",
                 ...(idle ? IDLE_TEXT : null),

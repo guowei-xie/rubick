@@ -43,7 +43,7 @@ const CURSOR_NO = { cursor: "not-allowed" };
 
 /** 记录整行替换才算变了(load() → setTasks 是唯一的写入路径,排序与筛选都不改记录本身),
  *  所以行内容只随记录身份失效。少了这一句,rc-table 会在每次父级渲染时重跑所有单元格的
- *  render —— 顶栏搜索是逐字符写 URL 的,几百行时每敲一个字就白跑几千次。 */
+ *  render —— 任务列表的搜索框是逐字符写 URL 的,几百行时每敲一个字就白跑几千次。 */
 const shouldCellUpdate = (next: any, prev: any) => next !== prev;
 
 /** 任务列表的「列表模式」:与卡片模式(TaskCard)消费同一份 filtered、同一套 handlers,

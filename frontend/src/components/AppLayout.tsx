@@ -1,4 +1,4 @@
-import { Layout, Dropdown, Avatar, Input, Tag, Tooltip } from "antd";
+import { Layout, Dropdown, Avatar, Tag, Tooltip } from "antd";
 import {
   UserOutlined,
   AppstoreOutlined,
@@ -7,12 +7,11 @@ import {
   UsergroupAddOutlined,
   DatabaseOutlined,
   AuditOutlined,
-  SearchOutlined,
   LogoutOutlined,
   KeyOutlined,
   LineChartOutlined,
 } from "@ant-design/icons";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { canSeeAnalytics, isManager, useAuth } from "../auth";
 import NotificationBell from "./NotificationBell";
 import { ROLE } from "./StatusTag";
@@ -21,11 +20,20 @@ const { Sider, Header, Content } = Layout;
 
 type NavItem = { key: string; label: string; icon: React.ReactNode };
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, logout } = useAuth();
+/** 侧边导航:谁看得见哪些入口,以及当前在哪一个。
+ *
+ *  **读 URL 的 hook 收在这一层,不放 AppLayout** —— 任务列表里逐字符写 ?q= 会让每个
+ *  LocationContext 的消费者跟着重渲染。AppLayout 自己不订阅,它与 Header 那半边
+ *  (头像、下拉菜单)就整棵 bail out,只剩这几枚图标重跑。
+ *  注意这条收益是**易碎**的:`App` / `Protected` 里任何一个读 location 的 hook 都会
+ *  把整个顶栏重新拉进重渲染路径。(NotificationBell 因为自己调 useNavigate —— v6 里它
+ *  内部就读 location —— 本来就不在这份收益里,它的 Popover 内容要另外 memo 才省得下。)
+ */
+function SideNav() {
+  const { user } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const [sp, setSp] = useSearchParams();
+  const isActive = (key: string) => loc.pathname.startsWith(key);
 
   // 管理者(开发者/管理员)= 能建任务的角色。团队入口只给他们:普通用户不入团队,
   // 他们拿的是任务级授权。
@@ -52,19 +60,32 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       { key: "/admin/audit", label: "审计", icon: <AuditOutlined /> }
     );
 
-  const isActive = (key: string) => loc.pathname.startsWith(key);
-  const onTasks = loc.pathname.startsWith("/tasks");
-  const q = sp.get("q") ?? "";
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        padding: "28px 0",
+      }}
+    >
+      {items.map((it) => (
+        <Tooltip key={it.key} title={it.label} placement="right">
+          <button
+            className={`rk-nav-link${isActive(it.key) ? " active" : ""}`}
+            onClick={() => nav(it.key)}
+            aria-label={it.label}
+          >
+            {it.icon}
+          </button>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
 
-  const onSearch = (v: string) => {
-    if (!onTasks) {
-      nav(v ? `/tasks?q=${encodeURIComponent(v)}` : "/tasks");
-      return;
-    }
-    if (v) sp.set("q", v);
-    else sp.delete("q");
-    setSp(sp, { replace: true });
-  };
+export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const { user, logout } = useAuth();
 
   return (
     <Layout style={{ minHeight: "100vh", background: "var(--app-bg)" }}>
@@ -74,60 +95,25 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         breakpoint="lg"
         collapsedWidth={0}
       >
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            padding: "28px 0",
-          }}
-        >
-          {items.map((it) => (
-            <Tooltip key={it.key} title={it.label} placement="right">
-              <button
-                className={`rk-nav-link${isActive(it.key) ? " active" : ""}`}
-                onClick={() => nav(it.key)}
-                aria-label={it.label}
-              >
-                {it.icon}
-              </button>
-            </Tooltip>
-          ))}
-        </div>
+        <SideNav />
       </Sider>
 
       <Layout style={{ background: "transparent" }}>
+        {/* 全局 chrome 只放**跨页面**的东西:此刻是谁(头像)、跨任务的通知(铃铛)。
+            只服务某一页的控件放那一页 —— 任务搜索框就是因此下沉到任务列表里的:
+            它在别的页面上既没东西可搜,输入还会把人弹走。 */}
         <Header
           style={{
             background: "transparent",
             display: "flex",
             alignItems: "center",
+            justifyContent: "flex-end",
             gap: 20,
             padding: "16px 24px 8px 0",
             height: "auto",
             lineHeight: "normal",
           }}
         >
-          {/* 提示语要与 TasksPage 的 matchQ 覆盖面一致:任务编号 / 任务名 / 作者 / 被授权人 / 团队名。
-              任务归属团队后多了团队名这一路匹配,不写出来没人会想到能这么搜。
-              「编号」摆在最前:它是唯一能精确定位到一条的搜法,也是卡片上那个一键复制的去处
-              (复制给的是纯数字,粘进来直接就能搜;写 #128 也认)。 */}
-          <Input
-            allowClear
-            value={q}
-            onChange={(e) => onSearch(e.target.value)}
-            prefix={<SearchOutlined style={{ color: "#9aa0b5" }} />}
-            placeholder="搜索编号 / 任务 / 人 / 团队"
-            variant="borderless"
-            style={{
-              maxWidth: 420,
-              borderRadius: 20,
-              height: 40,
-              background: "#fff",
-              boxShadow: "var(--search-shadow)",
-            }}
-          />
-          <div style={{ flex: 1 }} />
           <NotificationBell />
           <Dropdown
             menu={{
@@ -151,7 +137,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                 padding: "4px 12px 4px 4px",
                 borderRadius: 20,
                 background: "#fff",
-                boxShadow: "var(--search-shadow)",
+                boxShadow: "var(--pill-shadow)",
               }}
             >
               <Avatar size={30} icon={<UserOutlined />} />

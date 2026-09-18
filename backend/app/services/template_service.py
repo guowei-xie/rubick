@@ -570,7 +570,7 @@ def idle_days(tmpl: SqlTemplate, last_run_at: datetime | None, now: datetime) ->
     带时区的值会凭空差出 8 小时,在 90 天的尺度上看不出来,在边界上就是一条错标。
 
     now 由调用方传,且**没有默认值**:一次请求几百行要用同一把尺,逐行取 now 会让跨秒的
-    那一批出现 89 / 90 两种结果 —— 那正是「顶栏说 3 个闲置、列表里只找得到 2 个」的来源。
+    那一批出现 89 / 90 两种结果 —— 那正是「标题栏说 3 个闲置、列表里只找得到 2 个」的来源。
     留一个 now=None 的兜底等于把这个 bug 的入口一直开着,所以让调用方必须交代清楚。
     """
     if tmpl.status != STATUS_PUBLISHED:

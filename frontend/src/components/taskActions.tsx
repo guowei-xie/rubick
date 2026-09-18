@@ -132,8 +132,8 @@ export function credentialWarnText(r: any): string {
  *     还被排到列表最后,读起来像「这份数据过时了」,而事实上他就是那个一年来跑一次的人;
  *  ③ can_manage 的覆盖面恰好对:管理员 / 团队管理员 / 作者本人 / 被授予编辑权的人,
  *     正是会做「清理没人用的任务」这件事的那批人。
- *  排序、卡片、列表、顶栏计数、筛选五处全读这一个函数 ——
- *  否则会出现「顶栏说 3 个闲置、列表里只找得到 1 个」。 */
+ *  排序、卡片、列表、标题栏计数、筛选五处全读这一个函数 ——
+ *  否则会出现「标题栏说 3 个闲置、列表里只找得到 1 个」。 */
 export function showIdle(r: any): boolean {
   return !!r.can_manage && r.is_idle === true;
 }

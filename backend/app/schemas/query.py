@@ -77,7 +77,7 @@ class TaskOut(BaseModel):
     # **非已上线任务恒为 None**:草稿/已下线不参与判定(见 template_service.idle_days)。
     idle_days: int | None = None
     # 是否已超过阈值。阈值比较**在服务端做一次**,与 can_run / credential_ready 同一约定;
-    # 否则「算不算闲置」会在卡片、列表、排序、顶栏筛选片四处各算一遍,改阈值时漏一处就对不上数。
+    # 否则「算不算闲置」会在卡片、列表、排序、标题栏筛选片四处各算一遍,改阈值时漏一处就对不上数。
     is_idle: bool = False
     # 判定用的阈值(settings.TASK_IDLE_DAYS;0 = 这项提示关着)。只供前端拼一句
     # 「超过 90 天没有运行记录」的悬停解释 —— 被标出来的人得能看到「为什么是我」。

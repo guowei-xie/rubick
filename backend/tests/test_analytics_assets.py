@@ -108,7 +108,7 @@ def test_never_run_is_separate_from_idle(db, a_admin, dev, biz, ds, team_a, job_
 def test_idle_matches_the_task_list(db, a_admin, dev, ds, team_a, job_factory, biz, template_factory):
     """闲置数必须与任务列表页给出的**完全一致**。
 
-    两处各数一遍的下场是:顶栏说 3 个闲置、点进去列表里只找得到 2 个,而这个看板的全部
+    两处各数一遍的下场是:标题栏说 3 个闲置、点进去列表里只找得到 2 个,而这个看板的全部
     价值就是让人相信这些数字。所以这里复用 template_service.idle_days / is_idle,
     这条断言就是那个复用的凭据。
     """

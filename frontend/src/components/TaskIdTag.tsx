@@ -8,7 +8,7 @@ import { copyText } from "../clipboard";
  * 理由同 taskActions:同一个东西写四遍,迟早写成四种样子(有的复制带 #、有的不带)。
  *
  * **显示带 #、复制纯数字**:光秃秃一个 128 读不出那是什么(与审计页 `任务 #12` 同一写法),
- * 但它要被粘进顶栏搜索框 / 工单 / 聊天框,带 # 每次都得手删一下。
+ * 但它要被粘进任务列表的搜索框 / 工单 / 聊天框,带 # 每次都得手删一下。
  *
  * 冒泡拦在本组件内而不是四个调用点各写一遍 —— 漏一处就是「点编号却打开了取数抽屉」。
  *
@@ -20,7 +20,7 @@ import { copyText } from "../clipboard";
  * 提示用**原生 title** 而不是 Tooltip:宿主(任务卡片、表格行)挂着 runHint 的原生 title,
  * 只有子元素的原生 title 盖得住它;混用会两个提示一起弹(TaskCard / TaskTable 的既有约定)。
  *
- * memo:卡片视图既不分页也没 memo(TasksPage 直接 map filtered),顶栏搜索又是逐字符写 URL,
+ * memo:卡片视图既不分页也没 memo(TasksPage 直接 map filtered),搜索框又是逐字符写 URL,
  * 几百张卡时每敲一个字这一枚小标签会被重建几百次。props 全是原始值,浅比较 100% 有效。
  */
 function TaskIdTag({ id }: { id: number }) {
@@ -28,7 +28,7 @@ function TaskIdTag({ id }: { id: number }) {
     <button
       type="button"
       className="rk-idtag"
-      title={`任务 ID ${id} —— 点击复制编号,粘进顶栏搜索框可直接定位这个任务`}
+      title={`任务 ID ${id} —— 点击复制编号,粘进任务列表的搜索框可直接定位这个任务`}
       onClick={async (e) => {
         e.stopPropagation();
         // 失败也要把数字念出来,否则用户没有第二条路(选中复制在卡片上会触发整卡的点击)

@@ -95,6 +95,8 @@ export default function TeamPage() {
       <Tabs
         activeKey={tab}
         onChange={(k) => {
+          // 复制 sp 而不是只留 tab:切页签**保留**其它面板的参数(深链、面板级筛选都靠它)。
+          // 正因为如此,面板级的键必须带主语前缀 —— 见 TeamTaskEditorsPanel 的 taskq。
           const next = new URLSearchParams(sp);
           next.set("tab", k);
           setSp(next, { replace: true });
