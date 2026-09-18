@@ -17,6 +17,7 @@ API 进程不扫描 —— 单进程扫描本身就消除了重复触发;水位�
 from __future__ import annotations
 
 import calendar
+from dataclasses import dataclass
 from datetime import date, datetime, time as time_cls, timedelta
 
 from sqlalchemy import func, or_, select, update as sa_update
@@ -33,9 +34,11 @@ from app.models.subscription import (
     FREQ_DAILY,
     FREQ_MONTHLY,
     FREQ_WEEKLY,
+    SUB_EVENT_ADDED,
     SUB_EVENT_AUTO_UNSUBSCRIBE,
     SUB_EVENT_CLOSED_UNSUBSCRIBE,
     SUB_EVENT_MEMBER_REMOVED,
+    SUB_EVENT_REMOVED,
     SUB_EVENT_SUBSCRIBE,
     SUB_EVENT_UNSUBSCRIBE,
     TaskSchedule,
@@ -233,18 +236,58 @@ def _add_event(
     )
 
 
-def subscribe(db: Session, tmpl: SqlTemplate, user: User) -> bool:
-    """自助订阅,幂等,返回是否新建。资格校验(can_subscribe + 计划已开启)在路由层。"""
-    existing = db.scalar(
+def _subscription_row(db: Session, template_id: int, user_id: int) -> TaskSubscription | None:
+    return db.scalar(
         select(TaskSubscription).where(
-            TaskSubscription.template_id == tmpl.id, TaskSubscription.user_id == user.id
+            TaskSubscription.template_id == template_id, TaskSubscription.user_id == user_id
         )
     )
-    if existing is not None:
-        return False
-    db.add(TaskSubscription(template_id=tmpl.id, user_id=user.id))
+
+
+def _add_subscription(
+    db: Session,
+    *,
+    template_id: int,
+    user_id: int,
+    action: str,
+    operator_id: int,
+    added_by: int | None = None,
+    detail: dict | None = None,
+) -> None:
+    """建一行订阅 + 一条留痕。**不提交**,跟随调用方事务。
+
+    「订阅行与事件行是一对」这件事只在这里写一次 —— 自助订阅与代订阅各写一遍的话,
+    下一个 TaskSubscription 列(added_by 就是先例)必然只被加进其中一处。
+    """
+    db.add(TaskSubscription(template_id=template_id, user_id=user_id, added_by=added_by))
     _add_event(
-        db, template_id=tmpl.id, user_id=user.id, action=SUB_EVENT_SUBSCRIBE, operator_id=user.id
+        db, template_id=template_id, user_id=user_id,
+        action=action, operator_id=operator_id, detail=detail,
+    )
+
+
+def _drop_subscription(
+    db: Session, *, template_id: int, user_id: int, action: str, operator_id: int
+) -> bool:
+    """删一行订阅 + 一条留痕,返回是否真的删了。**不提交**,跟随调用方事务。
+    与 _add_subscription 对称:退订的四条路径(自助/自动/关闭订阅/被移出)共用这一段。"""
+    sub = _subscription_row(db, template_id, user_id)
+    if sub is None:
+        return False
+    _add_event(
+        db, template_id=template_id, user_id=user_id, action=action, operator_id=operator_id
+    )
+    db.delete(sub)
+    return True
+
+
+def subscribe(db: Session, tmpl: SqlTemplate, user: User) -> bool:
+    """自助订阅,幂等,返回是否新建。资格校验(can_subscribe + 计划已开启)在路由层。"""
+    if _subscription_row(db, tmpl.id, user.id) is not None:
+        return False
+    _add_subscription(
+        db, template_id=tmpl.id, user_id=user.id,
+        action=SUB_EVENT_SUBSCRIBE, operator_id=user.id,
     )
     db.commit()
     return True
@@ -252,23 +295,190 @@ def subscribe(db: Session, tmpl: SqlTemplate, user: User) -> bool:
 
 def unsubscribe(db: Session, template_id: int, user: User) -> bool:
     """自助退订,幂等,返回是否真的删了行。"""
-    sub = db.scalar(
-        select(TaskSubscription).where(
-            TaskSubscription.template_id == template_id, TaskSubscription.user_id == user.id
+    removed = _drop_subscription(
+        db, template_id=template_id, user_id=user.id,
+        action=SUB_EVENT_UNSUBSCRIBE, operator_id=user.id,
+    )
+    if removed:
+        db.commit()
+    return removed
+
+
+# ---------------------------------------------------------------- 代订阅(管理侧)
+
+
+@dataclass(frozen=True)
+class SubscriberRejection:
+    """一个代订阅目标为什么不能订。label 是 BatchRejectedError 明细的行首
+    —— 这里被拒的单位是**人**,不是任务。"""
+
+    label: str
+    code: str      # not_resolvable / system_user / inactive
+    message: str
+
+
+@dataclass
+class SubscriberAddition:
+    """要新建的一条代订阅。needs_view = 这个人还不满足 can_view,写入时顺带补一条 view 授权。"""
+
+    user: User
+    needs_view: bool
+
+
+def _resolve_targets(db: Session, subjects) -> tuple[list[User], list[SubscriberRejection]]:
+    """把入参主体(已知 user_id 或飞书 open_id)解析成一批 User,去重保序。**不提交。**
+
+    两次批量查询 + 一次批量通讯录,与人数无关:逐人 db.get / 逐人打飞书在 50 人的上限下
+    是 50 次往返 + 50 次外网请求。
+    """
+    from app.services import permission_service
+
+    known_ids = [
+        uid
+        for sub in subjects
+        if not sub.subject_open_id
+        and (uid := permission_service.parse_subject_id(sub.subject_id)) is not None
+    ]
+    by_id = (
+        {u.id: u for u in db.scalars(select(User).where(User.id.in_(known_ids)))}
+        if known_ids
+        else {}
+    )
+    by_open = permission_service.resolve_subject_users(
+        db,
+        [
+            {
+                "open_id": sub.subject_open_id,
+                "name": sub.subject_name,
+                "avatar": sub.subject_avatar,
+            }
+            for sub in subjects
+            if sub.subject_open_id
+        ],
+    )
+
+    users: list[User] = []
+    rejections: list[SubscriberRejection] = []
+    seen: set[int] = set()
+    for sub in subjects:
+        if sub.subject_open_id:
+            user = by_open.get(sub.subject_open_id)
+        else:
+            uid = permission_service.parse_subject_id(sub.subject_id)
+            user = by_id.get(uid) if uid is not None else None
+        if user is None:
+            rejections.append(
+                SubscriberRejection(
+                    label=sub.subject_name or "这位同事",
+                    code="not_resolvable",
+                    message="未能在通讯录里解析到这个人,请重新搜索后再试",
+                )
+            )
+        elif user.id not in seen:  # 同一个人被勾了两次:去重保序,不该订两次、记两条审计
+            seen.add(user.id)
+            users.append(user)
+    return users, rejections
+
+
+def subscribe_for_plan(
+    db: Session, tmpl: SqlTemplate, subjects
+) -> tuple[list[SubscriberAddition], list[int], list[SubscriberRejection]]:
+    """代订阅的校验相位(解析主体 + 逐人判定,只读业务表)。
+    返回 (要新建的, 已在册因而跳过的 user_id, 拒绝清单)。
+
+    「任务能不能被代订阅」(未上线 / 未开计划 / 操作者无编辑权)是**整批**的前置条件,
+    由路由层判完再进来 —— 它们与目标是谁无关,放在这里逐人判会把同一句话说 N 遍。
+
+    **已在册的人算跳过、不算拒绝**:自助订阅本身就是幂等的(返回 created=False 而非报错),
+    代订阅是同一件事换个主体,不该更严格;挑五个人因为其中一个早订过就整批打回纯属添堵。
+
+    解析 open_id 会**在校验之前就把人落库**(resolve_subject_users 要 flush 才拿得到
+    自增 id) —— 所以整批被拒时调用方必须显式 db.rollback(),否则会留下一批壳用户。
+    这是代订阅与批量转移作者「连回滚都不需要」的唯一差别,别照抄那句注释。
+    """
+    from app.services import permission_service
+
+    targets, rejections = _resolve_targets(db, subjects)
+    existing = set(
+        db.scalars(
+            select(TaskSubscription.user_id).where(TaskSubscription.template_id == tmpl.id)
         )
     )
-    if sub is None:
-        return False
-    _add_event(
-        db,
-        template_id=template_id,
-        user_id=user.id,
-        action=SUB_EVENT_UNSUBSCRIBE,
-        operator_id=user.id,
-    )
-    db.delete(sub)
+    # 「这批人里谁已经看得见这个任务」一次问清(2 次查询),不逐人建 TeamScope —— 那是
+    # 一个人的全景视角,拿它回答批量问题就是 2N 次往返(见 permission_service.viewers_among)
+    viewers = permission_service.viewers_among(db, [u.id for u in targets], tmpl)
+
+    items: list[SubscriberAddition] = []
+    skipped: list[int] = []
+    for user in targets:
+        name = user.name or f"用户#{user.id}"
+        if user.feishu_open_id == SYSTEM_SCHEDULER_OPEN_ID:
+            rejections.append(
+                SubscriberRejection(
+                    label=name, code="system_user",
+                    message="「定时运行」是平台的系统账号,不是人,不能作为订阅者",
+                )
+            )
+        elif not user.is_active:
+            rejections.append(
+                SubscriberRejection(
+                    label=name, code="inactive",
+                    message="已停用或离职,推送到不了他手上,不能为其订阅",
+                )
+            )
+        elif user.id in existing:
+            skipped.append(user.id)
+        else:
+            items.append(SubscriberAddition(user=user, needs_view=user.id not in viewers))
+    return items, skipped, rejections
+
+
+def subscribe_for(
+    db: Session, tmpl: SqlTemplate, items: list[SubscriberAddition], *, operator: User
+) -> tuple[list[int], list[int]]:
+    """代订阅的写入相位:补 view 授权 + 建订阅行 + 写留痕,**一个事务**。
+    返回 (created_ids, granted_view_ids)。
+
+    这里是这条链路上**唯一的 commit 点** —— permission_service.grant_view 与
+    _add_subscription 都不提交;审计与通知由调用方在 commit 之后发(audit_service.log 与
+    _push 都自带 commit,夹在中间会把还没写完的一批提前提交,同 template_service.add_version)。
+    """
+    from app.services import permission_service
+
+    created: list[int] = []
+    granted: list[int] = []
+    for item in items:
+        did_grant = item.needs_view and permission_service.grant_view(
+            db, template_id=tmpl.id, user_id=item.user.id, granted_by=operator.id
+        )
+        if did_grant:
+            granted.append(item.user.id)
+        _add_subscription(
+            db, template_id=tmpl.id, user_id=item.user.id,
+            action=SUB_EVENT_ADDED, operator_id=operator.id, added_by=operator.id,
+            detail={"granted_view": did_grant},
+        )
+        created.append(item.user.id)
     db.commit()
-    return True
+    return created, granted
+
+
+def unsubscribe_for(db: Session, template_id: int, user_id: int, *, operator: User) -> bool:
+    """管理者把某人移出订阅者名单(代退订)。幂等,返回是否真的删了行。
+
+    **不连带撤销 view 授权**:授权与订阅是两件事,各有各的入口与审计码;顺手回收会把操作者
+    当初手工授的 view 一起吃掉,而点「移除」的人并不知道自己做了一次降权。要收权去 ➕ 授权。
+
+    也**不校验任务是否仍在线、计划是否还开着** —— 移除是收敛动作,越好用越好;一个已离职的人
+    挂在名单里,正是最该被移除的情形(同自助退订「权限被撤的人更应该退得出去」)。
+    """
+    removed = _drop_subscription(
+        db, template_id=template_id, user_id=user_id,
+        action=SUB_EVENT_REMOVED, operator_id=operator.id,
+    )
+    if removed:
+        db.commit()
+    return removed
 
 
 def remove_subscriptions_for_member(

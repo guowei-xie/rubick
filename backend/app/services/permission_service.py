@@ -35,6 +35,7 @@ from app.models.permission import (
     Permission,
 )  # noqa: F401
 from app.models.query_job import SOURCE_SUBSCRIBE, QueryJob
+from app.models.team import TeamMember
 from app.models.template import STATUS_PUBLISHED, SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User, is_platform_admin  # noqa: F401
 from app.services import team_service, user_service
@@ -290,11 +291,61 @@ def can_download(scope: TeamScope, tmpl) -> bool:
     return is_insider(scope, tmpl) or tmpl.id in scope.download_ids
 
 
+def is_subscribable(tmpl) -> bool:
+    """订阅资格里**与人无关**的那一半:任务得已上线。
+
+    具名出来是因为代订阅要单独问它 —— 那条路径会先给对方补一条 view 授权,所以「人侧」
+    那一半由它自己制造,只剩任务侧要判。路由层再抄一次 `status == PUBLISHED` 就会让
+    这条判据有两个真相源:哪天它变成「已上线且未归档」,抄的那份会静默留在旧口径。
+    """
+    return tmpl.status == STATUS_PUBLISHED
+
+
 def can_subscribe(scope: TeamScope, tmpl) -> bool:
     """能不能订阅这个任务(资格判定;任务是否开启了订阅计划由路由层叠加,那是业务状态
     不是权限)。口径 = can_view 且已上线:订阅的产出是运行结果,而 can_access_job 对
     非发起人的判据就是 can_view —— 用同一把尺,订阅者天然下载得到推送给他的结果。"""
-    return tmpl.status == STATUS_PUBLISHED and can_view(scope, tmpl)
+    return is_subscribable(tmpl) and can_view(scope, tmpl)
+
+
+def viewers_among(db: Session, user_ids: list[int], tmpl) -> set[int]:
+    """这批人里,**此刻已经看得见这一个任务**的是哪些。固定 2 次查询,与人数无关。
+
+    它是 can_view 的批量反问:can_view 问「这个人能看见哪些任务」(为此要 TeamScope,
+    一个人的全景视角,固定 2 次查询),这里问「这 50 个人里谁看得见这一个任务」——
+    拿前者回答后者就是 2N 次往返,正是 TeamScope 那段注释在禁的 N+1。
+    形状仿 authorized_run_users:先批量取授权行,再在内存里配对,不对 String 列做 cast join。
+    """
+    if not user_ids:
+        return set()
+    users = list(db.scalars(select(User).where(User.id.in_(user_ids))))
+    seen = {u.id for u in users}
+    # ① 平台管理员全通
+    ok = {u.id for u in users if is_platform_admin(u)}
+    # ② 内部人:任务所属团队的成员(无主任务 fail-closed,同 is_insider)
+    if tmpl.team_id is not None:
+        ok |= set(
+            db.scalars(
+                select(TeamMember.user_id).where(
+                    TeamMember.team_id == tmpl.team_id, TeamMember.user_id.in_(user_ids)
+                )
+            )
+        )
+    # ③ 被显式授予该任务 view 的人 —— 仅当任务已上线(同 can_view 对被授权人的叠加条件)
+    if is_subscribable(tmpl):
+        for sid in db.scalars(
+            select(Permission.subject_id).where(
+                Permission.subject_type == SUBJECT_USER,
+                Permission.resource_type == RESOURCE_TEMPLATE,
+                Permission.resource_id == str(tmpl.id),
+                Permission.action == ACTION_VIEW,
+                Permission.subject_id.in_([str(i) for i in user_ids]),
+            )
+        ):
+            uid = parse_subject_id(sid)
+            if uid is not None:
+                ok.add(uid)
+    return ok & seen
 
 
 # ---------------------------------------------------------------- 列表收窄(SQL 谓词)
@@ -500,6 +551,46 @@ def authorized_run_users(db: Session, template_ids: list[int]) -> dict[int, list
 # ---------------------------------------------------------------- 授予 / 撤销
 
 
+def resolve_subject_users(db: Session, profiles: list[dict]) -> dict[str, User]:
+    """把一批飞书 open_id 解析成已落库的 User(不存在则此刻建),补齐可信邮箱,
+    返回 {open_id: User}。**不提交**:一次 flush 拿全部自增 id,跟随调用方事务 ——
+    调用方回滚时连壳用户都不会留下。
+
+    入参每项形如 {"open_id": ..., "name": ..., "avatar": ...}。落库推迟到「真正要用他」
+    这一刻(而不是搜索时)的理由见 routes/lookup.py。
+
+    **批量是原语,单个是它的一元特例**(见 resolve_subject_user):通讯录接口本来就按批取
+    (feishu_service.fetch_contact_profiles,50 一批),逐人调等于把一次请求拆成 N 次外网往返。
+
+    客户端传来的资料只取「展示用」这两项(正向白名单:塞别的进来也进不了库)。
+    **email 绝不采信客户端**:它是 BOOTSTRAP_ADMINS 的匹配键,可写就是一条提权路径
+    (见 schemas/permission.py),只能由通讯录写 —— 与登录走同一条 sync 路径。
+    这条规则只在这里表述一次:业务授权(grant)与代订阅共用本函数。
+    """
+    resolved: dict[str, User] = {}
+    for profile in profiles:
+        open_id = profile["open_id"]
+        if open_id in resolved:  # 同一个人被勾了两次
+            continue
+        display = {k: v for k in ("name", "avatar") if (v := profile.get(k))}
+        resolved[open_id] = user_service.upsert_user(db, {"open_id": open_id, **display})
+    # 已有可信邮箱的不必再打飞书;缺的一次批量补齐(内部按 50 分片、失败静默返回 0)
+    missing = [u for u in resolved.values() if not u.email]
+    if missing:
+        user_service.sync_profiles_from_feishu(missing)
+    if resolved:
+        db.flush()  # 拿到自增 id;与调用方的写入同一事务提交
+    return resolved
+
+
+def resolve_subject_user(
+    db: Session, *, subject_open_id: str, subject_profile: dict | None = None
+) -> User:
+    """resolve_subject_users 的一元特例(单个主体的授权入口用)。"""
+    profile = {"open_id": subject_open_id, **(subject_profile or {})}
+    return resolve_subject_users(db, [profile])[subject_open_id]
+
+
 def grant(
     db: Session,
     *,
@@ -525,14 +616,9 @@ def grant(
     # 主体解析集中在服务层(单一事务归属):传 open_id 时在此(而非搜索时)按 open_id upsert
     # 用户、拿其 id 作主体;否则用已知的 subject_id。
     if subject_open_id:
-        # 客户端传来的资料只取「展示用」这两项(正向白名单:塞别的进来也进不了库)。
-        # **email 绝不采信客户端**:它是 BOOTSTRAP_ADMINS 的匹配键,可写就是一条提权路径
-        # (见 schemas/permission.py),只能由通讯录写 —— 与登录走同一条 sync 路径。
-        display = {k: v for k in ("name", "avatar") if (v := (subject_profile or {}).get(k))}
-        subject = user_service.upsert_user(db, {"open_id": subject_open_id, **display})
-        if not subject.email:  # 已有可信邮箱就不必再打一次飞书
-            user_service.sync_profiles_from_feishu([subject])
-        db.flush()  # 拿到自增 id;与下方授权同一事务提交
+        subject = resolve_subject_user(
+            db, subject_open_id=subject_open_id, subject_profile=subject_profile
+        )
         subject_id = str(subject.id)
 
     created = _add_rows(
@@ -576,6 +662,30 @@ def _add_rows(
         db.add(p)
         created.append(p)
     return created
+
+
+def grant_view(db: Session, *, template_id: int, user_id: int, granted_by: int | None) -> bool:
+    """幂等补一条该任务的 view 业务授权行,返回是否新建。**不提交,跟随调用方事务。**
+
+    与 grant() 的区别只有事务约定:代订阅要把「补 view 授权 + 建订阅行 + 写留痕」放进同一个
+    事务(见 subscription_service.subscribe_for),而 grant() 末尾自带 commit。
+    同 grant_edit(提交)/ discard_edit_grant(不提交)的分工 —— 一件事两种事务约定各给一个
+    具名函数,别让调用方去猜。
+
+    只开放 view 这一个动作:订阅结果的预览与下载都走 can_access_job → can_view,
+    run / download 是「自己填参跑一次」才需要的,代订阅不该顺手给。
+    """
+    return bool(
+        _add_rows(
+            db,
+            subject_type=SUBJECT_USER,
+            subject_id=str(user_id),
+            resource_type=RESOURCE_TEMPLATE,
+            resource_id=str(template_id),
+            actions=[ACTION_VIEW],
+            granted_by=granted_by,
+        )
+    )
 
 
 # ---- 指定任务的编辑权(团队内,只由 /api/tasks/{id}/editors 进出)

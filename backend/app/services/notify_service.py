@@ -422,6 +422,60 @@ def notify_subscription_closed(db: Session, tmpl: SqlTemplate, user_ids: list[in
     )
 
 
+def notify_subscribed_by_operator(
+    db: Session,
+    tmpl: SqlTemplate,
+    user_ids: list[int],
+    *,
+    operator_name: str,
+    schedule_desc: str | None,
+    granted_ids: set[int],
+) -> None:
+    """有编辑权的人代为订阅 → 告知被订上的业务方。
+
+    **这条必须发**:它是全平台唯一一个「用户什么都没做、状态却变了」的入口,而且此后每一期
+    都会有推送落到他手上 —— 不告诉他这是怎么回事、怎么退,就是替人做主。
+    操作者不另发:他刚点完按钮,界面已经给了回执(同 permissions.grant 不通知授权人)。
+
+    文案只有一处随人而异(顺带补了查看权的多一句),故按这一位切成两批发,
+    而不是自己写一个 _push 循环 —— 同 notify_subscription_run_failed 的两批写法。
+    """
+    body = (
+        f"{operator_name} 把《{tmpl.name}》的定时数据推送订阅给了你,"
+        f"平台会{schedule_desc or '按计划'}自动运行并把结果推给你;"
+        "不需要的话,可以在任务卡片的 ⋮ 里随时退订。"
+    )
+    live = [uid for uid in user_ids if _is_notifiable(db, uid)]
+    for ids, extra in (
+        ([u for u in live if u in granted_ids], "你现在也能在任务列表里看到这个任务了。"),
+        ([u for u in live if u not in granted_ids], ""),
+    ):
+        _push_each(
+            db, ids,
+            title="已为你订阅数据推送",
+            body=body + extra,
+            level="info", link=_tasks_link(), job_id=None, template_id=tmpl.id,
+        )
+
+
+def notify_unsubscribed_by_operator(
+    db: Session, tmpl: SqlTemplate, user_id: int, *, operator_name: str
+) -> None:
+    """被移出订阅者名单 → 告知本人。不解释原因(平台不知道),只说清事实与去处。
+    单数签名:移除接口按设计就是一次一人(URL 里是单个 user_id)。"""
+    if not _is_notifiable(db, user_id):
+        return
+    _push(
+        db, user_id=user_id,
+        title="订阅已取消",
+        body=(
+            f"{operator_name} 把你移出了《{tmpl.name}》的订阅者名单,"
+            "你不会再收到该任务的定时数据推送;如仍需要,可以自己重新订阅。"
+        ),
+        level="info", link=_tasks_link(), job_id=None, template_id=tmpl.id,
+    )
+
+
 def notify_auto_unsubscribed(
     db: Session, tmpl: SqlTemplate, user_ids: list[int], *, job_id: int | None
 ) -> None:

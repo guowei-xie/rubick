@@ -73,6 +73,11 @@ ACTION_DATASOURCE_DELETE = "datasource_delete"
 ACTION_TASK_SUBSCRIBE = "task_subscribe"
 ACTION_TASK_UNSUBSCRIBE = "task_unsubscribe"
 ACTION_TASK_AUTO_UNSUBSCRIBE = "task_auto_unsubscribe"
+# 代订阅/移除订阅者。**不复用上面两个码**:那两个的含义是「我订了/我退了」,复用后按操作人
+# 筛「谁订了什么」会把一批代订阅算到操作者头上,真正的订阅者只剩在 detail 里 ——
+# 与 ACTION_TASK_AUTHOR_TRANSFER 当初独立成码同构。
+ACTION_TASK_SUBSCRIBE_FOR = "task_subscribe_for"
+ACTION_TASK_UNSUBSCRIBE_FOR = "task_unsubscribe_for"
 
 # 团队取数账号(某团队在某数据源上的库身份)。动作码沿用早期名字(语义未变,只是主体
 # 从人变成了团队),密码永不进 detail,只记「哪个团队在哪个源上做了什么」
@@ -113,6 +118,8 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_SUBSCRIBE: ("订阅任务", GROUP_TASK),
     ACTION_TASK_UNSUBSCRIBE: ("退订任务", GROUP_TASK),
     ACTION_TASK_AUTO_UNSUBSCRIBE: ("连续未消费自动退订", GROUP_TASK),
+    ACTION_TASK_SUBSCRIBE_FOR: ("代业务方订阅任务", GROUP_TASK),
+    ACTION_TASK_UNSUBSCRIBE_FOR: ("移除任务订阅者", GROUP_TASK),
     ACTION_PERMISSION_GRANT: ("授予任务权限", GROUP_PERMISSION),
     ACTION_PERMISSION_REVOKE: ("撤销任务权限", GROUP_PERMISSION),
     ACTION_TASK_EDIT_GRANT: ("授予任务编辑权", GROUP_PERMISSION),

@@ -34,13 +34,19 @@ SUB_EVENT_UNSUBSCRIBE = "unsubscribe"                # 用户自助退订
 SUB_EVENT_AUTO_UNSUBSCRIBE = "auto_unsubscribe"      # 连续未消费,平台自动清退
 SUB_EVENT_CLOSED_UNSUBSCRIBE = "closed_unsubscribe"  # 开发者关闭订阅,批量清退
 SUB_EVENT_MEMBER_REMOVED = "member_removed"          # 离队清理,订阅随之取消
+SUB_EVENT_ADDED = "added_by_manager"                 # 有编辑权的人代业务方订阅
+SUB_EVENT_REMOVED = "removed_by_manager"             # 有编辑权的人把某人移出订阅者名单
 
+# 标签一律从**当事人视角**写(同「移出团队随之退订」);「谁干的」由 operator_id 那一列回答,
+# 不写进标签 —— 否则同一个动作要为「作者干的」「团队管理员干的」各造一个码。
 SUB_EVENT_META: dict[str, str] = {
     SUB_EVENT_SUBSCRIBE: "订阅",
     SUB_EVENT_UNSUBSCRIBE: "退订",
     SUB_EVENT_AUTO_UNSUBSCRIBE: "连续未消费自动退订",
     SUB_EVENT_CLOSED_UNSUBSCRIBE: "开发者关闭订阅",
     SUB_EVENT_MEMBER_REMOVED: "移出团队随之退订",
+    SUB_EVENT_ADDED: "被添加为订阅者",
+    SUB_EVENT_REMOVED: "被移出订阅者名单",
 }
 
 
@@ -98,6 +104,15 @@ class TaskSubscription(Base, TimestampMixin):
     # 消费水位:已消费(下载或预览)的最大订阅 job id,只增不减。订阅 job 按 id 严格线性,
     # 结算只需回答「消费过上一期没有」,一列水位与消费明细表完全等价 —— 少一张表、零清理负担。
     last_consumed_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # 代订阅的操作者;NULL = 本人自助订阅。让「这一行是谁弄进来的」在名单上直接读得到。
+    # 不做 FK:同 TaskSchedule.updated_by 的取舍。
+    #
+    # **不是事件表的冗余副本**:事件是历史(谁在何时订过/退过),本列是**当前这一行**的事实,
+    # 而事件行不指向具体订阅行 —— 想从事件推出它,只能猜「最后一条早于本行 created_at 的
+    # added 事件」,那是脆弱推断。退订后自助重订会得到一行 added_by=NULL,两者本就不等价。
+    # 不变量:订阅行只有 insert/delete、**从不 UPDATE**,所以本列在行的生命周期内不会与
+    # 事件流分叉。将来若出现会改已有订阅行的路径(重新指派/用户合并/回填),必须同时维护它。
+    added_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     user = relationship("User", lazy="joined")
 

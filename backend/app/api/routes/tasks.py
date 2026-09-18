@@ -250,7 +250,9 @@ def batch_transfer_task_author(
         raise BatchRejectedError(
             f"本次批量转移未生效(全成功才生效):所选 {len(ids)} 个任务中,"
             f"有 {len(rejections)} 个不能转给 {target.name}。",
-            [asdict(r) for r in rejections],
+            # label = 这一条拒绝的抬头(见 BatchRejectedError.__init__)。批量的单位是任务,
+            # 故抬头是书名号包着的任务名;代订阅那边的单位是人,抬头就是姓名。
+            [{**asdict(r), "label": f"《{r.template_name}》"} for r in rejections],
         )
 
     revoked = template_service.transfer_author_batch(db, items, target, operator=user)

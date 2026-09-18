@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, model_validator
 
 from app.schemas.common import ParamDef
+from app.schemas.permission import SubjectIn
 
 _AT_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -62,11 +63,34 @@ class SubscriberOut(BaseModel):
     avatar: str | None = None
     miss_streak: int = 0  # 连续未消费的成功期数;临近阈值时前端标橙
     created_at: datetime | None = None  # 订阅时间
+    # 代订阅的操作者;两项同时为空 = 本人自助订阅
+    added_by: int | None = None
+    added_by_name: str | None = None
 
 
 class SubscribersOut(BaseModel):
     threshold: int  # 自动退订阈值(settings.SUBSCRIPTION_MISS_LIMIT),前端展示说明用
     items: list[SubscriberOut] = []
+
+
+#: 一次代订阅的人数上限。比批量交接的 200 小一个量级:那边是在已经列出来的任务表里勾选,
+#: 这边是一个个把人搜出来挑,50 远高于真实量级;且每个目标都要算一次 team_scope(两次查询)。
+SUBSCRIBE_FOR_LIMIT = 50
+
+
+class SubscribeForIn(BaseModel):
+    """代订阅入参:一个任务 × 一批人。主体形状与授权共用 SubjectIn(含那条邮箱禁令)。"""
+
+    subjects: list[SubjectIn]
+
+
+class SubscribeForOut(BaseModel):
+    """代订阅结果。三份 id 清单而不是一份名单:前端拿到后重拉 /subscribers 刷新表格,
+    这里只回答「这次发生了什么」,免得名单的行形状要在两个地方各维护一份。"""
+
+    created: list[int] = []        # 本次真新建的订阅
+    skipped: list[int] = []        # 本来就在名单里,原样不动(幂等,不算失败)
+    granted_view: list[int] = []   # 本次顺带补了查看权的人
 
 
 class SubscriptionEventOut(BaseModel):

@@ -467,8 +467,12 @@ def main() -> None:
     _ensure_column(tbl("query_jobs"), "run_as_username", "VARCHAR(128)")
     # 增量列:订阅运行的结果被下一期成功结果取代的时刻(驱动订阅结果保留期);
     # 非订阅行恒为空。订阅三张表 task_schedules / task_subscriptions /
-    # task_subscription_events 由上面的 create_all 建出,无增量列。
+    # task_subscription_events 由上面的 create_all 建出。
     _ensure_column(tbl("query_jobs"), "superseded_at", "DATETIME")
+
+    # 增量列:代订阅的操作者(NULL = 本人自助订阅)。存量行留空 —— 代订阅之前的订阅
+    # 确实全都是自助订上的,这个空值不是缺失而是事实。
+    _ensure_column(tbl("task_subscriptions"), "added_by", "BIGINT")
 
     # 开始执行的时刻 —— 有了它才算得出排队等待时长(duration_ms 只含执行)。
     # 存量行留空:它们确实没有这个记录,运营分析据此只统计有值的样本,不拿 0 充数。

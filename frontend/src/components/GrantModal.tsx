@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { Avatar, Button, Checkbox, Modal, Select, Space, Table, Tag, message } from "antd";
+import { useEffect, useState } from "react";
+import { Button, Checkbox, Modal, Select, Space, Table, Tag, message } from "antd";
 import {
   errMsg,
   grantPermission,
   listPermissions,
-  lookupUsers,
   revokePermission,
 } from "../api";
+import { useUserPicker } from "./useUserPicker";
 
 const ALL_ACTIONS = ["view", "run", "download"];
 // 动作码 → 中文标签(与后端 permissions 的 action 取值一一对应)
@@ -31,38 +31,11 @@ export default function GrantModal({
 }) {
   const [grants, setGrants] = useState<any[]>([]);
   const [subjectId, setSubjectId] = useState<string>();
-  const [options, setOptions] = useState<any[]>([]);
   const [actions, setActions] = useState<string[]>(ALL_ACTIONS);
+  const { options, onSearch, fetchNow, profileOf } = useUserPicker();
 
   const loadGrants = () => {
     if (templateId != null) listPermissions(String(templateId)).then(setGrants);
-  };
-
-  const runFetch = (q: string) => {
-    lookupUsers(q).then((rows: any[]) =>
-      setOptions(
-        rows.map((r) => ({
-          // 统一用 open_id 作为选中值:搜索命中者此时尚未落库,授权时才按 open_id 建行
-          value: r.open_id,
-          raw: r, // 保留候选资料,授权时随 open_id 一并回传
-          // 供 showSearch 兜底过滤 & 选中后回填文本用
-          title: [r.name, r.email].filter(Boolean).join(" "),
-          label: (
-            <Space size={6}>
-              <Avatar size={20} src={r.avatar}>{(r.name || "?").slice(0, 1)}</Avatar>
-              <span>{r.name}</span>
-              {r.email && <span style={{ color: "#999" }}>{r.email}</span>}
-            </Space>
-          ),
-        }))
-      )
-    );
-  };
-  // 输入框搜索防抖:避免每敲一个字就打一次飞书/DB(live 搜索尤其贵)
-  const searchTimer = useRef<any>(null);
-  const debouncedSearch = (q: string) => {
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => runFetch(q), 350);
   };
 
   // 打开或切换模板时拉取现有授权
@@ -74,13 +47,13 @@ export default function GrantModal({
   useEffect(() => {
     if (open) {
       setSubjectId(undefined);
-      runFetch("");
+      fetchNow("");
     }
   }, [open]);
 
   const add = async () => {
     if (!subjectId) return message.warning("请选择授权对象");
-    const picked = options.find((o) => o.value === subjectId)?.raw;
+    const picked = profileOf(subjectId);
     try {
       await grantPermission({
         subject_type: "user",
@@ -166,7 +139,7 @@ export default function GrantModal({
             placeholder="输入姓名/邮箱搜全公司"
             style={{ width: 240 }}
             value={subjectId}
-            onSearch={debouncedSearch}
+            onSearch={onSearch}
             onChange={setSubjectId}
             options={options}
             notFoundContent="没搜到?可能不在可见范围"

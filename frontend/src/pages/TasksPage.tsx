@@ -774,6 +774,9 @@ export default function TasksPage() {
         task={subscribersTarget}
         open={!!subscribersTarget}
         onClose={() => setSubscribersTarget(null)}
+        // 代订阅/移除会改变订阅人数,而它印在卡片与表格的计划标签上(taskActions.scheduleLabel);
+        // 不重拉列表就会停在旧数字。同 TransferAuthorModal onDone 的理由。
+        onDone={load}
       />
       <TransferAuthorModal
         task={transferTarget}

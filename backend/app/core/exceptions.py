@@ -60,8 +60,14 @@ class BatchRejectedError(RubicError):
     LISTED = 10
 
     def __init__(self, summary: str, rejections: list[dict]):
+        """每条拒绝必须自带 `label`(这一条说的是谁/什么)与 `message`(为什么)。
+
+        **被拒的「单位」由调用方定**:批量交接拒的是任务(`《任务名》`),代订阅拒的是人
+        (姓名)。抬头的拼装留在调用方,本类不认识任何业务字段 —— 否则每加一种批量场景,
+        这里就要多认一个键、多一条回落链。
+        """
         self.rejections = rejections
-        lines = [f"- 《{r['template_name']}》:{r['message']}" for r in rejections[: self.LISTED]]
+        lines = [f"- {r['label']}:{r['message']}" for r in rejections[: self.LISTED]]
         if len(rejections) > self.LISTED:
             lines.append(f"…… 仅列前 {self.LISTED} 条,共 {len(rejections)} 条")
         super().__init__("\n".join([summary, *lines]))

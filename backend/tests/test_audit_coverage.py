@@ -75,6 +75,14 @@ AUDITED: dict[str, frozenset[str]] = {
     # 不对应任何写接口,见 subscription_service.settle_on_success)
     "PUT /api/tasks/{template_id}/subscription": frozenset({A.ACTION_TASK_SUBSCRIBE}),
     "DELETE /api/tasks/{template_id}/subscription": frozenset({A.ACTION_TASK_UNSUBSCRIBE}),
+    # 代订阅:除了订阅本身,给还没查看权的人补的那条 view 也记成一次普通授权 ——
+    # 「这个人的查看权从哪来」要在审计里是一条连续的时间线
+    "POST /api/tasks/{template_id}/subscribers": frozenset(
+        {A.ACTION_TASK_SUBSCRIBE_FOR, A.ACTION_PERMISSION_GRANT}
+    ),
+    "DELETE /api/tasks/{template_id}/subscribers/{user_id}": frozenset(
+        {A.ACTION_TASK_UNSUBSCRIBE_FOR}
+    ),
     "POST /api/admin/users/{user_id}/role": frozenset({A.ACTION_USER_ROLE_CHANGE}),
     "POST /api/datasources": frozenset({A.ACTION_DATASOURCE_CREATE}),
     "PUT /api/datasources/{ds_id}": frozenset({A.ACTION_DATASOURCE_UPDATE}),

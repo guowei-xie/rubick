@@ -127,6 +127,16 @@ export interface SubscriberRow {
   avatar?: string;
   miss_streak: number; // 连续未消费的成功期数
   created_at?: string; // 订阅时间
+  added_by?: number | null; // 代订阅的操作者;空 = 本人自助订阅
+  added_by_name?: string | null;
+}
+/** 代订阅的目标。与授权同一形状:已落库的人传 subject_id,通讯录搜出来的传 open_id + 展示资料
+ *  (邮箱不回传,服务端自己从通讯录取)。 */
+export interface SubscribeForSubject {
+  subject_id?: string;
+  subject_open_id?: string;
+  subject_name?: string;
+  subject_avatar?: string;
 }
 export interface SubscriptionEvent {
   id: number;
@@ -149,6 +159,17 @@ export const taskSubscribers = (id: number) =>
     .then((r) => r.data as { threshold: number; items: SubscriberRow[] });
 export const taskSubscriptionEvents = (id: number) =>
   http.get(`/tasks/${id}/subscription-events`).then((r) => r.data as SubscriptionEvent[]);
+/** 代订阅(全成功才生效)。created/skipped/granted_view 都是 user_id 清单;
+ *  名单本身由调用方重拉 taskSubscribers 刷新,免得行形状在两处各维护一份。 */
+export const subscribeTaskFor = (id: number, subjects: SubscribeForSubject[]) =>
+  http
+    .post(`/tasks/${id}/subscribers`, { subjects })
+    .then(
+      (r) =>
+        r.data as { created: number[]; skipped: number[]; granted_view: number[] }
+    );
+export const removeTaskSubscriber = (id: number, userId: number) =>
+  http.delete(`/tasks/${id}/subscribers/${userId}`).then((r) => r.data);
 export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((r) => r.data);
 
 // ---- query ----
