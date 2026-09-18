@@ -132,6 +132,22 @@
   transform: translateY(-1px);
 }
 
+/* ---------- 申请应用权限:登录按钮下方的次要出口 ----------
+   给被飞书挡在外面的人。刻意不做成按钮:它不该与「飞书登录」争主 CTA 的位置,
+   但也不能低到看不见 —— 走到这一步的人正在找的就是它。 */
+.rk-login-apply {
+  margin-top: 20px;
+  font-size: 13px;
+  color: var(--ink-secondary);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.rk-login-apply:hover,
+.rk-login-apply:focus {
+  color: var(--brand);
+  text-decoration: underline;
+}
+
 /* ---------- 右上角:不显眼的 mock 身份选择入口 ---------- */
 .rk-mock-corner {
   position: fixed;

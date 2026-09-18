@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, message, Select } from "antd";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { feishuCallback, getAuthConfig, mockLogin } from "../api";
+import { AuthConfig, feishuCallback, getAuthConfig, mockLogin } from "../api";
 import { useAuth } from "../auth";
 import "../styles/login.css";
 
@@ -16,7 +16,7 @@ export default function LoginPage() {
   const { setToken, user } = useAuth();
   const nav = useNavigate();
   const [sp] = useSearchParams();
-  const [cfg, setCfg] = useState<any>(null);
+  const [cfg, setCfg] = useState<AuthConfig | null>(null);
   const [openId, setOpenId] = useState("ou_viewer");
   const [loading, setLoading] = useState(false);
   const codeHandled = useRef(false); // 防止 StrictMode 下用同一 code 重复换取(第二次必失败)
@@ -103,6 +103,21 @@ export default function LoginPage() {
           </Button>
         )}
       </div>
+
+      {/* 没有飞书应用权限的人点上面那个按钮会被飞书挡回来,然后就退回到这一页 ——
+          这条链接是他在这一页上唯一能自己走通的路,不必先在通讯录里找到一个已有权限的同事。
+          是链接不是复制:他要的是「点过去申请」,「复制了发给别人」是任务列表页那枚按钮的事。
+          样式次要,不与登录按钮争视线;没配 FEISHU_APP_APPLY_URL 就整行不出现。 */}
+      {cfg?.feishu_apply_url && (
+        <a
+          className="rk-login-apply"
+          href={cfg.feishu_apply_url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          没有权限，登不进去？申请加入这个飞书应用
+        </a>
+      )}
 
       {/* 右上角:仅提供 mock 身份选择,尽量不显眼的开发入口 */}
       {cfg?.mock_auth && (

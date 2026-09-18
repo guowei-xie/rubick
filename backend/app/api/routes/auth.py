@@ -27,14 +27,19 @@ def _me(db: Session, user: User) -> UserOut:
 
 @router.get("/config")
 def auth_config():
-    """前端据此决定展示哪些登录方式。
+    """登录相关的公开配置:怎么登(展示哪些登录方式),以及登不进去时怎么申请权限。
 
     配置了飞书凭证就展示飞书登录;MOCK_AUTH=true 时额外展示 mock 登录(联调期二者并存)。
+
+    申请链接放在这里而不是另开接口:它正是给**还没登录、也登不进来**的人看的,
+    而本接口是全站唯一免鉴权的配置出口。没配就下发 None(不是 ""),
+    让「没配」在前端只有一种形态 —— 界面据此整个隐藏入口,而不是渲一个点了没反应的按钮。
     """
     feishu_ready = bool(settings.FEISHU_APP_ID)
     return {
         "mock_auth": settings.MOCK_AUTH,
         "feishu_authorize_url": feishu_service.build_authorize_url() if feishu_ready else None,
+        "feishu_apply_url": settings.FEISHU_APP_APPLY_URL or None,
     }
 
 

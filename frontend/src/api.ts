@@ -75,7 +75,14 @@ export interface User {
 }
 
 // ---- auth ----
-export const getAuthConfig = () => http.get("/auth/config").then((r) => r.data);
+/** 免鉴权的登录页配置:展示哪些登录方式,以及登不进来时去哪儿申请权限。
+ *  三项都可能是 null —— 没配飞书、没开 mock、没配申请链接,对应的入口就整个不渲染。 */
+export interface AuthConfig {
+  mock_auth: boolean;
+  feishu_authorize_url: string | null;
+  feishu_apply_url: string | null;
+}
+export const getAuthConfig = () => http.get("/auth/config").then((r) => r.data as AuthConfig);
 export const mockLogin = (feishu_open_id: string) =>
   http.post("/auth/mock-login", { feishu_open_id }).then((r) => r.data);
 export const feishuCallback = (code: string) =>

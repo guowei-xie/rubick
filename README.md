@@ -111,6 +111,7 @@ cp backend/config.example.ini backend/config.ini
 - `BACKEND_HOST` / `BACKEND_PORT`:后端监听地址与端口(单端口部署下 SPA 与 `/api` 都走这个端口)。前面挂了反向代理时设成 `127.0.0.1`,不要用 `0.0.0.0` 把端口直接暴露到公网
 - `APP_BASE_URL`:应用对外访问地址(**单一来源**)。本机单端口可留空,自动派生为 `http://localhost:BACKEND_PORT`;独占域名填 `https://rubick.example.com`;挂在网关子路径下则填到子路径为止(如 `https://htba.example.com/rubick`)。`FEISHU_REDIRECT_URI`、`FRONTEND_ORIGIN` 与前端构建的基路径都自动跟随它
 - 接入飞书时:`MOCK_AUTH=false` 并填 `FEISHU_APP_ID/SECRET`;飞书开发者后台的「重定向 URL」需与 `{APP_BASE_URL}/auth/callback` 逐字一致
+- `FEISHU_APP_APPLY_URL`:飞书应用的**分享链接**(在飞书里把本应用分享给别人时拿到的那条 `https://applink.feishu.cn/...`)。没被授予这个应用的人点「飞书登录」会被飞书挡回来,平台这边帮不上忙 —— 填上之后,登录页会多一行自助申请入口(登出也看得到),任务列表页「使用文档」旁会多一枚「申请链接」(仅开发者 / 管理员可见,点一下复制成一整句,粘进聊天框就能发给对方)。留空 = 两处入口都不出现
 - 冷启动管理员:`BOOTSTRAP_ADMINS=你的飞书 open_id`(该账号首次登录自动成为管理员;服务启动时也会对库中已有用户提权一次)。也支持填邮箱,但**推荐 open_id** —— 它是用户表的 upsert 主键、伪造不了,而邮箱是从通讯录补齐进来的普通字段
 - 首次上线后(或刚给飞书应用开通邮箱权限后)跑一次 `python -m app.backfill_user_emails --apply`,给存量用户补齐邮箱;新用户在登录/被授权时会自动补,无需再跑
 

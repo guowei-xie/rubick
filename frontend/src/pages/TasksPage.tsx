@@ -4,6 +4,7 @@ import { Button, Card, Checkbox, Empty, Input, message, Modal, Segmented, Select
 import {
   AppstoreOutlined,
   BookOutlined,
+  CopyOutlined,
   DeleteOutlined,
   PlusOutlined,
   SearchOutlined,
@@ -16,6 +17,7 @@ import {
   authorTransferCandidates,
   BlockedGroup,
   errMsg,
+  getAuthConfig,
   listTasks,
   publishTemplate,
   subscribeTask,
@@ -23,6 +25,8 @@ import {
   unsubscribeTask,
 } from "../api";
 import { hasTeam, isManager as isManagerRole, isPlatformAdmin, useAuth } from "../auth";
+import { applyShareText } from "../applyLink";
+import { copyText } from "../clipboard";
 import TaskEditor from "../components/TaskEditor";
 import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
@@ -151,6 +155,9 @@ export default function TasksPage() {
   const [receiverId, setReceiverId] = useState<number>();
   const [selectedKeys, setSelectedKeys] = useState<number[]>([]);
   const [confirming, setConfirming] = useState(false);
+  // 飞书应用申请链接(后端 /auth/config 下发,没配就是 null)。给「登不进来的同事」用,
+  // 由已经在里面的人复制转发 —— 见下面 extra 里的「申请链接」按钮。
+  const [applyUrl, setApplyUrl] = useState<string | null>(null);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
   const [view, setView] = useState<ViewMode>(() =>
@@ -237,6 +244,15 @@ export default function TasksPage() {
       .finally(() => setLoading(false));
   }, []);
   useEffect(load, []);
+
+  // 申请链接只有管理者用得上,所以也只替他们取一次;取不到就当没配置,**不弹错** ——
+  // 这是个锦上添花的入口,不该为它在任务列表上糊一条红色提示。
+  useEffect(() => {
+    if (!isManager) return;
+    getAuthConfig()
+      .then((c) => setApplyUrl(c.feishu_apply_url))
+      .catch(() => {});
+  }, [isManager]);
 
   // 从通知深链进来(/tasks?records=<taskId>&job=<jobId>):任务加载后打开对应运行记录抽屉,
   // 并清掉参数。job 可选,用来把通知说的那一次运行高亮出来(定时运行攒了几十期时,
@@ -578,6 +594,29 @@ export default function TasksPage() {
           使用文档
         </Button>
       </Tooltip>
+      {/* 申请链接:发给还没有飞书应用权限、因而卡在登录页外面的同事 —— 他连登录页的按钮都
+          点不通,平台这边看到的只是「他没登录」,唯一能帮上忙的就是把这条链接发过去。
+          门控 isManager:「把人拉进来」与新建 / 授权是同一类职能。
+          没配 applyUrl(或还没取回来)就整个不渲染,而不是留一个点了没反应的按钮。
+          文案只写「申请链接」不写「复制」:与旁边「使用文档」齐平,动作由图标与 Tooltip 说。 */}
+      {isManager && applyUrl && (
+        <Tooltip title="复制飞书应用的申请链接,发给还没有权限、登不进来的同事(复制的是一整句,粘进聊天框即可)">
+          <Button
+            type="text"
+            icon={<CopyOutlined />}
+            style={{ color: "var(--ink-secondary)" }}
+            onClick={async () => {
+              // 成功与否由 copyText 返回(它为什么必须返回布尔,见 clipboard.ts):
+              // **不许无条件报成功**;失败也要把链接念出来,否则用户没有第二条路。
+              (await copyText(applyShareText(applyUrl)))
+                ? message.success("已复制申请链接,粘给需要权限的同事即可")
+                : message.error(`复制失败,请手动复制:${applyUrl}`);
+            }}
+          >
+            申请链接
+          </Button>
+        </Tooltip>
+      )}
       {/* 批量交接:门不是光 isManager,还要**手上确实有能处分的任务** —— 一个没有任何
           可转移任务的开发者不该看到一个点进去必然空手而归的入口。判据用服务端下发的
           can_transfer_author(与 ⋮ 菜单那一项同一个布尔),用 tasks 而不是 filtered,

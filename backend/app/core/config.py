@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     FEISHU_APP_SECRET: str = ""
     # 飞书 OAuth 回调地址;留空则自动派生为 {APP_BASE_URL}/auth/callback
     FEISHU_REDIRECT_URI: str = ""
+    # 飞书应用的「分享给他人」链接(applink.feishu.cn/...)。没被授予这个应用的人点飞书登录
+    # 会被飞书挡在外面,平台这边只看得到「他没登录」,给不了任何指引 —— 所以要有一条能发给
+    # 他、也能让他自己点过去的申请入口。
+    # 随飞书应用而变(换应用、换租户就换一条),所以它是配置,而不是像手册地址那样的前端常量。
+    # 留空 = 界面上不出现任何申请入口(而不是给一个点了没反应的按钮)。
+    FEISHU_APP_APPLY_URL: str = ""
 
     # ---- 数据产物落地(本地文件系统)----
     # 平台**所有**数据产物的根目录:取数结果 CSV 在 `results/`,维护脚本的行级备份在
