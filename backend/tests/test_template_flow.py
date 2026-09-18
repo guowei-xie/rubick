@@ -100,6 +100,49 @@ def test_edit_draft_stays_draft(db, admin, ds, team):
     assert tmpl.status == STATUS_DRAFT and tmpl.published_version_id is None
 
 
+def _draft(db, admin, ds, team, name: str):
+    return template_service.create_template(
+        db, admin,
+        TemplateCreateIn(
+            name=name, team_id=team.id, datasource_id=ds.id,
+            sql_text="SELECT * FROM o WHERE d = :d", params=[ParamDef(name="d")],
+        ),
+    )
+
+
+def test_draft_can_be_archived_and_unarchived(db, admin, ds, team):
+    """草稿也能进回收站,并且能原样退回草稿 —— 任务不可删,废弃的草稿否则无处可去。"""
+    tmpl = _draft(db, admin, ds, team, "草稿进回收站")
+    template_service.archive(db, tmpl)
+    assert tmpl.status == STATUS_ARCHIVED and tmpl.published_version_id is None
+
+    template_service.unarchive(db, tmpl)
+    assert tmpl.status == STATUS_DRAFT
+    # 退回草稿不上线:业务侧仍不可运行,也没有已发布版本
+    assert tmpl.published_version_id is None
+
+
+def test_unarchive_rejects_non_archived(db, admin, ds, team):
+    """草稿/已上线任务不能「退回草稿」:那是回收站专用的出口,放行会让已上线任务被悄悄下线。"""
+    tmpl = _draft(db, admin, ds, team, "非回收站退回")
+    with pytest.raises(RubicError):
+        template_service.unarchive(db, tmpl)
+    assert tmpl.status == STATUS_DRAFT
+
+    template_service.publish(db, tmpl, admin, note="上线")
+    with pytest.raises(RubicError):
+        template_service.unarchive(db, tmpl)
+    assert tmpl.status == STATUS_PUBLISHED
+
+
+def test_archived_draft_can_still_be_published(db, admin, ds, team):
+    """回收站的另一个出口对草稿同样成立:创建时就有 version_no=1,不会撞上「没有可上线的版本」。"""
+    tmpl = _draft(db, admin, ds, team, "草稿回收站直接上线")
+    template_service.archive(db, tmpl)
+    template_service.publish(db, tmpl, admin, note="回收站重新上线")
+    assert tmpl.status == STATUS_PUBLISHED and tmpl.published_version_id is not None
+
+
 def test_publish_without_version_raises(db, admin, ds, team):
     from app.models.template import SqlTemplate
 

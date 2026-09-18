@@ -234,6 +234,9 @@ def publish(db: Session, tmpl: SqlTemplate, publisher: User, note: str | None) -
 
 
 def archive(db: Session, tmpl: SqlTemplate) -> None:
+    """收进回收站。**草稿也能进** —— 回收站是「不在台面上的任务」的统一去处,不只是
+    已上线任务的下线站;否则一个废弃的草稿除了留在列表里碍眼之外没有任何出路(任务不可删)。
+    对草稿而言 published_version_id 本来就是 None,这里的清空是幂等的。"""
     tmpl.status = STATUS_ARCHIVED
     tmpl.published_version_id = None
     db.commit()
@@ -244,6 +247,19 @@ def archive(db: Session, tmpl: SqlTemplate) -> None:
         subs = subscription_service.subscribers_of(db, tmpl.id)
         if subs:
             notify_service.notify_subscription_paused(db, tmpl, [s.user_id for s in subs])
+
+
+def unarchive(db: Session, tmpl: SqlTemplate) -> None:
+    """从回收站退回草稿 —— 回收站的第二个出口(另一个是 publish 的「重新上线」)。
+
+    只改状态:**不发通知**。订阅者关心的是「还推不推」,而退回草稿之后照样不推
+    (调度扫描只认 published),对他们来说什么都没发生;真正该通知的那一刻是 archive
+    和重新 publish,已经各自发过了。
+    """
+    if tmpl.status != STATUS_ARCHIVED:
+        raise RubicError("只有回收站里的任务才能退回草稿")
+    tmpl.status = STATUS_DRAFT
+    db.commit()
 
 
 # ---------------------------------------------------------------- 转移作者(离职交接)

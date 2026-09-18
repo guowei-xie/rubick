@@ -19,12 +19,18 @@ from app.api.routes.datasources import (
 )
 from app.api.routes.permissions import grant as grant_route
 from app.api.routes.permissions import revoke as revoke_route
-from app.api.routes.templates import archive, create_template, publish, update_template
+from app.api.routes.templates import (
+    archive,
+    create_template,
+    publish,
+    unarchive,
+    update_template,
+)
 from app.main import app
 from app.models import audit as A
 from app.models.audit import AuditLog
 from app.models.datasource import DataSource
-from app.models.template import STATUS_ARCHIVED, STATUS_PUBLISHED, SqlTemplate
+from app.models.template import STATUS_ARCHIVED, STATUS_DRAFT, STATUS_PUBLISHED, SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, User
 from app.schemas.datasource import DataSourceIn, DataSourceUpdateIn
 from app.schemas.permission import GrantIn
@@ -44,6 +50,9 @@ AUDITED: dict[str, frozenset[str]] = {
         {A.ACTION_TASK_PUBLISH, A.ACTION_TASK_RESTORE}
     ),
     "POST /api/templates/{template_id}/archive": frozenset({A.ACTION_TASK_ARCHIVE}),
+    # 回收站的另一个出口(退回草稿)。与「重新上线」分两个码:一个把任务放回业务面前,
+    # 一个只把它捡回作者的工作台,审计上必须分得开
+    "POST /api/templates/{template_id}/unarchive": frozenset({A.ACTION_TASK_UNARCHIVE}),
     # 业务用户手动更新共享枚举候选值:会改动该任务所有人看到的候选,值本身不进 detail
     "POST /api/tasks/{template_id}/enum-values/refresh": frozenset(
         {A.ACTION_TASK_ENUM_REFRESH}
@@ -258,6 +267,25 @@ def test_publish_then_archive_then_restore_are_distinct_actions(db, admin, ds, t
     row = _one_new_row(db, since)
     assert row.action == A.ACTION_TASK_RESTORE
     assert row.detail["from_status"] == STATUS_ARCHIVED
+
+
+def test_unarchive_is_a_distinct_action_from_restore(db, admin, ds, team):
+    """草稿进回收站再退回来:两条痕都不能与「上线 / 重新上线」混为一谈 ——
+    审计页要答得出「这个任务是被放给业务了,还是只是被捡回去接着改」。"""
+    tmpl = _make_task(db, admin, ds, team, name="草稿回收站往返")
+
+    since = _max_audit_id(db)
+    archive(tmpl.id, db, admin, ip=None)  # 从未上线过的草稿,同样能进回收站
+    row = _one_new_row(db, since)
+    assert row.action == A.ACTION_TASK_ARCHIVE
+    assert row.detail["from_status"] == STATUS_DRAFT
+
+    since = _max_audit_id(db)
+    unarchive(tmpl.id, db, admin, ip=None)
+    row = _one_new_row(db, since)
+    assert row.action == A.ACTION_TASK_UNARCHIVE
+    assert row.detail["from_status"] == STATUS_ARCHIVED
+    assert tmpl.status == STATUS_DRAFT
 
 
 def test_permission_grant_and_revoke_are_audited(db, admin, ds, team):

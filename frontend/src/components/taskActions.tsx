@@ -20,7 +20,8 @@ export type TaskHandlers = {
   onGrant: (r: any) => void;
   onRecords: (r: any) => void;
   onPublish: (r: any) => void;
-  onArchive: (r: any) => void;
+  onArchive: (r: any) => void; // 收进回收站(已上线叫「下线」、草稿叫「移入回收站」)
+  onUnarchive: (r: any) => void; // 回收站 → 草稿(另一个出口是 onPublish 的「重新上线」)
   onSubscribeToggle: (r: any) => void; // 订阅/退订(按 r.subscribed 二态)
   onSubscribers: (r: any) => void; // 订阅者名单与订阅记录(can_manage)
   // 转移作者(离职交接)。门是 can_transfer_author 而**不是** can_manage:
@@ -32,8 +33,37 @@ export type TaskHandlers = {
  *  但在 React 树里仍是本卡/本行的子节点,合成事件照样冒泡,所以要拦在宿主之前。 */
 export const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+/** 生命周期动作(仅 can_manage)。**三个状态各自给全出口**,而不是「上线/下线」二选一:
+ *
+ *  - 已上线 → 下线
+ *  - 草稿   → 上线 / 移入回收站
+ *  - 回收站 → 恢复为草稿 / 重新上线
+ *
+ *  草稿也能进回收站:任务不可删,一个废弃的草稿否则只能永远留在列表里。而回收站里给两个
+ *  出口是因为进去之后**无法区分**它原本是草稿还是已上线(status 只有一列,
+ *  published_version_id 在下线时已清空),所以由操作者说了算,而不是替他猜 ——
+ *  猜错的代价是把一个半成品直接放给业务用户。
+ *
+ *  进出的每一种都是独立的审计动作码(task_archive / task_restore / task_unarchive)。 */
+function lifecycleItems(r: any, h: TaskHandlers): any[] {
+  if (r.status === "published") {
+    return [{ key: "archive", label: "下线", danger: true, onClick: () => h.onArchive(r) }];
+  }
+  if (r.status === "archived") {
+    return [
+      { key: "unarchive", label: "恢复为草稿", onClick: () => h.onUnarchive(r) },
+      { key: "publish", label: "重新上线", onClick: () => h.onPublish(r) },
+    ];
+  }
+  return [
+    { key: "publish", label: "上线", onClick: () => h.onPublish(r) },
+    // 草稿从未上线过,说「下线」是假话:按去处命名
+    { key: "archive", label: "移入回收站", danger: true, onClick: () => h.onArchive(r) },
+  ];
+}
+
 /** ⋮ 菜单项:运行记录(所有人)+ 订阅相关 + 管理项(仅 can_manage)/只读查看(仅 can_view_detail)。
- *  动作动词三分:已上线→下线、已下线→重新上线、草稿→上线。 */
+ *  生命周期动作按状态整组给出,见 lifecycleItems。 */
 export function taskMenuItems(r: any, h: TaskHandlers): any[] {
   const items: any[] = [{ key: "records", label: "运行记录", onClick: () => h.onRecords(r) }];
   // 已订阅的人永远能退订(哪怕任务已下线/权限被撤);未订阅的按服务端算好的 can_subscribe 显示
@@ -46,13 +76,7 @@ export function taskMenuItems(r: any, h: TaskHandlers): any[] {
     items.push(
       { type: "divider" },
       { key: "edit", label: "编辑", onClick: () => h.onEdit(r) },
-      r.status === "published"
-        ? { key: "archive", label: "下线", danger: true, onClick: () => h.onArchive(r) }
-        : {
-            key: "publish",
-            label: r.status === "archived" ? "重新上线" : "上线",
-            onClick: () => h.onPublish(r),
-          }
+      ...lifecycleItems(r, h)
     );
     if (r.subscribe_enabled) {
       items.push({ key: "subscribers", label: "订阅者名单", onClick: () => h.onSubscribers(r) });

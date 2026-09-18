@@ -18,6 +18,7 @@ import {
   listTasks,
   publishTemplate,
   subscribeTask,
+  unarchiveTemplate,
   unsubscribeTask,
 } from "../api";
 import { hasTeam, isManager as isManagerRole, isPlatformAdmin, useAuth } from "../auth";
@@ -248,15 +249,40 @@ export default function TasksPage() {
     setSp(sp, { replace: true });
   }, [tasks]);
 
-  const doArchive = useCallback((row: any) =>
+  // 收进回收站。草稿与已上线是**同一个接口、两套说法**:草稿从来就不可运行,
+  // 跟它说「下线后业务用户不能再运行」是句假话,只会让人以为自己弄坏了什么。
+  const doArchive = useCallback((row: any) => {
+    const draft = row.status !== "published";
     Modal.confirm({
-      title: `下线任务「${row.name}」?`,
-      content: "下线后业务用户将不能再运行该任务。",
+      title: draft ? `把草稿「${row.name}」移入回收站?` : `下线任务「${row.name}」?`,
+      content: draft
+        ? "草稿本来就不可运行,移入回收站只是把它从任务列表收起来。之后可以在回收站里恢复为草稿。"
+        : "下线后业务用户将不能再运行该任务。",
+      okText: draft ? "移入回收站" : "下线",
       onOk: () => archiveTemplate(row.id).then(load),
+    });
+  }, [load]);
+
+  // 回收站的另一个出口:退回草稿。成功后这一行会**从回收站视图里消失**(它不再是 archived),
+  // 所以必须给一句话说明它去哪了 —— 否则看起来像「点了一下任务就没了」。
+  const doUnarchive = useCallback((row: any) =>
+    Modal.confirm({
+      title: `把「${row.name}」恢复为草稿?`,
+      content: "恢复后它回到任务列表的草稿里,业务用户仍不可运行;要对业务开放请用「重新上线」。",
+      okText: "恢复为草稿",
+      onOk: async () => {
+        try {
+          await unarchiveTemplate(row.id);
+          message.success(`「${row.name}」已恢复为草稿,可在任务列表里继续编辑`);
+          load();
+        } catch (e: any) {
+          message.error(errMsg(e, "恢复为草稿失败"));
+        }
+      },
     }), [load]);
 
   const doPublish = useCallback((row: any) => {
-    const restore = row.status === "archived"; // 回收站里的下线任务:恢复=重新上线
+    const restore = row.status === "archived"; // 回收站里的任务:恢复=重新上线
     Modal.confirm({
       title: `${restore ? "重新上线" : "上线"}任务「${row.name}」?`,
       content: `${restore ? "重新上线" : "上线"}后,被授权的业务用户即可运行该任务的最新版本。`,
@@ -527,11 +553,12 @@ export default function TasksPage() {
       onRecords: (r) => setRecords({ task: r, jobId: null }),
       onPublish: doPublish,
       onArchive: doArchive,
+      onUnarchive: doUnarchive,
       onSubscribeToggle: doSubscribeToggle,
       onSubscribers: setSubscribersTarget,
       onTransferAuthor: setTransferTarget,
     }),
-    [doPublish, doArchive, doSubscribeToggle]
+    [doPublish, doArchive, doUnarchive, doSubscribeToggle]
   );
 
   // 视图切换对所有人可见(普通用户任务少也照样有人偏好列表);回收站与新建仍限管理者。
@@ -581,7 +608,7 @@ export default function TasksPage() {
       </Tooltip>
       {isManager && (
         <>
-          <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线任务)"}>
+          <Tooltip title={showRecycle ? "返回任务列表" : "回收站(已下线的任务与收起来的草稿)"}>
             <Button
               shape="circle"
               icon={<DeleteOutlined />}
@@ -622,7 +649,8 @@ export default function TasksPage() {
           <span style={{ fontSize: 22, fontWeight: 700 }}>{showRecycle ? "回收站" : "任务列表"}</span>
           {showRecycle ? (
             <span style={{ fontSize: 13, color: "var(--ink-secondary)" }}>
-              <b style={{ color: "var(--ink)" }}>{summary.archived}</b> 个已下线任务
+              {/* 不说「已下线」:回收站里也有从未上线过、被作者收起来的草稿 */}
+              <b style={{ color: "var(--ink)" }}>{summary.archived}</b> 个任务在回收站
             </span>
           ) : (
             <Space size={8} style={{ fontSize: 13, fontWeight: 400 }}>

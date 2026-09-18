@@ -11,6 +11,7 @@ from app.models.audit import (
     ACTION_TASK_CREATE,
     ACTION_TASK_PUBLISH,
     ACTION_TASK_RESTORE,
+    ACTION_TASK_UNARCHIVE,
     ACTION_TASK_UPDATE,
 )
 from app.models.permission import RESOURCE_TEMPLATE
@@ -213,6 +214,8 @@ def archive(
     template_id: int, db: Session = Depends(get_db),
     user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
 ):
+    """收进回收站(UI 里已上线任务叫「下线」、草稿叫「移入回收站」)。
+    **不限状态**:草稿同样能进 —— 见 template_service.archive。"""
     tmpl = _load(db, template_id)
     _require_can_edit(db, tmpl, user)
     before_status = tmpl.status
@@ -223,6 +226,24 @@ def archive(
         db, user, ip, tmpl, ACTION_TASK_ARCHIVE,
         {"from_status": before_status, "unpublished_version_id": before_version_id},
     )
+    return {"status": tmpl.status}
+
+
+@router.post("/{template_id}/unarchive")
+def unarchive(
+    template_id: int, db: Session = Depends(get_db),
+    user: User = Depends(require_task_author), ip: str | None = Depends(client_ip),
+):
+    """从回收站退回草稿(UI 里的「恢复为草稿」)。
+
+    与 publish 的「重新上线」是回收站的两个出口,动作码也分两个:这条**不让任务对业务
+    可运行**,所以也不必过 credential_service 那道取数账号卡点 —— 捡回一个半成品接着改,
+    不该被「团队还没登记取数账号」挡住。
+    """
+    tmpl = _load(db, template_id)
+    _require_can_edit(db, tmpl, user)
+    template_service.unarchive(db, tmpl)
+    _audit(db, user, ip, tmpl, ACTION_TASK_UNARCHIVE, {"from_status": STATUS_ARCHIVED})
     return {"status": tmpl.status}
 
 

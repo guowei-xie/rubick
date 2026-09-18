@@ -29,6 +29,10 @@ ACTION_TASK_UPDATE = "task_update"
 ACTION_TASK_PUBLISH = "task_publish"
 ACTION_TASK_ARCHIVE = "task_archive"
 ACTION_TASK_RESTORE = "task_restore"
+# 从回收站退回草稿。与 task_restore 是回收站的两个不同出口:那个让任务重新对业务可运行,
+# 这个只把它捡回作者的工作台(仍不可运行)。合成一个码的话,审计上就分不出
+# 「谁把一个下线任务重新放了出去」与「谁只是把它捡回去继续改」
+ACTION_TASK_UNARCHIVE = "task_unarchive"
 # 业务用户手动更新某个值列表变量的共享候选值(会改动该任务所有人看到的候选)
 ACTION_TASK_ENUM_REFRESH = "task_enum_refresh"
 
@@ -102,6 +106,7 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_PUBLISH: ("任务上线", GROUP_TASK),
     ACTION_TASK_ARCHIVE: ("任务下线(进回收站)", GROUP_TASK),
     ACTION_TASK_RESTORE: ("任务从回收站恢复", GROUP_TASK),
+    ACTION_TASK_UNARCHIVE: ("任务从回收站退回草稿", GROUP_TASK),
     ACTION_TASK_ENUM_REFRESH: ("更新枚举候选值", GROUP_TASK),
     ACTION_TASK_TEAM_TRANSFER: ("转移任务所属团队", GROUP_TASK),
     ACTION_TASK_AUTHOR_TRANSFER: ("转移任务作者", GROUP_TASK),

@@ -91,6 +91,10 @@ export const publishTemplate = (id: number, note?: string) =>
   http.post(`/templates/${id}/publish`, { note }).then((r) => r.data);
 export const archiveTemplate = (id: number) =>
   http.post(`/templates/${id}/archive`).then((r) => r.data);
+// 回收站 → 草稿。与「重新上线」(publishTemplate)是回收站的两个出口,故意分两个接口:
+// 这条不让任务对业务可运行,也不过取数账号卡点
+export const unarchiveTemplate = (id: number) =>
+  http.post(`/templates/${id}/unarchive`).then((r) => r.data);
 export const testRun = (data: any) => http.post("/templates/test-run", data).then((r) => r.data);
 // SQL 预览:代入当前测试值渲染即将执行的 SQL(不执行),未填变量原样保留 :变量
 export const previewSql = (data: { sql_text: string; params: any[]; values: any }) =>
