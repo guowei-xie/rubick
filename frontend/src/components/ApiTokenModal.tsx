@@ -1,15 +1,10 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Input, Modal, Popconfirm, Space, Typography, message } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
-import {
-  ApiTokenInfo,
-  createApiToken,
-  errMsg,
-  getApiToken,
-  revokeApiToken,
-} from "../api";
+import { ApiTokenInfo, errMsg, getApiToken, revokeApiToken } from "../api";
 import { copyText } from "../clipboard";
 import { fmtTime } from "../format";
+import { useApiTokenIssue } from "./useApiTokenIssue";
 
 /** 开放 API 的个人凭证管理(头像下拉 → API Token)。
  *
@@ -26,9 +21,9 @@ export default function ApiTokenModal({
 }) {
   const [info, setInfo] = useState<ApiTokenInfo | null>(null);
   const [loading, setLoading] = useState(false);
-  const [acting, setActing] = useState(false);
-  // 刚拿到的明文:只在本次弹窗会话内存在,关掉即清
-  const [freshToken, setFreshToken] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState(false);
+  // 签发流程(含「刚拿到的明文只活一次弹窗会话」)与 Agent Skill 弹窗共用一处
+  const { freshToken, issuing, issue, reset } = useApiTokenIssue();
 
   const load = () => {
     setLoading(true);
@@ -40,27 +35,12 @@ export default function ApiTokenModal({
 
   useEffect(() => {
     if (!open) return;
-    setFreshToken(null);
+    reset();
     load();
   }, [open]);
 
-  // 生成与重置是同一个端点(POST 语义即「给我一个新的,旧的作废」),区别只在入口按钮与确认文案
-  const doCreate = async () => {
-    setActing(true);
-    try {
-      const r = await createApiToken();
-      // 只置 freshToken:渲染立刻切到「一次性明文」分支,而回到状态视图的唯一路径是
-      // 关窗重开,那时 useEffect 会重新 load() —— 在这里顺手推一份 info 观察不到
-      setFreshToken(r.token);
-    } catch (e: any) {
-      message.error(errMsg(e, "生成 API Token 失败"));
-    } finally {
-      setActing(false);
-    }
-  };
-
   const doRevoke = async () => {
-    setActing(true);
+    setRevoking(true);
     try {
       await revokeApiToken();
       message.success("API Token 已吊销");
@@ -69,7 +49,7 @@ export default function ApiTokenModal({
     } catch (e: any) {
       message.error(errMsg(e, "吊销 API Token 失败"));
     } finally {
-      setActing(false);
+      setRevoking(false);
     }
   };
 
@@ -124,9 +104,9 @@ export default function ApiTokenModal({
                   description="将生成新 Token,旧 Token 立即失效"
                   okText="重置"
                   cancelText="取消"
-                  onConfirm={doCreate}
+                  onConfirm={issue}
                 >
-                  <Button loading={acting}>重置</Button>
+                  <Button loading={issuing}>重置</Button>
                 </Popconfirm>
                 <Popconfirm
                   title="吊销 API Token?"
@@ -136,7 +116,7 @@ export default function ApiTokenModal({
                   cancelText="取消"
                   onConfirm={doRevoke}
                 >
-                  <Button danger loading={acting}>
+                  <Button danger loading={revoking}>
                     吊销
                   </Button>
                 </Popconfirm>
@@ -145,10 +125,11 @@ export default function ApiTokenModal({
           ) : (
             <>
               <Typography.Text type="secondary">
-                还没有 API Token。生成后可在「使用文档」旁的 Agent Skill 配合下,通过开放 API
-                触发已允许 API 调用的任务运行。
+                还没有 API Token。生成后即可通过开放 API 触发已允许 API 调用的任务运行。
+                若是要交给自己的 AI Agent,走任务列表页右上的「Agent Skill」更省事 ——
+                那里一次给齐安装指令与 Token。
               </Typography.Text>
-              <Button type="primary" loading={loading || acting} onClick={doCreate}>
+              <Button type="primary" loading={loading || issuing} onClick={issue}>
                 生成 Token
               </Button>
             </>

@@ -599,9 +599,9 @@ export default function TasksPage() {
           使用文档
         </Button>
       </Tooltip>
-      {/* Agent Skill:点击弹出安装指令面板(展示待复制内容,取消/复制二选一)。
-          指令里的地址与安装闭环为什么这样设计,见 AgentSkillModal 的 docstring。 */}
-      <Tooltip title="获取一句安装指令,粘贴给你的 AI Agent 即可自动安装(rubick-skill)">
+      {/* Agent Skill:弹出安装指令面板,可顺手签一枚 API Token 附进去。
+          设计理由见 AgentSkillModal 的 docstring。 */}
+      <Tooltip title="获取一句安装指令,粘贴给你的 AI Agent 即可自动安装(rubick-skill);可一并附上你的 API Token,Agent 装完就能取数">
         <Button
           type="text"
           icon={<RobotOutlined />}

@@ -5,16 +5,21 @@ description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取
 
 # Rubick 取数技能
 
-> **如果你是被用户派来安装本 skill 的 AI Agent**：把本文件保存为你的 skill 目录下的 `rubick-skill/SKILL.md`（具体位置按你宿主的 skill 规范，如 `~/.agents/skills/rubick-skill/SKILL.md`），保存即完成安装，然后按正文指引使用；装好后主动向用户确认一次 `BASE_URL` 与 API Token 的配置方式（建议环境变量 `RUBICK_BASE_URL` / `RUBICK_TOKEN`）。
+> **如果你是被用户派来安装本 skill 的 AI Agent**：把本文件保存为你的 skill 目录下的 `rubick-skill/SKILL.md`（具体位置按你宿主的 skill 规范，如 `~/.agents/skills/rubick-skill/SKILL.md`），保存即完成安装，然后照下面的「前置」把地址与 Token 配好即可开工。
 
 ## 用途
 
 Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，业务填参数即可取数。本 skill 教你调用它的开放 API，代替用户在网页上的手工操作：**找到任务 → 填参触发 → 轮询等待 → 预览 / 下载结果**。
 
-## 前置：先向用户要到两样东西
+## 前置：两样东西
 
-1. **平台地址** `BASE_URL`（如 `https://rubick.example.com`，不含尾部斜杠）；
-2. **API Token**（形如 `rk_...`，用户在 Rubick 界面「API Token」入口生成，每人一个，可重置 / 吊销）。
+1. **平台地址** `BASE_URL`（如 `https://rubick.example.com`，不含尾部斜杠）。
+   **本文件的下载地址去掉结尾的 `/rubick-skill.md`，就是 `BASE_URL`**——构造上恒成立，
+   子路径部署（形如 `https://host/rubick`）也照此推导，别自作主张只取域名；
+2. **API Token**（形如 `rk_...`，每人一个，可重置 / 吊销；向用户索要）。
+
+**这两样通常已经写在派你来的那句安装指令里**，直接采用、写进环境变量即可，
+**不要再回头问用户**；只有确实缺了哪一样，才向他要缺的那样。
 
 所有请求带请求头：`Authorization: Bearer rk_...`。
 建议从环境变量读取（`RUBICK_BASE_URL` / `RUBICK_TOKEN`），**不要把 token 写进代码、日志或发给任何第三方**——token 即用户本人身份。
