@@ -61,6 +61,17 @@
 
 ![审计日志](docs/assets/manual-audit.png)
 
+**开放 API 与 Agent Skill** —— 取数结果不再只能从网页界面拿:每人在头像菜单里生成一枚
+**API Token**(形如 `rk_...`,只显示一次,可随时重置 / 吊销),脚本与 AI Agent 就能
+列任务 → 填参触发 → 轮询 → 下载 CSV。**token 即本人身份**:API 下能看、能跑、能下载的
+与他在网页上完全一致,没有任何放大;任务还要由编辑者显式打开「允许 API 调用」这道运行闸
+才可被触发(开关不授予任何人权限,只决定这个任务允不允许走 API)。
+API 触发的运行在运行记录里标 `source=api`、审计带 `via=api`,与网页取数分得开。
+
+给 Agent 接入不必读文档:任务列表页右上「Agent Skill」给出一句话,粘贴给自己的 AI Agent
+即可 —— 它会去 `/rubick-skill.md` 自取技能文件并装好。
+接口契约(逐字段表、错误码、限流)见 [docs/open-api.md](./docs/open-api.md)。
+
 > 以上截图取自演示实例,数据均为合成示例值。
 > **需要完整操作说明**(登录、权限、参数填写、运行记录与通知、管理员页面、口径限制、FAQ)请看用户手册:
 > [docs/user-manual.md](./docs/user-manual.md) ·

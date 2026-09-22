@@ -622,9 +622,9 @@
 
 | 端点 | 干什么 |
 |---|---|
-| `GET /api/v1/tasks` | 我可见的任务数组，含参数定义 `params` 与 `can_run` / `can_download` / `allow_api` |
+| `GET /api/v1/tasks` | 我可见的任务数组，含参数定义 `params`（带共享候选值 `enum`）与 `can_run` / `can_download` / `allow_api` |
 | `POST /api/v1/tasks/{id}/runs` | 填参触发一次运行，立即返回 job |
-| `GET /api/v1/runs` | 我的运行记录列表 |
+| `GET /api/v1/runs` | 我看得见的运行记录列表（口径同网页，不只有本人发起的） |
 | `GET /api/v1/runs/{job_id}` | 单个 job：`status`（`queued/running/success/failed`）、`queue_ahead` 排队位次等 |
 | `GET /api/v1/runs/{job_id}/preview` | 表头 + 前 50 行 |
 | `GET /api/v1/runs/{job_id}/result` | 下载完整 CSV（`text/csv`） |
@@ -633,14 +633,19 @@
   排队时 `queue_ahead` 给出前面还有几个（口径与 [JobOut](../backend/app/schemas/query.py) 一致：
   仅 `queued` 时有值）。
 - **限流 120 请求/分钟/token**（`rate_limit` 按 token 计数），超限 429，调用方应退避重试。
-- 结果文件**保留 7 天**，与网页同一口径，过期后 `result` / `preview` 不可用，需重跑。
+- 结果文件**保留 7 天**，与网页同一口径，过期后 `result` / `preview` 返回 **404**（`ResultExpiredError`），需重跑。
 
 ### 11.3 对任务作者的两条口径
 
 1. **`allow_api` 是运行闸，不是授权。** 任务上的这个开关只决定「允不允许被 API 触发」，
    关掉后即使调用者有运行权限也一律 403。它**不放宽任何权限** —— 能跑的人仍然是你在卡片
    **+** 里授权过的那些（见[第 7 章](#7-给业务同学授权)）。想让一个任务能被 Agent 调用，
-   两件事都要做：打开 `allow_api`，并给调用者本人授权「运行」（下载结果另需「下载」）。
+   两件事都要做：打开 `allow_api`，并给调用者本人授权「运行」。
+   **下载结果另需「下载」授权**：这道闸在 `permission_service.can_download_job`，界面与
+   开放 API 共用（都走 `query_service.assert_downloadable`），没有授权就是 403 ——
+   它刻意**不认「这条运行是我自己跑的」**，否则任何有运行权限的人跑一次就绕过去了。
+   例外只有一个：订阅推送给某人的那几期结果，他不必再被授权「下载」（订阅就是「定期送你
+   这份结果」的承诺，代订阅只补 view 是刻意的，见 `permission_service.grant_view`）。
 2. **API 触发的运行记 `source='api'`**，与网页正式取数（`run`）、试跑（`test`）、
    订阅定时（`subscribe`）区分开；审计里对应记录带 `via=api` 标记。业务说「我没跑过这个」时，
    先看这条运行是不是从 API 进来的。
@@ -650,6 +655,12 @@
 - 路由：`/api/v1` 一组独立路由，只挂 token 鉴权，不复用网页会话。
 - 依赖：`get_api_user` 解析 token → 用户；任务列表、运行权限、下载权限复用既有
   permission / template / query service，**不在 API 层重写权限规则**。
+- 对外形状：`schemas/v1.py` 的 `V1TaskOut` / `V1ParamOut` / `V1JobOut` 是**投影类**，
+  不复用内部 `ParamDef` / `JobOut`——内部模型会随编辑器、执行器的需要长字段，直接外抛
+  等于让每次内部改动都成为一次对外契约变更（曾因此把 `enum_sql`、`executed_sql`、
+  他人运行的入参原文发给了纯业务身份的 token）。改 v1 的响应字段时改这三个类，
+  别把内部模型接上去。
+- 共享候选值：`enum_cache_service.read_bulk` 一次查询批量取回，只给 `can_run` 的任务带。
 - token 存储：SHA-256 哈希列 + 吊销标记，明文不落库。
 - 限流：`rate_limit`（阈值见 [12.1 口径速查](#121-口径速查代码默认值管理员可在部署配置里调整)），超限 429。
 - 审计与来源：`submit_query` / `run_query` / `download` 带 `via=api` 标记；

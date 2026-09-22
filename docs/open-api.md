@@ -33,7 +33,9 @@ Authorization: Bearer rk_...
 | `id` | int | 任务编号（与界面上的 `#128` 是同一个数） |
 | `name` | string | 任务名（可重名，定位请用 `id`） |
 | `description` | string \| null | 任务说明（口径、时间范围限制等） |
-| `team` | string | 所属团队名 |
+| `team_id` | int \| null | 所属团队编号 |
+| `team_name` | string \| null | 所属团队名 |
+| `status` | string | `draft` 草稿 / `published` 已上线 / `archived` 已下线（回收站） |
 | `params` | array | 参数定义数组，见下表 |
 | `can_run` | bool | 我是否有运行权限（任务已上线且被授权「运行」） |
 | `can_download` | bool | 我是否有下载权限 |
@@ -47,7 +49,12 @@ Authorization: Bearer rk_...
 | `kind` | string | `single` 单值 / `list` 值列表 |
 | `value_type` | string | `text` 文本 / `number` 数值 |
 | `label` | string \| null | 参数说明，格式提示通常写在这里（如「开始日期（格式 yyyy-mm-dd）」） |
-| `enum` | array | 共享候选值（仅配了枚举 SQL 的 list 参数给出）；候选之外的值也允许提交 |
+| `enum` | string[] | 共享候选值（仅配了枚举 SQL 的 list 参数给出）；候选之外的值也允许提交 |
+
+关于 `enum`：**只对 `can_run=true` 的任务给出**——跑不了的任务，候选值对你没有用处，
+而这个端点一次返回你可见的全部任务，候选值按「任务数 × 值列表变量数 × 每变量上千个值」
+增长。空数组有三种来源，对你来说下一步都一样（问用户要值）：这个变量没配枚举 SQL、
+从来没人采集过候选、作者改了枚举 SQL 或换了数据源使旧候选作废。
 
 ### 3.2 `POST /api/v1/tasks/{id}/runs` —— 触发一次运行
 
@@ -86,10 +93,13 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 | `source` | string | 触发来源：API 触发为 `api`（网页取数 `run`、试跑 `test`、订阅定时 `subscribe`） |
 | `created_at` | string | 提交时间（ISO 8601） |
 | `started_at` | string \| null | 开始执行时间；还没开跑时为 null |
+| `result_expired` | bool | 结果是否已过保留期被清理。从 `GET /runs` 里挑历史运行下载前先看它，省一次注定 404 的请求 |
 
 ### 4.2 `GET /api/v1/runs` —— 我的运行记录列表
 
-返回**我的**运行记录数组（job 对象），按提交时间倒序。与网页「运行记录」里普通用户看到的是同一份。
+返回你**看得见的**运行记录数组（job 对象），按提交时间倒序，最多 100 条。
+与网页「运行记录」同一口径：你自己发起的，加上你所属团队任务下的全部运行（含他人发起的），
+以及你被授权的任务上的定时运行。所以这里**不只有你自己跑的**——要认自己的那些，看 `id`。
 
 ### 4.3 `GET /api/v1/runs/{job_id}` —— 查询运行状态
 
@@ -108,7 +118,8 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 ### 4.5 `GET /api/v1/runs/{job_id}/result` —— 下载完整 CSV
 
 - 返回 `text/csv` 文件流（UTF-8 BOM，Excel 直接打开不乱码），文件名 `<任务名>_<运行编号>.csv`。
-- 需要「下载」权限（`can_download`），否则 403。
+- 需要「下载」权限（任务对象上的 `can_download`），否则 403。403 的报错会说清该找谁授权；
+  **重试无意义**。订阅推送给你的那几期结果除外——订阅本身就带着取走它的资格。
 - **结果文件保留 7 天**，过期返回 404，需重新运行。`preview` 同样受保留期约束。
 
 ## 5. 错误码
@@ -118,7 +129,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 | 400 | 参数缺失或取值不合法（如数值型参数收到非数字） |
 | 401 | 未带 token、token 无效或已吊销 |
 | 403 | 任务 `allow_api=false`；或没有该任务的运行 / 下载权限 |
-| 404 | 任务 / 运行不存在，或对你不可见 |
+| 404 | 任务 / 运行不存在、对你不可见，或结果已过保留期被清理（重跑即可，别改参数重发） |
 | 429 | 超过限流（见下）。请指数退避重试，不要立刻重发 |
 
 ## 6. 限流

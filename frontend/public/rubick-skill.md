@@ -33,7 +33,7 @@ Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，
 | `kind` | `single` 单值 / `list` 值列表 |
 | `value_type` | `text` 文本 / `number` 数值 |
 | `label` | 参数说明，格式提示（如「开始日期（格式 yyyy-mm-dd）」）通常写在这里 |
-| `enum` | 候选值（仅配了枚举的 list 参数有；候选之外的值也允许手输） |
+| `enum` | 候选值数组，**只对 `can_run=true` 的任务给出**；空数组就是「平台也没有候选」，问用户要值即可（候选之外的值本来也允许提交） |
 
 同时检查两个布尔位：
 
@@ -65,7 +65,9 @@ Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，
 
 ### ④ 成功后取结果
 
-- 要完整数据：`GET {BASE_URL}/api/v1/runs/{job_id}/result` → CSV 文件流（`text/csv`，UTF-8 BOM），保存到本地文件。需要用户有「下载」权限（`can_download`）。
+- 要完整数据：`GET {BASE_URL}/api/v1/runs/{job_id}/result` → CSV 文件流（`text/csv`，UTF-8 BOM），
+  保存到本地文件。需要用户有「下载」权限（任务对象上的 `can_download`）；没有就是 403，
+  报错里写了该找谁授权，**别重试**。这时仍可以用 `preview` 取前 50 行应急。
 - 只想快速看一眼：`GET {BASE_URL}/api/v1/runs/{job_id}/preview` → `{ columns, rows, row_count }`，表头 + 前 50 行。
 
 ### ⑤ 失败时如实报告
@@ -143,7 +145,8 @@ else:
 
 ## 注意事项（必读）
 
-- **结果只保留 7 天**：过期后 `result` / `preview` 不可用，只能重新运行（参数可照抄旧运行的取值）。
+- **结果只保留 7 天**：过期后 `result` / `preview` 返回 **404**，只能重新运行（参数可照抄旧运行的取值）。看到 404 不要改参数重发——东西没了，不是请求写错了；
+  400 才是「参数不对」。job 对象上的 `result_expired` 可以让你在下载前就知道这一点。
 - **限流 120 请求/分钟/token**，超限返回 429。轮询务必按退避节奏，不要打满频率。
 - `allow_api=false` 的任务无法通过 API 触发（403）；`can_run=false` 说明没被授权。这两类 403 **重试无意义**，直接报告用户。
 - 运行是**异步**的：提交返回不代表有结果，必须轮询到 `success` / `failed` 为止。
