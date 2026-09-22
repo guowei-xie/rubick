@@ -104,7 +104,13 @@ def download(job_id: int, request: Request, db: Session = Depends(get_db), user:
 
 @router.get("/jobs/{job_id}/file")
 def download_file(job_id: int, t: str, db: Session = Depends(get_db)):
-    """凭下载令牌流式返回结果文件。令牌由 /download 签发,放在 URL 里供浏览器直接下载。"""
+    """凭下载令牌流式返回结果文件。令牌由 /download 签发,放在 URL 里供浏览器直接下载。
+
+    **本端点刻意没有 user**:浏览器新标签页发不了 Authorization 头,所以授权在**签发那一步**
+    就花掉了(/download → assert_downloadable,含下载闸),令牌本身即凭证。因此改下载闸不必
+    动这里 —— 但要知道代价:令牌不绑人、不可吊销,**撤掉某人的 download 授权不会作废他手上
+    已签发的链接**(有效期 DOWNLOAD_URL_EXPIRE_SECONDS),期间它还可以转给别人。
+    """
     tok_job_id = verify_download_token(t)
     if tok_job_id != job_id:
         raise NotFoundError("下载链接无效或已过期")
@@ -128,7 +134,7 @@ def preview_payload(db: Session, user: User, job: QueryJob) -> dict:
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可预览结果")
     if result_service.is_gone(job):
-        raise ResultExpiredError("无法预览")
+        raise ResultExpiredError()
     columns, rows = result_service.read_csv_preview(job.result_object_key, PREVIEW_ROWS)
     # 订阅消费打点:预览与下载同算「消费」(需求口径),非订阅 job / 非订阅者零成本
     subscription_service.mark_consumed(db, user.id, job)

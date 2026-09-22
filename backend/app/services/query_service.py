@@ -381,9 +381,12 @@ def assert_downloadable(db: Session, user: User, job: QueryJob) -> None:
     下载权的人对同一条记录会先后收到两句不同的话 —— 跑完之前「无可下载结果」、跑完之后
     「无权下载」,而 Agent 会把前者当瞬时故障一路轮询下去。
     """
-    if not permission_service.can_access_job(db, user, job):
+    # 两问共用同一份视角与同一行任务:TeamScope 固定 2 次查询,各问各算就是白付一遍
+    scope = permission_service.team_scope(db, user)
+    tmpl = db.get(SqlTemplate, job.template_id)
+    if not permission_service.can_access_job(db, user, job, scope=scope, tmpl=tmpl):
         raise PermissionDeniedError("无权下载该次运行结果")
-    permission_service.require_can_download_job(db, user, job)
+    permission_service.require_can_download_job(db, user, job, scope=scope, tmpl=tmpl)
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可下载结果")
     if result_service.is_gone(job):

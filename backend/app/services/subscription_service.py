@@ -236,6 +236,15 @@ def _add_event(
     )
 
 
+def is_subscriber(db: Session, template_id: int, user_id: int) -> bool:
+    """这个人此刻是不是该任务的在册订阅者。
+
+    公开供 permission_service 的下载闸用(它要判「这一期是不是推送给他的」)——
+    订阅三张表的读写口只在本模块,不让权限层自己去 select TaskSubscription。
+    """
+    return _subscription_row(db, template_id, user_id) is not None
+
+
 def _subscription_row(db: Session, template_id: int, user_id: int) -> TaskSubscription | None:
     return db.scalar(
         select(TaskSubscription).where(

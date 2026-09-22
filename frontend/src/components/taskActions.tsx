@@ -1,7 +1,7 @@
 import { Avatar, Button, Tooltip } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 
-import { Task } from "../api";
+import { AuthorizedUser, Task } from "../api";
 import { fmtTime } from "../format";
 import { TASK_IDLE } from "./StatusTag";
 
@@ -46,7 +46,7 @@ export const stop = (e: React.MouseEvent) => e.stopPropagation();
  *  猜错的代价是把一个半成品直接放给业务用户。
  *
  *  进出的每一种都是独立的审计动作码(task_archive / task_restore / task_unarchive)。 */
-function lifecycleItems(r: any, h: TaskHandlers): any[] {
+function lifecycleItems(r: Task, h: TaskHandlers): any[] {
   if (r.status === "published") {
     return [{ key: "archive", label: "下线", danger: true, onClick: () => h.onArchive(r) }];
   }
@@ -65,7 +65,7 @@ function lifecycleItems(r: any, h: TaskHandlers): any[] {
 
 /** ⋮ 菜单项:运行记录(所有人)+ 订阅相关 + 管理项(仅 can_manage)/只读查看(仅 can_view_detail)。
  *  生命周期动作按状态整组给出,见 lifecycleItems。 */
-export function taskMenuItems(r: any, h: TaskHandlers): any[] {
+export function taskMenuItems(r: Task, h: TaskHandlers): any[] {
   const items: any[] = [{ key: "records", label: "运行记录", onClick: () => h.onRecords(r) }];
   // 已订阅的人永远能退订(哪怕任务已下线/权限被撤);未订阅的按服务端算好的 can_subscribe 显示
   if (r.subscribed) {
@@ -203,7 +203,13 @@ export function scheduleHint(r: Task): string {
 /** 被授权运行的人的头像组。最多露 3 个,再多折成 +N。
  *  姓名怎么给分两种:卡片上逐个 Tooltip;列表里行本身挂着原生 title(点击取数的解释),
  *  逐个 Tooltip 会与它叠着弹,故整格用一句原生 title 一次给全(wrapperTitle)。 */
-export function AuthorizedAvatars({ users, wrapperTitle }: { users: any[]; wrapperTitle?: string }) {
+export function AuthorizedAvatars({
+  users,
+  wrapperTitle,
+}: {
+  users: AuthorizedUser[];
+  wrapperTitle?: string;
+}) {
   const group = (
     <Avatar.Group max={{ count: 3, style: { background: "#8a90a6", fontSize: 12 } }} size={24}>
       {users.map((u) =>

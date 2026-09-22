@@ -641,8 +641,10 @@
    关掉后即使调用者有运行权限也一律 403。它**不放宽任何权限** —— 能跑的人仍然是你在卡片
    **+** 里授权过的那些（见[第 7 章](#7-给业务同学授权)）。想让一个任务能被 Agent 调用，
    两件事都要做：打开 `allow_api`，并给调用者本人授权「运行」。
-   **下载结果另需「下载」授权**：这道闸在 `permission_service.can_download_job`，界面与
-   开放 API 共用（都走 `query_service.assert_downloadable`），没有授权就是 403 ——
+   **下载结果另需「下载」授权**：这道闸在 `permission_service.can_download_job`，两个
+   **带身份**的入口共用（界面的签名 URL 签发步与开放 API 的直出，都走
+   `query_service.assert_downloadable`；界面兑付那步 `/jobs/{id}/file` 只验令牌、不认人，
+   所以撤权不会作废已签发的链接），没有授权就是 403 ——
    它刻意**不认「这条运行是我自己跑的」**，否则任何有运行权限的人跑一次就绕过去了。
    例外只有一个：订阅推送给某人的那几期结果，他不必再被授权「下载」（订阅就是「定期送你
    这份结果」的承诺，代订阅只补 view 是刻意的，见 `permission_service.grant_view`）。

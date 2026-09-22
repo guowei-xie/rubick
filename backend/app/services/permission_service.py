@@ -35,7 +35,6 @@ from app.models.permission import (
     Permission,
 )  # noqa: F401
 from app.models.query_job import SOURCE_SUBSCRIBE, QueryJob
-from app.models.subscription import TaskSubscription
 from app.models.team import TeamMember
 from app.models.template import STATUS_PUBLISHED, SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User, is_platform_admin  # noqa: F401
@@ -307,8 +306,7 @@ def can_subscribe(scope: TeamScope, tmpl) -> bool:
     不是权限)。口径 = can_view 且已上线:订阅的产出是运行结果,而结果的可见判据
     (can_access_job 对非发起人)就是 can_view —— 用同一把尺。
 
-    「看得见」到此为止:取走完整 CSV 另需 download 授权(can_download_job)。订阅者不必
-    为此专门被授权 —— 那条闸对**订阅跑出来的那些期**单独放行,理由见 can_download_job。"""
+    「看得见」到此为止,取不取得走完整 CSV 是另一问,见 can_download_job。"""
     return is_subscribable(tmpl) and can_view(scope, tmpl)
 
 
@@ -476,33 +474,26 @@ def can_edit_template(db: Session, user: User, template_id: int | str) -> bool:
     return can_edit(team_scope(db, user), tmpl)
 
 
-def can_access_job(db: Session, user: User, job) -> bool:
+def can_access_job(db: Session, user: User, job, *, scope: TeamScope | None = None, tmpl=None) -> bool:
     """一次运行记录/结果的可见性:发起人本人,或对该任务可见的人。
 
     **唯一入口** —— query.get_job / preview / download 与 tasks.task_run_records 都走它。
     签名从 (user, job) 改成带 db 是必须的:团队判定得知道任务归属,拿不到 db 就只能退回
     「管理者全通」,而那正是本次要拆掉的短路(历史上任何开发者都能下载任何人的结果)。
+
+    scope / tmpl 可由调用方注入:一条请求里若要连问两次(如下载路径先问可见、再问可下载),
+    传进来就只算一次 TeamScope(它固定 2 次查询)。不传则自取,老调用点一个都不用改。
     """
     if is_platform_admin(user) or job.user_id == user.id:
         return True
-    tmpl = db.get(SqlTemplate, job.template_id)
+    if tmpl is None:
+        tmpl = db.get(SqlTemplate, job.template_id)
     if tmpl is None:
         return False
-    return can_view(team_scope(db, user), tmpl)
+    return can_view(scope or team_scope(db, user), tmpl)
 
 
-def _is_subscriber(db: Session, user_id: int, template_id: int) -> bool:
-    """这个人是不是该任务的在册订阅者。直接查模型不经 subscription_service ——
-    那个模块反过来依赖本模块(见它里面的延迟 import),走 service 会成环。"""
-    return db.scalar(
-        select(TaskSubscription.id).where(
-            TaskSubscription.template_id == template_id,
-            TaskSubscription.user_id == user_id,
-        ).limit(1)
-    ) is not None
-
-
-def can_download_job(db: Session, user: User, job) -> bool:
+def can_download_job(db: Session, user: User, job, *, scope: TeamScope | None = None, tmpl=None) -> bool:
     """能不能把这一次运行的**完整结果文件**取走。与 can_access_job 并排:
     那条答「看得见这条记录吗」(不可见 → 404),这条答「拿得走文件吗」(没授权 → 403)。
 
@@ -512,23 +503,40 @@ def can_download_job(db: Session, user: User, job) -> bool:
     平台管理员与任务所属团队成员由 can_download 的 is_insider 放行,这里不重复一遍。
 
     订阅推送的那一期结果对在册订阅者放行:代订阅只补 view(见 subscription_service
-    .subscribe_for),而订阅本身就是「把这份结果定期送给你」的承诺。这与
-    job_visibility_condition 里「被授 view 的任务,其 subscribe 来源运行对他可见」
-    是同一条口径的两半 —— 看得见却取不走是半截承诺。放行只限订阅跑出来的那些期,
+    .subscribe_for),而订阅本身就是「把这份结果定期送给你」的承诺 —— 看得见却取不走
+    是半截承诺(可见那半在 job_visibility_condition 里)。放行只限订阅跑出来的那些期,
     同任务下**他人手动跑**的结果仍要 download 授权。
+    **判据是「此刻在册」,不是「这一期当初推给过他」**:今天订阅的人也取得走上个月那几期。
+    两者的差别要紧到需要区分时,得按 TaskSubscription.created_at 与 job.created_at 比 ——
+    那是一条新的产品口径,不要顺手加。
+
+    scope / tmpl 同 can_access_job,可注入以免一条请求里重复算 TeamScope。
     """
-    if can(db, user, ACTION_DOWNLOAD, RESOURCE_TEMPLATE, job.template_id):
+    if is_platform_admin(user):
         return True
-    return job.source == SOURCE_SUBSCRIBE and _is_subscriber(db, user.id, job.template_id)
+    if tmpl is None:
+        tmpl = db.get(SqlTemplate, job.template_id)
+    if tmpl is not None and can_download(scope or team_scope(db, user), tmpl):
+        return True
+    if job.source != SOURCE_SUBSCRIBE:
+        return False
+    # 延迟 import:订阅三张表的读写口只在 subscription_service,权限层不自己 select
+    # (顶层 import 会与它的 permission_service 反向依赖撞上,仓库里这类破环都用延迟 import)
+    from app.services import subscription_service
+
+    return subscription_service.is_subscriber(db, job.template_id, user.id)
 
 
-def require_can_download_job(db: Session, user: User, job) -> None:
-    """下载闸的**唯一守卫**。两条下载路径(界面签名 URL / 开放 API 的 Bearer 直出)
-    共用同一个 assert_downloadable,所以「被挡的人该找谁」这句话只写一次。
+def require_can_download_job(
+    db: Session, user: User, job, *, scope: TeamScope | None = None, tmpl=None
+) -> None:
+    """下载闸的**唯一守卫**。两个**带身份**的下载入口(界面的签名 URL 签发步、开放 API 的
+    Bearer 直出)共用同一个 assert_downloadable,所以「被挡的人该找谁」这句话只写一次。
     """
-    if can_download_job(db, user, job):
+    if tmpl is None:
+        tmpl = db.get(SqlTemplate, job.template_id)
+    if can_download_job(db, user, job, scope=scope, tmpl=tmpl):
         return
-    tmpl = db.get(SqlTemplate, job.template_id)
     which = f"《{tmpl.name}》(#{tmpl.id})" if tmpl is not None else f"#{job.template_id}"
     who = (
         f"任务作者或团队《{tmpl.team_name}》的团队管理员"
@@ -726,9 +734,8 @@ def grant_view(db: Session, *, template_id: int, user_id: int, granted_by: int |
     同 grant_edit(提交)/ discard_edit_grant(不提交)的分工 —— 一件事两种事务约定各给一个
     具名函数,别让调用方去猜。
 
-    只开放 view 这一个动作:订阅结果的预览走 can_access_job → can_view,而下载那一期的
-    资格由 can_download_job 按「他是不是在册订阅者」单独放行 —— 都不需要 download 授权行。
-    run / download 是「自己填参跑一次、把任意一期取走」才需要的,代订阅不该顺手给。
+    只开放 view 这一个动作:run / download 是「自己填参跑一次、把任意一期取走」才需要的,
+    代订阅不该顺手给。订阅者取走推送给他那一期的资格另有出口,见 can_download_job。
     """
     return bool(
         _add_rows(

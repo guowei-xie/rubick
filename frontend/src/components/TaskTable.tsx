@@ -115,7 +115,7 @@ export default function TaskTable({
         // 表格里状态用文字标签而不是卡片上的色点:一列本就有位置写字,
         // 且与站内其它表格(用户/团队/审计)的读法一致
         render: (s: string) => <StatusTag map={TEMPLATE_STATUS} value={s} />,
-        sorter: (a: any, b: any) => templateStatusRank(a.status) - templateStatusRank(b.status),
+        sorter: (a: Task, b: Task) => templateStatusRank(a.status) - templateStatusRank(b.status),
       },
       { title: "数据源", dataIndex: "datasource_name", width: 130, ellipsis: true, render: dash },
       { title: "团队", dataIndex: "team_name", width: 130, ellipsis: true, render: dash },
@@ -151,14 +151,14 @@ export default function TaskTable({
           ) : (
             dash(null)
           ),
-        sorter: (a: any, b: any) => (a.subscriber_count || 0) - (b.subscriber_count || 0),
+        sorter: (a: Task, b: Task) => (a.subscriber_count || 0) - (b.subscriber_count || 0),
       },
       { title: "作者", dataIndex: "author_name", width: 110, ellipsis: true, render: dash },
       {
         title: "被授权",
         width: 120,
         render: (_: unknown, r: Task) => {
-          const users: any[] = r.authorized_users || [];
+          const users = r.authorized_users;
           if (!users.length) return dash(null);
           return (
             <span onClick={stop}>
@@ -186,7 +186,7 @@ export default function TaskTable({
           );
         },
         // 后端给的是 ISO 字符串,字典序即时间序 —— 不必上 collator
-        sorter: (a: any, b: any) => {
+        sorter: (a: Task, b: Task) => {
           const x = taskTimeMeta(a).value || "";
           const y = taskTimeMeta(b).value || "";
           return x < y ? -1 : x > y ? 1 : 0;
@@ -229,7 +229,7 @@ export default function TaskTable({
   const rowClassName = useCallback(
     // 四个常量而不是每行拼模板串:结果只有这四种,而本函数每次渲染都会对每一行重跑一遍。
     // hitId 至多命中一行,先判它还能替绝大多数行省掉一次 showIdle 调用。
-    (r: any) => {
+    (r: Task) => {
       // 批量模式下「转不了」压过其它档:此刻人在找「哪些能勾」,闲置与深链高亮都让位
       if (bulk && !bulk.decisionOf(r).ok) return ROW_BLOCKED;
       const idle = showIdle(r);
@@ -244,7 +244,7 @@ export default function TaskTable({
    *  依赖里带上 bulk(它随勾选换新)只影响行级 props;单元格仍被 shouldCellUpdate 挡着,
    *  不会跟着重跑 render。 */
   const onRow = useCallback(
-    (r: any) => {
+    (r: Task) => {
       if (bulk) {
         const d = bulk.decisionOf(r);
         return {
@@ -277,7 +277,7 @@ export default function TaskTable({
     columnWidth: 44,
     selectedRowKeys: bulk.selectedKeys,
     onChange: (keys: React.Key[]) => bulk.onSelectedChange(keys.map(Number)),
-    getCheckboxProps: (r: any) => ({ disabled: !bulk.decisionOf(r).ok }),
+    getCheckboxProps: (r: Task) => ({ disabled: !bulk.decisionOf(r).ok }),
   };
 
   return (

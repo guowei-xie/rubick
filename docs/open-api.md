@@ -93,7 +93,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 | `source` | string | 触发来源：API 触发为 `api`（网页取数 `run`、试跑 `test`、订阅定时 `subscribe`） |
 | `created_at` | string | 提交时间（ISO 8601） |
 | `started_at` | string \| null | 开始执行时间；还没开跑时为 null |
-| `result_expired` | bool | 结果是否已过保留期被清理。从 `GET /runs` 里挑历史运行下载前先看它，省一次注定 404 的请求 |
+| `result_expired` | bool | 结果是否已过保留期。从 `GET /runs` 里挑历史运行下载前先看它，省一次注定 404 的请求；它只回答保留期，文件因其它原因不在时仍可能 404 |
 
 ### 4.2 `GET /api/v1/runs` —— 我的运行记录列表
 

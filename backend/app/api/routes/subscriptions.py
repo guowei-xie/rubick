@@ -200,8 +200,7 @@ def subscribe_task_for(
     所以整批被拒时必须**显式 db.rollback()** —— 那边「连回滚都不需要」的说法在这里不成立。
 
     没有 view 权的人在同一事务里补一条 view 授权:订阅的产出是运行结果,而结果的可见性
-    判据就是 can_view(permission_service.can_access_job);取走那一期 CSV 的资格由
-    can_download_job 按在册订阅者单独放行,所以也不必补 download。为什么只补 view,
+    判据就是 can_view(permission_service.can_access_job)。为什么只补 view,
     见 permission_service.grant_view。
     """
     tmpl = _managed(db, user, template_id)

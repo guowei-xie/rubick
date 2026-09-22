@@ -17,22 +17,25 @@ class NotFoundError(RubicError):
 
 
 class ResultExpiredError(NotFoundError):
-    """结果文件已过保留期被自动清理,或已不在盘上。
+    """这次运行的结果文件已经取不到了:过了保留期被自动清理,或已不在盘上。
 
     **404 而非 400**:对调用方来说这就是「这份结果不存在了」。400 的读法是「你请求写错了」,
     而这里请求完全正确,只是东西没了 —— Agent 据 400 会去改参数重发,据 404 才会去重跑取数
     (docs/open-api.md 第 5 章的错误码表一直写的就是 404)。
 
-    文案在这里写一次:调用点只在尾巴那半句上不同(下载让人重跑、预览只是看不了),
-    把整句抄两遍的代价是改保留期文案时漏掉一处 —— 而漏掉的那一处正是对外契约。
+    文案在这里写一次,下载与预览共用 —— 两边的下一步本来就都是「重跑」,而把整句抄两遍的
+    代价是改保留期文案时漏掉一处,漏掉的那处正是对外契约。也**不说死是过期**:
+    判据(result_service.is_gone)还含「文件不在盘上」,第 1 天被误删的结果收到一句
+    「超过 7 天」是假话。
     """
 
-    def __init__(self, advice: str = "请重新运行取数"):
+    def __init__(self):
         # 延迟导入:本模块是无依赖的叶子模块,不能在导入期把 config 拽进来
         from app.core.config import settings
 
         super().__init__(
-            f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,{advice}"
+            f"结果文件已不存在(超过保留期 {settings.RESULT_RETENTION_DAYS} 天会被自动清理),"
+            "请重新运行取数"
         )
 
 

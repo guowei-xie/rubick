@@ -5,9 +5,8 @@
 - 薄封装:权限、入队、结果、过期判断全部复用现有 service,这里不做第二份口径;
 - 长任务纯轮询:POST 入队即返回 job_id → GET /runs/{job_id} 轮询 → /result 下载。
 
-结果文件保留 RESULT_RETENTION_DAYS 天,过期一律 **404**(core.exceptions.ResultExpiredError):
-「东西没了」是资源不存在,不是请求写错了 —— Agent 据 400 会去改参数重发,据 404 才会去
-重跑取数。界面与 API 同码同文案,不按通道分家。
+结果取不到时一律 404(core.exceptions.ResultExpiredError,那里写了为什么不是 400);
+界面与 API 同码同文案,不按通道分家。
 """
 from __future__ import annotations
 
@@ -75,31 +74,36 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(api_user)):
             select(TemplateVersion.id, TemplateVersion.params)
             .where(TemplateVersion.id.in_(pv_ids))
         ).all()
-    )
-    # 归一一次,投影与候选值查找吃同一份 —— 各归一各的,旧 shape 的任务会在两边判出不同的 kind
-    params_of: dict[int, list[ParamDef]] = {
-        t.id: [ParamDef.model_validate(p)
-               for p in (params_by_version.get(t.published_version_id) or [])]
+    ) if pv_ids else {}
+
+    # 一次循环把每行要用的三样备齐:任务、**归一后的**参数定义、能不能跑。
+    # 参数只归一这一次,投影与候选值查找吃同一份 —— 各归一各的,旧 shape 的任务
+    # (type=multi_enum,归一住在 ParamDef._from_legacy)会在两边判出不同的 kind
+    prepared = [
+        (
+            t,
+            [ParamDef.model_validate(p)
+             for p in (params_by_version.get(t.published_version_id) or [])],
+            permission_service.can_run(scope, t),
+        )
         for t in rows
-    }
-    can_run_of = {t.id: permission_service.can_run(scope, t) for t in rows}
+    ]
     # 候选值只给「我能跑的」任务带:跑不了的任务,候选值对调用方没有用处,而最坏载荷是
     # 任务数 × 值列表变量数 × 每变量上千个值,全塞进 Agent 每次开场的第一枪里。
     # 这一条与网页侧「看得见就读得到候选」不同口径,故在 docs/open-api.md 的 enum 行写明。
     enums = enum_cache_service.read_bulk(
-        db, [(t, params_of[t.id]) for t in rows if can_run_of[t.id]]
+        db, [(t, params) for t, params, runnable in prepared if runnable]
     )
     return [
         V1TaskOut(
             id=t.id, name=t.name, description=t.description, status=t.status,
             team_id=t.team_id, team_name=t.team_name,
             allow_api=bool(t.allow_api),
-            can_run=can_run_of[t.id],
+            can_run=runnable,
             can_download=permission_service.can_download(scope, t),
-            params=[V1ParamOut.of(p, enums.get((t.id, p.name), []))
-                    for p in params_of[t.id]],
+            params=[V1ParamOut.of(p, enums.get((t.id, p.name), [])) for p in params],
         )
-        for t in rows
+        for t, params, runnable in prepared
     ]
 
 
@@ -123,7 +127,12 @@ def run_task(
 @router.get("/runs", response_model=list[V1JobOut])
 def list_runs(db: Session = Depends(get_db), user: User = Depends(api_user)):
     """运行记录列表:本人发起的 + 所属团队任务下的全部 + 被授权任务的定时运行。
-    口径与界面 /api/jobs 同源(query.visible_jobs),不另立一份。"""
+    口径与界面 /api/jobs 同源(query.visible_jobs),不另立一份。
+
+    这条路径**不走 v1_job_out**:投影由 response_model 直接从 ORM 行做,于是
+    queue_ahead 在列表里恒为 null(它由 job_out 现算,只在单条查询时给)——与界面
+    /api/jobs 的行为一致,docs/open-api.md 4.2 也是这么写的。
+    """
     return query_routes.visible_jobs(db, user)
 
 

@@ -134,10 +134,6 @@ def read(db: Session, tmpl: SqlTemplate, pdef: dict) -> SharedEnumValuesOut:
     return _out(db, row)
 
 
-#: read_bulk 内部的哨兵。不能用 None —— enum_sql 本身就可以是 None
-_MISSING = object()
-
-
 def read_bulk(
     db: Session, items: Sequence[tuple[SqlTemplate, Sequence[ParamDef]]]
 ) -> dict[tuple[int, str], list[str]]:
@@ -151,26 +147,30 @@ def read_bulk(
     与 read() 同一条产品决策:未命中、以及产出前提已不成立的行(_is_stale:作者改了
     enum_sql 或换了数据源)**都不出现在返回里** —— 旧 SQL 的结果不冒充新 SQL 的候选。
     """
-    wanted: dict[int, dict[str, str | None]] = {}
-    ds_of: dict[int, int | None] = {}
-    for tmpl, params in items:
-        ds_of[tmpl.id] = tmpl.datasource_id
-        for p in params:
-            if p.has_enum_candidates:  # 口径唯一来源,见 schemas/common.ParamDef
-                wanted.setdefault(tmpl.id, {})[p.name] = p.enum_sql
+    # (任务, 变量) → 判 stale 所需的两个前提。复合键而不是嵌套字典:嵌套时值域里
+    # 合法地含 None(enum_sql 本来就可以是 None),「在不在」只能靠额外的哨兵表达
+    wanted: dict[tuple[int, str], tuple[int | None, str | None]] = {
+        (tmpl.id, p.name): (tmpl.datasource_id, p.enum_sql)
+        for tmpl, params in items
+        for p in params
+        if p.has_enum_candidates  # 口径唯一来源,见 schemas/common.ParamDef
+    }
     if not wanted:
         return {}  # 一个值列表变量都没有 ⇒ 零查询
 
     out: dict[tuple[int, str], list[str]] = {}
     for row in db.scalars(
-        select(TemplateEnumValues).where(TemplateEnumValues.template_id.in_(wanted))
+        select(TemplateEnumValues).where(
+            TemplateEnumValues.template_id.in_({tid for tid, _ in wanted})
+        )
     ):
-        enum_sql = wanted.get(row.template_id, {}).get(row.variable, _MISSING)
-        if enum_sql is _MISSING:  # 这个变量已经不是「有候选可言」的变量了
+        key = (row.template_id, row.variable)
+        if key not in wanted:  # 这个变量已经不是「有候选可言」的变量了
             continue
-        if _is_stale(row, datasource_id=ds_of.get(row.template_id), enum_sql=enum_sql):
+        datasource_id, enum_sql = wanted[key]
+        if _is_stale(row, datasource_id=datasource_id, enum_sql=enum_sql):
             continue
-        out[(row.template_id, row.variable)] = row.enum_values or []
+        out[key] = row.enum_values or []
     return out
 
 

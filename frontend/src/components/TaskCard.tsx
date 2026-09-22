@@ -42,7 +42,7 @@ export default function TaskCard({
   task: Task;
   h: TaskHandlers;
 }) {
-  const users: any[] = r.authorized_users || [];
+  const users = r.authorized_users;
   // 卡头那一格:正常是时间(最后运行 → 最后编辑 → 创建),闲置时换成「闲置 167 天」。
   // 文案与判断都在 taskActions,与列表视图共用一份
   const timeCell = taskTimeCell(r);

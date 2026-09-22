@@ -272,7 +272,7 @@ export default function TasksPage() {
 
   // 收进回收站。草稿与已上线是**同一个接口、两套说法**:草稿从来就不可运行,
   // 跟它说「下线后业务用户不能再运行」是句假话,只会让人以为自己弄坏了什么。
-  const doArchive = useCallback((row: any) => {
+  const doArchive = useCallback((row: Task) => {
     const draft = row.status !== "published";
     Modal.confirm({
       title: draft ? `把草稿「${row.name}」移入回收站?` : `下线任务「${row.name}」?`,
@@ -286,7 +286,7 @@ export default function TasksPage() {
 
   // 回收站的另一个出口:退回草稿。成功后这一行会**从回收站视图里消失**(它不再是 archived),
   // 所以必须给一句话说明它去哪了 —— 否则看起来像「点了一下任务就没了」。
-  const doUnarchive = useCallback((row: any) =>
+  const doUnarchive = useCallback((row: Task) =>
     Modal.confirm({
       title: `把「${row.name}」恢复为草稿?`,
       content: "恢复后它回到任务列表的草稿里,业务用户仍不可运行;要对业务开放请用「重新上线」。",
@@ -302,7 +302,7 @@ export default function TasksPage() {
       },
     }), [load]);
 
-  const doPublish = useCallback((row: any) => {
+  const doPublish = useCallback((row: Task) => {
     const restore = row.status === "archived"; // 回收站里的任务:恢复=重新上线
     Modal.confirm({
       title: `${restore ? "重新上线" : "上线"}任务「${row.name}」?`,
@@ -471,7 +471,7 @@ export default function TasksPage() {
    *  全部任务,所以这里只是查表。落到最后那条兜底,说明服务端的划分与列表不同步了
    *  (有人刚改了团队或成员),如实让他刷新,而不是替服务端猜一个理由。 */
   const decisionOf = useCallback(
-    (r: any) => {
+    (r: Task) => {
       if (!receiver) return { ok: false, reason: "请先在上方选择接手人" };
       if (eligibleIds.has(r.id)) return { ok: true, reason: `可转给 ${receiver.name}` };
       const why = blockedReason.get(r.id);
@@ -549,7 +549,7 @@ export default function TasksPage() {
   });
 
   // 订阅/退订:成功后重拉列表(subscribed / subscriber_count 都由服务端算,不本地改)
-  const doSubscribeToggle = useCallback(async (row: any) => {
+  const doSubscribeToggle = useCallback(async (row: Task) => {
     try {
       if (row.subscribed) {
         await unsubscribeTask(row.id);
