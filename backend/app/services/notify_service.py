@@ -1,8 +1,8 @@
 """取数通知:优先飞书机器人推送,始终写一条站内通知作镜像/兜底。
 
-「一次运行该通知谁」这条策略只住在本模块:发起人恒收;若失败原因是**只有别人能修**的
-(当前只有「任务所属团队没登记取数账号」一种),再额外通知那些能修的人 ——
-即该团队的**团队管理员**(团队账号由他们维护,作者本人可能也无权配)。
+「一次运行该通知谁」这条策略只住在本模块:发起人恒收(**开放 API 触发的除外**,见
+notify_job_done);若失败原因是**只有别人能修**的(当前只有「任务所属团队没登记取数账号」一种),
+再额外通知那些能修的人 —— 即该团队的**团队管理员**(团队账号由他们维护,作者本人可能也无权配)。
 
 「谁能修」的判定不外泄:worker 侧的共享失败路径把原始异常交过来(notify_job_done 按类型分派),
 入队阶段则因为**还没有运行记录行**而直接叫 notify_credential_blocked —— 两条路径调用形态不同,
@@ -10,14 +10,16 @@
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import CredentialRequiredError
 from app.core.logging_setup import get_logger
 from app.models.notification import Notification
-from app.models.query_job import JOB_SUCCESS, SOURCE_SUBSCRIBE, QueryJob
+from app.models.query_job import JOB_SUCCESS, SOURCE_API, SOURCE_SUBSCRIBE, QueryJob
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_ADMIN, SYSTEM_SCHEDULER_OPEN_ID, User
 from app.services import feishu_service
@@ -137,6 +139,36 @@ def _push_each(
         )
 
 
+# 「缺团队取数账号」说的是一个**等人去修的状态**,不是一次性事件:修好之前,每一次运行都会
+# 再撞一次同一件事。开放 API 之后这不再是理论问题 —— 一个循环重试的 Agent 能在几分钟内把
+# 团队管理员的铃铛刷满,而那几十条说的是同一句话、指向同一个修法。故按(收件人, 任务)在冷却窗
+# 内去重。标题提成常量:它同时是文案与去重键,两处对不上就等于没去重。
+CREDENTIAL_ALERT_TITLE = "任务取数被阻断:缺少团队取数账号"
+CREDENTIAL_ALERT_COOLDOWN_MINUTES = 60
+
+
+def _alerted_recently(db: Session, *, user_id: int, template_id: int) -> bool:
+    """这个人在冷却窗内已经为这个任务收过缺账号告警了吗。
+
+    去重状态直接问 Notification 表,不另建表、不用进程内字典:这条告警由 web 进程(入队阶段)
+    与 worker 进程(执行阶段)分别发出,进程内的记号互相看不见,重启也就丢了;而站内通知本来
+    就是每条通知的持久镜像,天然跨进程、跨重启。
+    """
+    # cutoff 必须取**库时钟**:created_at 是 server_default=func.now() 落的库时间,
+    # 应用进程与库的时区/时钟未必一致(同 query_service.reclaim_stale_jobs 的算法)。
+    cutoff = db.scalar(select(func.now())) - timedelta(minutes=CREDENTIAL_ALERT_COOLDOWN_MINUTES)
+    return bool(
+        db.scalar(
+            select(func.count(Notification.id)).where(
+                Notification.user_id == user_id,
+                Notification.template_id == template_id,
+                Notification.title == CREDENTIAL_ALERT_TITLE,
+                Notification.created_at >= cutoff,
+            )
+        )
+    )
+
+
 def notify_credential_blocked(
     db: Session, tmpl: SqlTemplate | None, *, requester_id: int, job_id: int | None = None
 ) -> None:
@@ -147,6 +179,9 @@ def notify_credential_blocked(
 
     两个调用点、两个阶段:入队时(query_service.enqueue,**常见落点**,那时还没有运行记录行,
     故 job_id 为空)与 worker 执行时(排队期间凭证被改掉/回收)。
+
+    **这条告警不随来源静音**:API 触发的运行不通知发起人(它在轮询),但能修的人照样要知道 ——
+    否则调用方一直失败,而账号迟迟没人去配。取而代之的是冷却窗去重(见上方常量)。
     """
     if tmpl is None:
         return
@@ -154,10 +189,12 @@ def notify_credential_blocked(
     for uid in _team_fixers(db, tmpl):
         if uid == requester_id:
             continue
+        if _alerted_recently(db, user_id=uid, template_id=tmpl.id):
+            continue
         _push(
             db,
             user_id=uid,
-            title="任务取数被阻断:缺少团队取数账号",
+            title=CREDENTIAL_ALERT_TITLE,
             body=(
                 f"有人运行《{tmpl.name}》时失败:{team_label}尚未登记该任务数据源的取数账号。"
                 "请到团队页的「团队取数账号」登记一套。"
@@ -176,10 +213,18 @@ def notify_credential_blocked(
 def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) -> Notification | None:
     """通知发起人本次运行的结果;error 是失败时的原始异常,用于判断还该通知谁。
 
-    订阅定时运行(source=subscribe)的收件人完全不同(发起人是系统用户,没人在等它),
-    在入口处整体分派 —— reclaim_stale_jobs 收回的订阅 job 也天然走同一条路。
-    分派后委托给 subscription_service:期结算(清退、盖 superseded_at)是业务状态变更,
-    不住在通知层;本模块只负责收件人与文案。
+    按 job.source 在入口处整体分派,两种来源的收件人与常规路径都不同:
+
+    - **订阅定时(subscribe)**:收件人完全不同(发起人是系统用户,没人在等它),委托给
+      subscription_service —— 期结算(清退、盖 superseded_at)是业务状态变更,不住在通知层;
+      本模块只负责收件人与文案。reclaim_stale_jobs 收回的订阅 job 也天然走同一条路。
+    - **开放 API(api)**:**不通知任何人**。通知是给「在界面上等结果的人」用的,而 API 的
+      调用方是脚本或 Agent,它靠轮询 GET /api/v1/runs/{id} 拿 status 与 error,这条通知对它
+      是纯重复信息;API 调用又天然高频,几百次调用就是几百条飞书卡片,会把 token 主人真正在
+      界面上跑的那几条通知一起淹掉。成功失败一视同仁:失败原因在轮询响应的 error 里。
+
+    唯一不受 api 静音影响的是**缺团队取数账号**的告警 —— 它的收件人是能修的团队管理员而不是
+    发起人,与「谁在等这次结果」无关(它自己按冷却窗去重,见 notify_credential_blocked)。
     """
     if job.source == SOURCE_SUBSCRIBE:
         from app.services import subscription_service
@@ -187,27 +232,31 @@ def notify_job_done(db: Session, job: QueryJob, error: Exception | None = None) 
         subscription_service.on_scheduled_run_finished(db, job, error)
         return None
     tmpl = db.get(SqlTemplate, job.template_id)
-    tmpl_name = tmpl.name if tmpl else f"任务#{job.template_id}"
 
-    if job.status == JOB_SUCCESS:
-        title = "取数完成"
-        body = f"《{tmpl_name}》已跑完,共 {job.row_count} 行,可在该任务的「运行记录」里预览并下载。"
-        level = "success"
-    else:
-        title = "取数失败"
-        body = f"《{tmpl_name}》执行失败:{(job.error or '')[:120]}"
-        level = "error"
+    note = None
+    if job.source != SOURCE_API:
+        tmpl_name = tmpl.name if tmpl else f"任务#{job.template_id}"
+        if job.status == JOB_SUCCESS:
+            title = "取数完成"
+            body = (
+                f"《{tmpl_name}》已跑完,共 {job.row_count} 行,可在该任务的「运行记录」里预览并下载。"
+            )
+            level = "success"
+        else:
+            title = "取数失败"
+            body = f"《{tmpl_name}》执行失败:{(job.error or '')[:120]}"
+            level = "error"
 
-    note = _push(
-        db,
-        user_id=job.user_id,
-        title=title,
-        body=body,
-        level=level,
-        link=_records_link(job.template_id, job.id),
-        job_id=job.id,
-        template_id=job.template_id,
-    )
+        note = _push(
+            db,
+            user_id=job.user_id,
+            title=title,
+            body=body,
+            level=level,
+            link=_records_link(job.template_id, job.id),
+            job_id=job.id,
+            template_id=job.template_id,
+        )
     if isinstance(error, CredentialRequiredError):
         notify_credential_blocked(db, tmpl, requester_id=job.user_id, job_id=job.id)
     return note

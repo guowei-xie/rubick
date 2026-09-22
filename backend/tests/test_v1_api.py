@@ -22,7 +22,14 @@ from app.core.exceptions import (
 from app.models import audit as A
 from app.models.audit import DownloadEvent
 from app.models.permission import RESOURCE_TEMPLATE, SUBJECT_USER
-from app.models.query_job import JOB_SUCCESS, SOURCE_API, SOURCE_SUBSCRIBE, QueryJob
+from app.models.query_job import (
+    JOB_FAILED,
+    JOB_SUCCESS,
+    SOURCE_API,
+    SOURCE_RUN,
+    SOURCE_SUBSCRIBE,
+    QueryJob,
+)
 from app.models.subscription import TaskSubscription
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
@@ -38,7 +45,13 @@ from app.services import (
     result_service,
     template_service,
 )
-from tests.conftest import max_audit_id, new_audit_rows, one_audit_row
+from tests.conftest import (
+    max_audit_id,
+    new_audit_rows,
+    new_notifications,
+    note_floor,
+    one_audit_row,
+)
 
 # ID 段 9410–9413
 AUTHOR, VIEWER, OUTSIDER, ADMIN = 9410, 9411, 9412, 9413
@@ -203,6 +216,45 @@ def test_run_gate_open_enqueues_with_api_source(db, task_api, viewer):
     row = one_audit_row(db, since)
     assert row.action == A.ACTION_SUBMIT_QUERY
     assert row.detail["via"] == "api" and row.detail["job_id"] == out.id
+
+
+def test_api_run_sends_no_notification(db, task_api, viewer, spy_connector):
+    """API 触发的运行**不推任何通知** —— 成功与失败一视同仁。
+
+    通知是给「在界面上等结果的人」用的;API 的调用方是脚本或 Agent,它本来就在轮询
+    GET /runs/{id},status 与 error 都在轮询响应里,再推一条是纯重复信息。而 API 调用
+    天然高频,不静音的话几百次调用就是几百条飞书卡片,把 token 主人真正在界面上跑的那
+    几条通知一起淹掉。
+    """
+    floor = note_floor(db)
+    _succeed_a_run(db, spy_connector, task_api, viewer)
+    assert new_notifications(db, floor) == [], "成功不推:调用方轮询就拿到了 status 与行数"
+
+    spy_connector(fail="目标库连接超时")
+    failed = query_service.enqueue(
+        db, viewer, task_api.id, {"d": "2026-09-21"}, source=SOURCE_API
+    )
+    query_service.execute_job(failed.id)
+    db.refresh(failed)
+    assert failed.status == JOB_FAILED and failed.error, "失败原因照旧落在运行记录上"
+    assert new_notifications(db, floor) == [], "失败也不推:原因就在轮询响应的 error 里"
+
+
+def test_web_run_on_the_same_task_still_notifies(db, task_api, viewer, spy_connector):
+    """对照组:同一个任务走界面路径(source=run)照常推通知。
+
+    静音的判据是**来源**而不是任务 —— 开了「允许 API 调用」的任务,业务同学在界面上跑
+    它时仍然有人在等结果。没有这条,「API 不推」被重构成「谁都不推」不会让任何测试变红。
+    """
+    spy_connector(rows=[("2026-09-21",)])
+    floor = note_floor(db)
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"})
+    assert job.source == SOURCE_RUN
+    query_service.execute_job(job.id)
+
+    assert [(n.user_id, n.title) for n in new_notifications(db, floor)] == [
+        (viewer.id, "取数完成")
+    ]
 
 
 def test_run_on_invisible_task_is_404(db, task_api, outsider):

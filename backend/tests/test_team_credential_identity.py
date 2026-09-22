@@ -5,6 +5,8 @@
 
 与仓库既有测试同风格:直接调服务/路由函数,不起 TestClient;取数全部经 spy_connector。
 """
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import func, select
 
@@ -20,6 +22,7 @@ from app.schemas.template import EnumSqlIn, PublishIn, TemplateCreateIn, Templat
 from app.services import (
     credential_service,
     enum_cache_service,
+    notify_service,
     permission_service,
     query_service,
     template_service,
@@ -177,6 +180,41 @@ def test_enqueue_block_notifies_team_admins(
     notes = db.scalars(select(Notification).where(Notification.id > since_note)).all()
     assert {n.user_id for n in notes} == {a_admin.id}, "只通知能修的人,发起人已同步拿到报错"
     assert notes[0].job_id is None and notes[0].template_id == tmpl.id
+
+
+def test_credential_block_alert_is_deduped_within_the_cooldown(
+    db, ds, author, biz, a_admin, team_a, ready, spy_connector
+):
+    """同一任务反复撞上「缺团队账号」,冷却窗内只告警一次。
+
+    这条告警说的是一个**等人去修的状态**,不是一次性事件:账号配好之前,每一次运行都会再撞
+    一次同一件事。开放 API 之后这不再是理论问题 —— 一个循环重试的 Agent 能在几分钟内把团队
+    管理员的铃铛刷满,而那几十条指向的是同一个修法。
+    """
+    spy_connector()
+    tmpl = _published(db, author, ds, team_a, name="tid-反复撞缺账号")
+    _grant_run(db, tmpl, biz, author)
+    credential_service.delete(db, team_a.id, ds.id)
+    floor = db.scalar(select(func.max(Notification.id))) or 0
+
+    for _ in range(3):
+        with pytest.raises(CredentialRequiredError):
+            query_service.enqueue(db, biz, tmpl.id, {"d": "2026-08-01"})
+
+    db.expire_all()
+    notes = db.scalars(select(Notification).where(Notification.id > floor)).all()
+    assert [n.user_id for n in notes] == [a_admin.id], "三次运行撞的是同一件事,只该告警一次"
+
+    # 冷却窗过去、状态仍没修好 ⇒ 重新告警。去重是「别刷屏」,不是「只提醒一次就算了」。
+    notes[0].created_at -= timedelta(
+        minutes=notify_service.CREDENTIAL_ALERT_COOLDOWN_MINUTES + 1
+    )
+    db.commit()
+    with pytest.raises(CredentialRequiredError):
+        query_service.enqueue(db, biz, tmpl.id, {"d": "2026-08-01"})
+
+    db.expire_all()
+    assert len(db.scalars(select(Notification).where(Notification.id > floor)).all()) == 2
 
 
 def test_worker_rechecks_identity_and_notifies_team_admins(
