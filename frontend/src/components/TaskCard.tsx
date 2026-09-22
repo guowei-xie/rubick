@@ -1,5 +1,6 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
 import { ClockCircleOutlined, ApiOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
+import { Task } from "../api";
 import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
 import TaskIdTag from "./TaskIdTag";
 import {
@@ -38,7 +39,7 @@ export default function TaskCard({
   task: r,
   h,
 }: {
-  task: any;
+  task: Task;
   h: TaskHandlers;
 }) {
   const users: any[] = r.authorized_users || [];
@@ -280,7 +281,7 @@ export default function TaskCard({
               whiteSpace: "nowrap",
               textOverflow: "ellipsis",
             }}
-            title={r.author_name}
+            title={r.author_name ?? undefined}
           >
             {r.author_name}
           </span>

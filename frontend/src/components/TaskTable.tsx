@@ -6,6 +6,7 @@ import StatusTag, {
   TEMPLATE_STATUS,
   templateStatusRank,
 } from "./StatusTag";
+import { Task } from "../api";
 import { byTaskName, dash } from "../format";
 import { TASK_ID_COLUMN } from "./TaskIdTag";
 import {
@@ -63,7 +64,7 @@ export interface TaskTableBulk {
   selectedKeys: number[];
   onSelectedChange: (keys: number[]) => void;
   /** 这一行现在能不能勾,以及不能勾时那句话。**理由来自服务端**,前端不复述规则 */
-  decisionOf: (r: any) => { ok: boolean; reason: string };
+  decisionOf: (r: Task) => { ok: boolean; reason: string };
 }
 
 export default function TaskTable({
@@ -72,15 +73,15 @@ export default function TaskTable({
   hitId,
   bulk,
 }: {
-  tasks: any[];
+  tasks: Task[];
   h: TaskHandlers;
   /** 按 ID 精确搜时命中的那一条,给它整行高亮。见下方 rowClassName 的理由。 */
   hitId?: number | null;
   /** 给了它就进入批量交接模式:多一列勾选,整行点击从「取数」改为「勾选」。 */
   bulk?: TaskTableBulk;
 }) {
-  const columns: TableColumnType<any>[] = useMemo(() => {
-    const cols: TableColumnType<any>[] = [
+  const columns: TableColumnType<Task>[] = useMemo(() => {
+    const cols: TableColumnType<Task>[] = [
       TASK_ID_COLUMN,
       {
         title: "任务名",
@@ -88,7 +89,7 @@ export default function TaskTable({
         width: 260,
         ellipsis: true,
         sorter: byTaskName,
-        render: (_: any, r: any) => (
+        render: (_: unknown, r: Task) => (
           <span
             style={{ display: "inline-flex", alignItems: "center", gap: 6, maxWidth: "100%" }}
             // 说明是次级信息,不单独占一列(列表模式先要密度);悬停在任务名上看得到
@@ -123,7 +124,7 @@ export default function TaskTable({
         dataIndex: "schedule_desc",
         width: 150,
         ellipsis: true,
-        render: (_: any, r: any) =>
+        render: (_: unknown, r: Task) =>
           r.subscribe_enabled || r.allow_api ? (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               {r.subscribe_enabled && (
@@ -156,7 +157,7 @@ export default function TaskTable({
       {
         title: "被授权",
         width: 120,
-        render: (_: any, r: any) => {
+        render: (_: unknown, r: Task) => {
           const users: any[] = r.authorized_users || [];
           if (!users.length) return dash(null);
           return (
@@ -176,7 +177,7 @@ export default function TaskTable({
         // 一份 —— 否则一列裸时间没人知道量的是什么,两个视图还会各自漂。
         // 悬停必须是**原生 title**:行上挂着 runHint 的原生 title,只有子元素的原生 title
         // 盖得住它,换 Tooltip 会两个一起弹。
-        render: (_: any, r: any) => {
+        render: (_: unknown, r: Task) => {
           const c = taskTimeCell(r);
           return (
             <span title={c.hint} style={c.idle ? IDLE_TEXT : undefined}>
@@ -198,7 +199,7 @@ export default function TaskTable({
         // 窄屏横向滚动时把操作列钉在右边:⋮(运行记录/上下线)与授权 + 是这一行最常用的两个
         // 入口,不该是「先横滚到底才点得到」的那一列
         fixed: "right" as const,
-        render: (_: any, r: any) => (
+        render: (_: unknown, r: Task) => (
           <span onClick={stop} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <Dropdown
               menu={{ items: taskMenuItems(r, h) }}

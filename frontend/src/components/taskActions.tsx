@@ -1,6 +1,7 @@
 import { Avatar, Button, Tooltip } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 
+import { Task } from "../api";
 import { fmtTime } from "../format";
 import { TASK_IDLE } from "./StatusTag";
 
@@ -14,19 +15,19 @@ import { TASK_IDLE } from "./StatusTag";
  */
 
 export type TaskHandlers = {
-  onRun: (r: any) => void;
-  onEdit: (r: any) => void;
-  onView: (r: any) => void; // 只读打开同一个编辑器(can_view_detail 但无 can_manage 的团队内部人)
-  onGrant: (r: any) => void;
-  onRecords: (r: any) => void;
-  onPublish: (r: any) => void;
-  onArchive: (r: any) => void; // 收进回收站(已上线叫「下线」、草稿叫「移入回收站」)
-  onUnarchive: (r: any) => void; // 回收站 → 草稿(另一个出口是 onPublish 的「重新上线」)
-  onSubscribeToggle: (r: any) => void; // 订阅/退订(按 r.subscribed 二态)
-  onSubscribers: (r: any) => void; // 订阅者名单与订阅记录(can_manage)
+  onRun: (r: Task) => void;
+  onEdit: (r: Task) => void;
+  onView: (r: Task) => void; // 只读打开同一个编辑器(can_view_detail 但无 can_manage 的团队内部人)
+  onGrant: (r: Task) => void;
+  onRecords: (r: Task) => void;
+  onPublish: (r: Task) => void;
+  onArchive: (r: Task) => void; // 收进回收站(已上线叫「下线」、草稿叫「移入回收站」)
+  onUnarchive: (r: Task) => void; // 回收站 → 草稿(另一个出口是 onPublish 的「重新上线」)
+  onSubscribeToggle: (r: Task) => void; // 订阅/退订(按 r.subscribed 二态)
+  onSubscribers: (r: Task) => void; // 订阅者名单与订阅记录(can_manage)
   // 转移作者(离职交接)。门是 can_transfer_author 而**不是** can_manage:
   // 被授予该任务编辑权的人有 can_manage,却不该能处分归属
-  onTransferAuthor: (r: any) => void;
+  onTransferAuthor: (r: Task) => void;
 };
 
 /** 卡片/行内的点击不该冒泡成「取数」。菜单项与弹层虽在 DOM 上走 portal,
@@ -102,26 +103,27 @@ export function taskMenuItems(r: any, h: TaskHandlers): any[] {
 }
 
 /** 「点一下是不是就能取数」的悬停解释。点不动时必须说清是哪一种原因。 */
-export function runHint(r: any): string {
+export function runHint(r: Task): string {
   if (r.can_run) return "点击填参取数";
   return r.status !== "published" ? "任务未上线,暂不可取数" : "未授权,暂不可取数";
 }
 
 /** 列表里显示哪个时间,以及它是哪一种。 */
-export function taskTimeMeta(r: any): { value: string; label: string } {
+export function taskTimeMeta(r: Task): { value: string; label: string } {
   if (r.last_run_at) return { value: r.last_run_at, label: "最后运行" };
   if (r.updated_at) return { value: r.updated_at, label: "最后编辑" };
-  return { value: r.created_at, label: "创建于" };
+  // 三个时间后端都可空(DB 侧可空);都没有时给空串,由 fmtTime 渲染成 dash
+  return { value: r.created_at ?? "", label: "创建于" };
 }
 
 /** 该不该挂「缺取数账号」告警。是一条策略(给谁看、哪种账号状态算跑不动),
  *  所以条件与文案一起放这里:业务用户看一堆自己修不了的红字只会造成困扰(他们点运行时会拿到
  *  指名团队的报错),而「已配置但没点过测试连接」的账号照样能跑,不该挂告警。 */
-export function showCredentialWarn(r: any): boolean {
+export function showCredentialWarn(r: Task): boolean {
   return !!r.can_manage && r.credential_ready === false;
 }
 
-export function credentialWarnText(r: any): string {
+export function credentialWarnText(r: Task): string {
   return `团队${r.team_name ? `《${r.team_name}》` : ""}尚未登记该数据源的取数账号 —— 该任务当前无法运行,请联系团队管理员`;
 }
 
@@ -134,7 +136,7 @@ export function credentialWarnText(r: any): string {
  *     正是会做「清理没人用的任务」这件事的那批人。
  *  排序、卡片、列表、标题栏计数、筛选五处全读这一个函数 ——
  *  否则会出现「标题栏说 3 个闲置、列表里只找得到 1 个」。 */
-export function showIdle(r: any): boolean {
+export function showIdle(r: Task): boolean {
   return !!r.can_manage && r.is_idle === true;
 }
 
@@ -144,7 +146,7 @@ export function showIdle(r: any): boolean {
  *  (280px 的卡头还要放状态点、⋮ 与可能出现的「缺取数账号」胶囊),又要读的人自己心算,
  *  而那个换算恰恰是这个提示的全部价值。日期退进悬停(idleHint)里。
  *  天数由服务端 idle_days 给,前端不许自己再算一遍。 */
-export function idleLabel(r: any): string {
+export function idleLabel(r: Task): string {
   return `闲置 ${r.idle_days} 天`;
 }
 
@@ -152,7 +154,7 @@ export function idleLabel(r: any): string {
  *  否则「闲置 167 天」读起来像一句指责,而不是一条可以处理的线索。
  *  「从未运行」要单独说:对一个从来没跑过的任务,「最后一次运行在…」是假话,
  *  而且「上线后就没人跑过」与「跑过但没人跑了」的处理方式本来就不一样。 */
-export function idleHint(r: any): string {
+export function idleHint(r: Task): string {
   // 从未运行时把 taskTimeMeta 那一档降级(最后编辑 / 创建于)也交代出来 ——
   // 否则一个「昨天刚编辑过、但一直没人跑」的任务,悬停里只剩「从未运行过」,
   // 而「还有人在维护」恰恰是决定要不要下线时最该看到的一条
@@ -173,7 +175,7 @@ export function idleHint(r: any): string {
  *  该比正文多给一点信息,否则它和正文一字不差)。
  *  留给各视图自己决定的只有包法:卡片用 Tooltip,列表必须用原生 title(行上挂着 runHint
  *  的原生 title,只有子元素的原生 title 盖得住它)。 */
-export function taskTimeCell(r: any): { text: string; hint: string; idle: boolean } {
+export function taskTimeCell(r: Task): { text: string; hint: string; idle: boolean } {
   if (showIdle(r)) return { text: idleLabel(r), hint: idleHint(r), idle: true };
   const { value, label } = taskTimeMeta(r);
   return { text: fmtTime(value, false), hint: `${label} · ${fmtTime(value)}`, idle: false };
@@ -186,12 +188,12 @@ export const IDLE_TEXT: React.CSSProperties = { color: TASK_IDLE.dot, fontWeight
 
 /** 定时运行标签的文字与悬停说明。计划描述由后端拼好(schedule_desc),前端不自己算频次语义;
  *  「已订阅」与计划本身二选一,订阅人数只在有人订时才缀上。 */
-export function scheduleLabel(r: any): string {
+export function scheduleLabel(r: Task): string {
   const head = r.subscribed ? "已订阅" : r.schedule_desc || "可订阅";
   return r.subscriber_count > 0 ? `${head} · ${r.subscriber_count}` : head;
 }
 
-export function scheduleHint(r: any): string {
+export function scheduleHint(r: Task): string {
   return (
     `定时运行:${r.schedule_desc || ""} · ${r.subscriber_count || 0} 人订阅` +
     (r.subscribed ? "(含你)" : "")
@@ -222,7 +224,7 @@ export function AuthorizedAvatars({ users, wrapperTitle }: { users: any[]; wrapp
 
 /** 「授权用户」按钮。can_manage 这道门与它的样子一起放这里 —— 两种视图各写一遍,
  *  改成「已下线的任务不给授权」时就会漏掉一处。 */
-export function GrantButton({ task: r, h }: { task: any; h: TaskHandlers }) {
+export function GrantButton({ task: r, h }: { task: Task; h: TaskHandlers }) {
   if (!r.can_manage) return null;
   return (
     <Button

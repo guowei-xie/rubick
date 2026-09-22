@@ -22,6 +22,7 @@ import {
   listTasks,
   publishTemplate,
   subscribeTask,
+  Task,
   unarchiveTemplate,
   unsubscribeTask,
 } from "../api";
@@ -135,7 +136,7 @@ export default function TasksPage() {
   // 那一律读服务端算好的 task.can_manage,前端不自己算团队规则。
   const isManager = isManagerRole(user);
 
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   // 编辑器目标:null=关闭;{id:null}=新建;{id:n}=编辑;带 readOnly=只读查看
   const [editor, setEditor] = useState<{ id: number | null; readOnly?: boolean } | null>(null);

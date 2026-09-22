@@ -138,7 +138,50 @@ export const refreshTaskEnumValues = (templateId: number, variable: string) =>
     .then((r) => r.data as SharedEnumValues);
 
 // ---- tasks(统一任务列表)----
-export const listTasks = () => http.get("/tasks").then((r) => r.data);
+/** 任务列表的一行(后端 schemas/query.TaskOut)。
+ *
+ *  **有类型的理由**:这些行此前在 TaskCard / TaskTable / taskActions 里一路是 `any`,
+ *  于是「读一个后端根本不下发的字段」编译期查不出来 —— allow_api 加在了 TemplateOut 上
+ *  而列表走的是 TaskOut,卡片与表格上新加的「API」标记因此从上线起就没渲染过一次,
+ *  肉眼看不出与「这批任务恰好都没开 API」的区别。
+ *
+ *  按需声明、不照抄后端全字段(同本文件 Job 的写法):列的是界面真读的那些,
+ *  后端加了新字段而界面用不上时,这里不必跟着长。 */
+export interface Task {
+  id: number;
+  name: string;
+  /** 草稿 / 已上线 / 已下线(archived = 回收站,见 models/template.STATUS_*) */
+  status: "draft" | "published" | "archived";
+  description?: string | null;
+  team_id?: number | null;
+  team_name?: string | null;
+  author_name?: string | null;
+  datasource_name?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_run_at?: string | null;
+  schedule_desc?: string | null;
+  /** 距今多少天没运行过;**非已上线任务恒为 null**(草稿/已下线不参与闲置判定) */
+  idle_days?: number | null;
+  // 以下都有后端默认值、恒随每一行下发,所以是必填而不是可选 —— 写成可选就得在每个
+  // 使用点补一次 `?? 0` / `?? false`,而那些兜底掩盖的恰恰是「后端没给」这种真问题
+  /** 允许被开放 API 触发(运行闸)。卡片与表格据此显示「API」标记 */
+  allow_api: boolean;
+  can_manage: boolean;
+  can_run: boolean;
+  can_view_detail: boolean;
+  can_subscribe: boolean;
+  can_transfer_author: boolean;
+  developed_by_me: boolean;
+  credential_ready: boolean;
+  is_idle: boolean;
+  idle_threshold_days: number;
+  subscribe_enabled: boolean;
+  subscribed: boolean;
+  subscriber_count: number;
+  authorized_users: { id: number; name?: string | null; avatar?: string | null }[];
+}
+export const listTasks = () => http.get("/tasks").then((r) => r.data as Task[]);
 export const taskRunRecords = (id: number) =>
   http.get(`/tasks/${id}/jobs`).then((r) => r.data);
 
