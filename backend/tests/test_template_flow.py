@@ -154,3 +154,22 @@ def test_publish_without_version_raises(db, admin, ds, team):
     db.commit()
     with pytest.raises(RubicError):
         template_service.publish(db, tmpl, admin, None)
+
+
+def test_new_task_allows_api_by_default(db, admin, ds, team):
+    """新建任务默认开着「允许 API 调用」这道运行闸,且能被显式关掉。
+
+    默认值同时写在三处(模型 default、TemplateCreateIn 默认、编辑器新建表单),
+    这条用例钉住其中真正落库的那两处 —— 前端表单的默认只影响它自己发上来的值。
+    """
+    assert _draft(db, admin, ds, team, "默认开 API").allow_api is True
+
+    off = template_service.create_template(
+        db, admin,
+        TemplateCreateIn(
+            name="显式关 API", team_id=team.id, datasource_id=ds.id,
+            sql_text="SELECT * FROM o WHERE d = :d", params=[ParamDef(name="d")],
+            allow_api=False,
+        ),
+    )
+    assert off.allow_api is False

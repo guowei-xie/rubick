@@ -179,7 +179,9 @@ export default function TaskEditor({
       form.setFieldsValue({
         params: [],
         team_id: mine.length === 1 ? mine[0].id : undefined,
-        allow_api: false,
+        // 与后端 TemplateCreateIn.allow_api 同默认(开):开关只是运行闸、不放权,
+        // 不想被 API 触发的任务由作者在这里显式关掉
+        allow_api: true,
         ...subFormFields(),
       });
       setActiveKeys([]);

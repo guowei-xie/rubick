@@ -107,8 +107,8 @@ def enqueue(
     「触发通道」与「运行来源」是同一个事实,不为入队路径再建一套 via 词汇。
     审计 detail 里仍写 via(那是审计自己的词表,DownloadEvent 也用它)。
 
-    **运行闸 fail-closed**:API 触发要求任务显式开启了「允许 API 调用」(allow_api),
-    默认关 —— 没开的任务不该因为某枚 token 就对外可跑;拒绝会记审计
+    **运行闸**:API 触发要求任务的「允许 API 调用」(allow_api)是开着的 —— 新任务默认开,
+    但被编辑者关掉的任务不该因为某枚 token 就对外可跑;拒绝会记审计
     (排查 Agent 接入时第一个要看的地方)。
     """
     tmpl = db.get(SqlTemplate, template_id)

@@ -151,8 +151,8 @@ class TemplateCreateIn(BaseModel):
     sql_text: str
     params: list[ParamDef] = []
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
-    # 允许开放 API 触发该任务(运行闸;默认关,见 models/template.py 的 allow_api 注释)
-    allow_api: bool = False
+    # 允许开放 API 触发该任务(运行闸;默认开,见 models/template.py 的 allow_api 注释)
+    allow_api: bool = True
     # 作者测出来的候选值,按变量名归集。**缺省 ≠ 清空**:编辑器每次开窗都清空测试结果,
     # 所以「只改任务名、没重测」发来的就是空 dict,此时必须保留已有的共享候选。
     enum_samples: dict[str, EnumSampleIn] = {}

@@ -39,7 +39,7 @@ Authorization: Bearer rk_...
 | `params` | array | 参数定义数组，见下表 |
 | `can_run` | bool | 我是否有运行权限（任务已上线且被授权「运行」） |
 | `can_download` | bool | 我是否有下载权限 |
-| `allow_api` | bool | 任务是否开放 API 触发；为 `false` 时 `POST runs` 一律 403 |
+| `allow_api` | bool | 任务是否开放 API 触发；新任务默认 `true`，作者可关掉，为 `false` 时 `POST runs` 一律 403 |
 
 `params` 数组的每个元素：
 
@@ -140,7 +140,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 
 - **Token = 本人身份。** 网页上能看、能跑、能下载的，API 一样能；网页上没有的权限，API 也没有。授权（查看 / 运行 / 下载）仍由任务作者在网页界面上授予，API 不提供授权入口。
 - `can_run` / `can_download` 与界面上的「运行 / 下载」授权是同一口径。
-- **`allow_api` 只是运行闸**：它决定这个任务允不允许被 API 触发，**不授予任何人任何权限**。要调用某个任务，需要任务作者打开 `allow_api`，**并且**你被授权「运行」（下载结果另需「下载」）。
+- **`allow_api` 只是运行闸**：它决定这个任务允不允许被 API 触发，**不授予任何人任何权限**。新任务默认开着，作者可随时关掉；要调用某个任务，需要它的 `allow_api` 为 `true`，**并且**你被授权「运行」（下载结果另需「下载」）。
 - API 触发的运行在运行记录里 `source=api`，审计日志带 `via=api` 标记，与网页取数区分得开。
 
 ## 8. 完整流程示例

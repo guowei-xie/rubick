@@ -508,8 +508,10 @@ def main() -> None:
     _ensure_index(tbl("users"), f"ix_{tbl('users')}_api_token_hash", "api_token_hash")
 
     # 增量列:「允许 API 调用」运行闸。带 DEFAULT 的 NOT NULL 是 _ensure_column 惯例
-    # (只加可空列)的唯一例外:默认值 False 正是这个开关的语义(没开就是没开),
-    # 而可空会把「未设置」变成第三种状态,所有读取处都得兜 None
+    # (只加可空列)的唯一例外:可空会把「未设置」变成第三种状态,所有读取处都得兜 None。
+    # 这里的 0 **刻意**不跟模型的 server_default="1" 一致:加列是给**存量行**定值,
+    # 而「默认允许 API 调用」只是新建任务的默认值 —— 已经在库里的任务不该因为默认值
+    # 改了就被动对外开放。新行也不吃库里的默认值(ORM default=True 每次 INSERT 都显式带上)。
     _ensure_column(tbl("sql_templates"), "allow_api", "BOOLEAN NOT NULL DEFAULT 0")
 
     # 增量列:下载通道(web/api)。存量回填 web —— 彼时 API 尚不存在,这是事实
