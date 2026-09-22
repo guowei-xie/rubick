@@ -1,6 +1,22 @@
 import { Table } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
+/** 任务排行表的前三列:编号 / 任务 / 团队。三个板块的排行表逐字相同,收在这里一份。
+ *
+ *  名字与团队名都做了空兜底:任务被硬删后这两列取不到,而编号与计数还在 —— 留一行
+ *  「已不存在」比整行消失好,顺着编号还能在审计里查到那批运行是谁发起的。
+ *  (对名字必然非空的调用点无害,只是永远走不到兜底分支。) */
+export function taskRankColumns<T extends object>(): ColumnsType<T> {
+  return [
+    { title: "编号", dataIndex: "template_id", width: 72,
+      render: (v: number) => <span className="rk-ana-id">#{v}</span> },
+    { title: "任务", dataIndex: "name", ellipsis: true,
+      render: (v: string | null) => v ?? "(任务已不存在)" },
+    { title: "团队", dataIndex: "team_name", ellipsis: true,
+      render: (v: string | null) => v ?? "—" },
+  ];
+}
+
 /**
  * 排行表:AntD Table + 一列 CSS 行内条形。
  *

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { AnalyticsQuery, ApiUsageData, MetricNote, analyticsApi } from "../../api";
 import MetricCard, { CARD_COL } from "../../components/analytics/MetricCard";
-import RankBarTable from "../../components/analytics/RankBarTable";
+import RankBarTable, { taskRankColumns } from "../../components/analytics/RankBarTable";
 import SectionCard from "../../components/analytics/SectionCard";
 import { taskLink } from "../../taskSearch";
 import { useSectionData } from "./useAnalyticsQuery";
@@ -38,7 +38,7 @@ export default function ApiSection({
   );
 
   // 一枚 token 都没发过、且**全期**一次 API 运行都没有 ⇒ 整块换成一句「还没开张」。
-  // 其余四块不这么做(平台开张了就一定有任务、有权限),而开放 API 是可选能力:
+  // 其余各块不这么做(平台开张了就一定有任务、有权限),而开放 API 是可选能力:
   // 没接过是常态,给一屏「—」不如直接说清怎么开始。
   // 判据用 has_data 不用 value —— 后者会把「本区间没人调、但上个月天天调」误判成没开张。
   // 注意 tokens_issued 的 has_data 走的是 metric() 的默认推导(非 None 且非 0),
@@ -58,10 +58,9 @@ export default function ApiSection({
       error={error}
       onRetry={reload}
       empty={neverUsed}
-      emptyText={
-        "还没有人通过开放 API 取数。要走通这条路:调用人在头像菜单里生成 API Token," +
-        "任务作者打开任务上的「允许 API 调用」,并给调用人授权「运行」。"
-      }
+      // 只说「还没开张」这个事实,不在这里复述接入步骤:那套话在任务编辑器的开关旁、
+      // API Token 弹窗、使用文档里都写着,分析页再抄一遍就是第 N 份会各自漂移的说明
+      emptyText="还没有人通过开放 API 取数。接入方式见「使用文档」。"
     >
       {data && (
         <>
@@ -124,32 +123,13 @@ export default function ApiSection({
             barLabel="API 调用次数"
             emptyText="这段时间没有任务被 API 调用过"
             onRow={(r) => ({ onClick: () => nav(taskLink(r.template_id)) })}
-            columns={[
-              {
-                title: "编号",
-                dataIndex: "template_id",
-                width: 72,
-                render: (v: number) => <span className="rk-ana-id">#{v}</span>,
-              },
-              {
-                // 任务被硬删后名字就取不到了,但运行记录还在。留一行「已不存在」比整行消失好:
-                // 编号还在,顺着它能在审计里查到这批调用是谁发起的
-                title: "任务",
-                dataIndex: "name",
-                ellipsis: true,
-                render: (v: string | null) => v ?? "(任务已不存在)",
-              },
-              {
-                title: "团队",
-                dataIndex: "team_name",
-                ellipsis: true,
-                render: (v: string | null) => v ?? "—",
-              },
-            ]}
+            columns={taskRankColumns<ApiUsageData["top_tasks"][number]>()}
           />
+          {/* 「只数 API 触发」由 api_runs 的 note 讲(就挂在上面那张卡上),这里只说排行本身
+              问不出来的那件事:任务能被调用要两个条件同时成立 */}
           <div className="rk-ana-caption">
-            只数「API 触发」的运行,同一张任务在界面上被跑的次数不计入这里。一张任务能被调用要两件事
-            都做到:作者打开「允许 API 调用」,且调用人本人被授权「运行」—— 开关不放宽任何权限。
+            一张任务能被调用要两件事都做到:作者打开「允许 API 调用」,且调用人本人被授权「运行」
+            —— 开关不放宽任何权限。
           </div>
         </>
       )}

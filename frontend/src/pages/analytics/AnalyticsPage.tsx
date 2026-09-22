@@ -17,14 +17,14 @@ import "./analytics.css";
 /**
  * 运营分析页。
  *
- * 结构上是**一屏到底的五个板块 + 锚点**,不用 Tab:这页的核心动作是「扫一眼有没有异常」,
+ * 结构上是**一屏到底的板块列表 + 锚点**,不用 Tab:这页的核心动作是「扫一眼有没有异常」,
  * 而异常可能出现在任意一个视角里 —— Tab 会把大部分答案藏在点击后面,
  * 于是「运行健康正常、但三个团队缺账号」这种组合永远要点好几次才发现。
  * 这些视角之间本来也有因果链(缺账号 → 运行失败 → 任务闲置 → 采纳下降;
  * 开放 API 则是采纳的另一条腿 —— 界面之外还有没有人在取数),顺着读更自然。
  *
  * 取数上**首屏只打两个请求**(meta + 板块①),其余滚到跟前再取(useSectionData)。
- * 一次并发六个在本地 SQLite 上会串行排队,而用户实际只先看第一块。
+ * 每块各发一个请求,一起并发在本地 SQLite 上会串行排队,而用户实际只先看第一块。
  */
 export default function AnalyticsPage() {
   const { user } = useAuth();
@@ -123,7 +123,6 @@ export default function AnalyticsPage() {
       <HealthSection {...shared} />
       <AssetsSection {...shared} teamId={scope.teamId} />
       <GovernanceSection {...shared} platform={platform} teamId={scope.teamId} />
-      {/* 开放 API 没有平台专属键(token 按团队成员收窄、运行按任务归属),故只吃 shared */}
       <ApiSection {...shared} />
     </div>
   );

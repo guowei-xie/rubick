@@ -1,8 +1,8 @@
 import { Col, Row, Table } from "antd";
 import { useNavigate } from "react-router-dom";
-import { AnalyticsQuery, AssetsData, MetricNote, analyticsAssets } from "../../api";
+import { AnalyticsQuery, AssetsData, MetricNote, TopTemplate, analyticsAssets } from "../../api";
 import MetricCard, { CARD_COL } from "../../components/analytics/MetricCard";
-import RankBarTable from "../../components/analytics/RankBarTable";
+import RankBarTable, { taskRankColumns } from "../../components/analytics/RankBarTable";
 import SectionCard from "../../components/analytics/SectionCard";
 import { fmtDayTime, fmtPercent } from "../../format";
 import { taskLink } from "../../taskSearch";
@@ -115,10 +115,7 @@ export default function AssetsSection({
             emptyText="这段时间没有任务被运行"
             onRow={(r) => ({ onClick: () => nav(taskLink(r.template_id)) })}
             columns={[
-              { title: "编号", dataIndex: "template_id", width: 72,
-                render: (v: number) => <span className="rk-ana-id">#{v}</span> },
-              { title: "任务", dataIndex: "name", ellipsis: true },
-              { title: "团队", dataIndex: "team_name", ellipsis: true },
+              ...taskRankColumns<TopTemplate>(),
               {
                 title: "使用人数", dataIndex: "distinct_users", width: 96,
                 render: (v: number) => (

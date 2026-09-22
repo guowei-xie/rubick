@@ -2,7 +2,7 @@ import { Col, Row, Table, Tag } from "antd";
 import { useNavigate } from "react-router-dom";
 import { AnalyticsQuery, GovernanceData, MetricNote, analyticsGovernance } from "../../api";
 import MetricCard, { CARD_COL, plain } from "../../components/analytics/MetricCard";
-import RankBarTable from "../../components/analytics/RankBarTable";
+import RankBarTable, { taskRankColumns } from "../../components/analytics/RankBarTable";
 import SectionCard from "../../components/analytics/SectionCard";
 import { ROLE } from "../../components/StatusTag";
 import { fmtDayTime } from "../../format";
@@ -122,12 +122,7 @@ export default function GovernanceSection({
                 barKey="granted_users"
                 barLabel="被授权人数"
                 onRow={(r) => ({ onClick: () => nav(taskLink(r.template_id)) })}
-                columns={[
-                  { title: "编号", dataIndex: "template_id", width: 72,
-                    render: (v: number) => <span className="rk-ana-id">#{v}</span> },
-                  { title: "任务", dataIndex: "name", ellipsis: true },
-                  { title: "团队", dataIndex: "team_name", ellipsis: true },
-                ]}
+                columns={taskRankColumns<GovernanceData["wide_access_tasks"][number]>()}
               />
             </>
           )}

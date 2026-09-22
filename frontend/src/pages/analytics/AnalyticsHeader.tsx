@@ -5,7 +5,7 @@ import { Preset } from "./useAnalyticsScope";
 
 const { RangePicker } = DatePicker;
 
-/** 页面内的五个板块锚点。不是 Tab —— 它们不卸载内容,只是滚动定位。 */
+/** 页面内的板块锚点。不是 Tab —— 它们不卸载内容,只是滚动定位。 */
 export const SECTIONS = [
   { id: "adoption", label: "采纳与活跃" },
   { id: "health", label: "运行健康" },

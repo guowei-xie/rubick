@@ -1,17 +1,13 @@
 """板块⑤「开放 API」的口径。
 
-这块板要回答的是「平台的取数能力有没有真的被脚本与 Agent 接走」。它有两个别处没有的特点,
-本文件大半篇幅都在钉这两条:
+三条最值钱:
 
-① **「近 7 天用过」不吃页面的时间范围**。它是全页唯一一个既不是「本区间」也不是「此刻」的
-   窗口 —— 问的是「这些长期凭证还活着吗」(安全卫生),而不是「这段时间 API 用得多不多」。
-   把页面窗口调到 90 天,活跃判据仍然只看 7 天。
-② **同一块板里并存两套收窄口径**:token 按**团队成员**收窄(token 属于人),运行与下载按
-   **任务归属**收窄。于是团队视角下「3 枚 token / 100 次调用」并不矛盾。强行统一会让其中
-   一个算错,所以这里用一条用例把「两套并存」钉成有意为之,而不是等人来「修正」。
-
-另有一条是前端的地基:整块空态压在 `tokens_issued.has_data` / `api_runs.has_data` 上,
-而前者走的是 metric() 的默认推导。哪天后端给它显式传 has_data,界面的空态就会失真。
+  · test_active_window_is_fixed_seven_days_not_the_page_window —— 活跃判据固定看 7 天,
+    页面把范围拖到 90 天也不放宽。它是全页唯一一个既不是「本区间」也不是「此刻」的窗口;
+  · test_team_view_narrows_tokens_to_members —— token 按团队成员、运行按任务归属,
+    同一块板里两套收窄口径并存是有意为之,不是等着被「修正」的不一致;
+  · test_active_has_data_follows_issued —— 界面整块空态压在这两个 has_data 上,
+    判据一变,一块本该说「还没开张」的板就会变成一屏「—」。
 """
 from datetime import datetime, timedelta
 
@@ -27,7 +23,7 @@ from app.models.query_job import (
 )
 from app.models.template import SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
-from app.services import analytics_service
+from app.services import analytics_service, api_token_service
 
 pytestmark = pytest.mark.usefixtures("clean_jobs", "clean_tokens")
 
@@ -112,21 +108,20 @@ def _team(db, admin):
 
 
 def _give_token(db, user, *, used_days_ago=None):
-    """直接写 User 的三列,**不走 api_token_service.issue**。
+    """真的签发一枚(api_token_service.issue),只有「最近使用」手工盖。
 
-    issue 会写审计,而 last_used_at 只能经 authenticate 盖上 —— 那样就没法造出
-    「8 天前用过」这种时刻,而「固定 7 天」恰恰是本文件最要紧的一条。
+    签发的写入形状交还给服务层 —— 手抄三列的话,口径哪天从「hash 非空」收紧成
+    「hash 非空且形状合法」,本文件全部用例会一起失真而不报错。
+    要绕开的只有 last_used_at:它只能经 authenticate 盖上当下,造不出「8 天前」。
 
     used_days_ago 从**真实时钟**起算,不是本文件那个固定的 NOW:「近 7 天用过」是
     windowed=False 的此刻快照,服务端就是拿 datetime.now() 回看 7 天的 —— 这正是
     它不吃页面时间范围的原因,测试必须站在同一个时钟上。
     """
-    user.api_token_hash = f"hash-{user.id}"
-    user.api_token_issued_at = datetime.now() - timedelta(days=30)
-    user.api_token_last_used_at = (
-        None if used_days_ago is None else datetime.now() - timedelta(days=used_days_ago)
-    )
-    db.commit()
+    api_token_service.issue(db, user)
+    if used_days_ago is not None:
+        user.api_token_last_used_at = datetime.now() - timedelta(days=used_days_ago)
+        db.commit()
 
 
 # ---------------------------------------------------------------- token(此刻口径)
@@ -138,11 +133,7 @@ def test_tokens_count_only_live_hashes(db, plat, caller, outsider):
     _give_token(db, outsider)
     assert analytics_service.api_usage(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 2
 
-    # 吊销 = 三列同生同灭(见 api_token_service.revoke)
-    outsider.api_token_hash = None
-    outsider.api_token_issued_at = None
-    outsider.api_token_last_used_at = None
-    db.commit()
+    api_token_service.revoke(db, outsider)  # 「三列同生同灭」的定义住在它那里
     assert analytics_service.api_usage(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 1
 
 
@@ -154,12 +145,14 @@ def test_active_window_is_fixed_seven_days_not_the_page_window(db, plat, caller,
     _give_token(db, caller, used_days_ago=6)     # 在 7 天内
     _give_token(db, outsider, used_days_ago=8)   # 刚过 7 天
 
+    # windowed=False 是前端挂「此刻」标记的依据,与窗口无关,断言一次即可
+    assert analytics_service.api_usage(
+        db, _platform(db, plat), WINDOW
+    )["tokens_active_7d"]["windowed"] is False
+
     for window in (WINDOW, WIDE_WINDOW):
         got = analytics_service.api_usage(db, _platform(db, plat), window)
-        assert got["tokens_issued"]["value"] == 2
         assert got["tokens_active_7d"]["value"] == 1, "活跃窗口跟着页面范围变宽了"
-        # windowed=False 是前端挂「此刻」标记的依据
-        assert got["tokens_active_7d"]["windowed"] is False
 
 
 def test_active_has_data_follows_issued(db, plat, caller):
@@ -182,8 +175,13 @@ def test_active_has_data_follows_issued(db, plat, caller):
 # ---------------------------------------------------------------- 运行与下载(窗口口径)
 
 
-def test_api_runs_counts_only_source_api(db, plat, caller, dev, ds, ta, job_factory):
-    """界面正式取数 / 作者试跑 / 订阅定时,一条都不许串进 API 调用数。"""
+def test_api_runs_counts_only_source_api_and_share_divides_by_all(
+    db, plat, caller, dev, ds, ta, job_factory
+):
+    """分子只认 source=api(另三种来源一条都不许串),分母是窗口内**全部**运行。
+
+    分子与占比是同一批数据的两个读法,分开测就要把这四行铺数据抄两遍。
+    """
     base = NOW - timedelta(days=1)
     for src in (SOURCE_RUN, SOURCE_TEST, SOURCE_SUBSCRIBE):
         job_factory(user=dev, template=ta, datasource=ds, source=src, created_at=base)
@@ -191,16 +189,7 @@ def test_api_runs_counts_only_source_api(db, plat, caller, dev, ds, ta, job_fact
 
     got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
     assert got["api_runs"]["value"] == 1
-
-
-def test_api_run_share_denominator_is_all_runs(db, plat, caller, dev, ds, ta, job_factory):
-    """分母是窗口内**全部**运行(含试跑与定时),不是只有正式取数。"""
-    base = NOW - timedelta(days=1)
-    for src in (SOURCE_RUN, SOURCE_TEST, SOURCE_SUBSCRIBE):
-        job_factory(user=dev, template=ta, datasource=ds, source=src, created_at=base)
-    job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API, created_at=base)
-
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
+    # 分母含试跑与定时,不是只有正式取数 —— 否则这里会是 1/2
     assert got["api_run_share"]["value"] == pytest.approx(0.25)
 
 
@@ -308,12 +297,10 @@ def test_team_view_has_same_keys_as_platform(db, plat, a_admin, caller):
 
 
 def test_route_refuses_plain_developer(db, dev):
-    """权限只在 _scoped 里判一次,这条是它的唯一守卫:普通开发者进不来。"""
+    """端点级冒烟:新路由确实过了 _scoped(权限与窗口都在那里解算)。
+
+    _scoped 自身的行为由 test_analytics_scope.py 覆盖,缺省 30 天由 test_timewindow.py
+    覆盖 —— 这里只证明这条新路由接上了它们,不重复钉它们的规格。
+    """
     with pytest.raises(PermissionDeniedError):
         analytics_api(db=db, user=dev)
-
-
-def test_route_defaults_to_last_30_days(db, plat):
-    """不传任何时间参数时窗口是最近 30 天(与其余四个端点同一缺省)。"""
-    got = analytics_api(db=db, user=plat)
-    assert got["window"]["days"] == 30

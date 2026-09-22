@@ -479,7 +479,7 @@ export const setUserRole = (userId: number, role: string) =>
 
 // ---- analytics(运营分析)----
 //
-// 给平台管理员与团队管理员看平台被用得怎么样。五个板块各自一个接口:切时间范围时治理块
+// 给平台管理员与团队管理员看平台被用得怎么样。各板块自己一个接口:切时间范围时治理块
 // 不必重算、某块慢不拖累整页、团队管理员被隐藏的块直接不请求。
 //
 // 两条贯穿全模块的约定,读这些类型前先知道:
@@ -625,10 +625,15 @@ export interface HealthData extends AnalyticsEnvelope {
   }[];
 }
 
-export interface TopTemplate {
+/** 任务排行/明细里「这是哪张任务」的三列。三个板块的排行表共用同一份 ——
+ *  任务被硬删后名字取不到、编号仍在,所以后两列可空。 */
+export interface TaskRankRow {
   template_id: number;
   name: string | null;
   team_name: string | null;
+}
+
+export interface TopTemplate extends TaskRankRow {
   author_name: string | null;
   run_count: number;
   /** 几个不同的人在跑。只有作者自己跑 = 没被业务用起来,比「跑了多少次」更能说明问题 */
@@ -692,12 +697,7 @@ export interface GovernanceData extends AnalyticsEnvelope {
     granted_by_name: string | null;
     granted_at: string | null;
   }[];
-  wide_access_tasks: {
-    template_id: number;
-    name: string | null;
-    team_name: string | null;
-    granted_users: number;
-  }[];
+  wide_access_tasks: (TaskRankRow & { granted_users: number })[];
   downloads: {
     total: Metric;
     top_users: { user_id: number; user_name: string | null; downloads: number; max_rows: number | null }[];
@@ -713,28 +713,19 @@ export interface GovernanceData extends AnalyticsEnvelope {
 }
 
 export interface ApiUsageData extends AnalyticsEnvelope {
-  /** 此刻持有 token 的人数,每人至多一枚。团队视角按**团队成员**收窄(不是按任务归属)——
-   *  所以团队视角下「3 枚 token / 100 次调用」并不矛盾,两者收窄口径本就不同 */
+  /** 此刻口径。团队视角按**团队成员**收窄,与运行/下载的任务归属口径不同 */
   tokens_issued: Metric;
-  /** 固定回看 7 天,**不吃上方的时间范围** —— 它问的是「这些长期凭证还活着吗」。
-   *  卡片标题里必须带「近 7 天」:光靠 windowed=false 的「此刻」标记说不出窗口有多长,
-   *  读者会拿它跟按 30 天算的调用数对账 */
+  /** 固定回看 7 天,**不吃上方的时间范围**(windowed=false) */
   tokens_active_7d: Metric;
   api_runs: Metric;
-  /** API 调用 ÷ 本区间全部运行。分母为 0 时是 null(「没得算」),不是 0 */
+  /** 分母为 0 时是 null(「没得算」),不是 0 */
   api_run_share: Metric;
   api_downloads: Metric;
-  /** 排行,最多 10 条。**不是 Metric**,没有三态 —— 空列表就是空列表。
-   *  任务被硬删后名字取不到、编号仍在,所以这两列可空 */
-  top_tasks: {
-    template_id: number;
-    name: string | null;
-    team_name: string | null;
-    run_count: number;
-  }[];
+  /** 排行,最多 10 条。**不是 Metric**,没有三态 —— 空列表就是空列表 */
+  top_tasks: (TaskRankRow & { run_count: number })[];
 }
 
-/** 五个板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
+/** 各板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
 export interface AnalyticsQuery {
   team_id?: number | null;
   start?: string;
