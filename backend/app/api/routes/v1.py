@@ -5,7 +5,9 @@
 - 薄封装:权限、入队、结果、过期判断全部复用现有 service,这里不做第二份口径;
 - 长任务纯轮询:POST 入队即返回 job_id → GET /runs/{job_id} 轮询 → /result 下载。
 
-结果文件保留 RESULT_RETENTION_DAYS 天,过期一律 400(与界面下载同一句报错)。
+结果文件保留 RESULT_RETENTION_DAYS 天,过期一律 **404**(core.exceptions.ResultExpiredError):
+「东西没了」是资源不存在,不是请求写错了 —— Agent 据 400 会去改参数重发,据 404 才会去
+重跑取数。界面与 API 同码同文案,不按通道分家。
 """
 from __future__ import annotations
 
@@ -24,16 +26,27 @@ from app.models.audit import VIA_API
 from app.models.query_job import SOURCE_API
 from app.models.template import TemplateVersion
 from app.models.user import User
-from app.schemas.query import JobOut
-from app.schemas.v1 import V1RunIn, V1TaskOut
+from app.schemas.common import ParamDef
+from app.schemas.v1 import V1JobOut, V1ParamOut, V1RunIn, V1TaskOut
 from app.services import (
     audit_service,
+    enum_cache_service,
     permission_service,
     query_service,
     subscription_service,
 )
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+
+
+def v1_job_out(db: Session, job) -> V1JobOut:
+    """对外的运行记录 = 界面那份(routes.query.job_out)的投影。
+
+    刻意**穿过** job_out 而不是直接吃 ORM 行:「queue_ahead 只在 queued 时算」这个决定
+    住在那里,绕过去就会有第二份。投影本身靠 from_attributes 读属性,内部多出来的字段
+    (executed_sql / params / user_name…)在这一层被丢掉,理由见 schemas.v1.V1JobOut。
+    """
+    return V1JobOut.model_validate(job_out(db, job))
 
 
 def api_user(user: User = Depends(get_api_user)) -> User:
@@ -63,21 +76,34 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(api_user)):
             .where(TemplateVersion.id.in_(pv_ids))
         ).all()
     )
-    out: list[V1TaskOut] = []
-    for t in rows:
-        params = params_by_version.get(t.published_version_id)
-        out.append(V1TaskOut(
+    # 归一一次,投影与候选值查找吃同一份 —— 各归一各的,旧 shape 的任务会在两边判出不同的 kind
+    params_of: dict[int, list[ParamDef]] = {
+        t.id: [ParamDef.model_validate(p)
+               for p in (params_by_version.get(t.published_version_id) or [])]
+        for t in rows
+    }
+    can_run_of = {t.id: permission_service.can_run(scope, t) for t in rows}
+    # 候选值只给「我能跑的」任务带:跑不了的任务,候选值对调用方没有用处,而最坏载荷是
+    # 任务数 × 值列表变量数 × 每变量上千个值,全塞进 Agent 每次开场的第一枪里。
+    # 这一条与网页侧「看得见就读得到候选」不同口径,故在 docs/open-api.md 的 enum 行写明。
+    enums = enum_cache_service.read_bulk(
+        db, [(t, params_of[t.id]) for t in rows if can_run_of[t.id]]
+    )
+    return [
+        V1TaskOut(
             id=t.id, name=t.name, description=t.description, status=t.status,
             team_id=t.team_id, team_name=t.team_name,
             allow_api=bool(t.allow_api),
-            can_run=permission_service.can_run(scope, t),
+            can_run=can_run_of[t.id],
             can_download=permission_service.can_download(scope, t),
-            params=params or [],
-        ))
-    return out
+            params=[V1ParamOut.of(p, enums.get((t.id, p.name), []))
+                    for p in params_of[t.id]],
+        )
+        for t in rows
+    ]
 
 
-@router.post("/tasks/{template_id}/runs", response_model=JobOut)
+@router.post("/tasks/{template_id}/runs", response_model=V1JobOut)
 def run_task(
     template_id: int,
     data: V1RunIn,
@@ -91,20 +117,20 @@ def run_task(
     fail-closed)。
     """
     job = query_service.enqueue(db, user, template_id, data.values, ip=ip, source=SOURCE_API)
-    return job_out(db, job)
+    return v1_job_out(db, job)
 
 
-@router.get("/runs", response_model=list[JobOut])
+@router.get("/runs", response_model=list[V1JobOut])
 def list_runs(db: Session = Depends(get_db), user: User = Depends(api_user)):
     """运行记录列表:本人发起的 + 所属团队任务下的全部 + 被授权任务的定时运行。
     口径与界面 /api/jobs 同源(query.visible_jobs),不另立一份。"""
     return query_routes.visible_jobs(db, user)
 
 
-@router.get("/runs/{job_id}", response_model=JobOut)
+@router.get("/runs/{job_id}", response_model=V1JobOut)
 def get_run(job_id: int, db: Session = Depends(get_db), user: User = Depends(api_user)):
     """轮询一次运行的状态:status / row_count / duration_ms / error / queue_ahead。"""
-    return job_out(db, query_routes.load_job(db, user, job_id))
+    return v1_job_out(db, query_routes.load_job(db, user, job_id))
 
 
 @router.get("/runs/{job_id}/preview")

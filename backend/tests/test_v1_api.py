@@ -4,6 +4,8 @@
 鉴权依赖(get_api_user)单独在 test_api_token.py 覆盖;这里一律显式传 user,
 只有限流守卫 api_user 直接调来测 429。
 """
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import func, select
 
@@ -11,16 +13,31 @@ from app.api.routes import v1 as v1_routes
 from app.api.routes.templates import update_template
 from app.core import rate_limit, timewindow
 from app.core.config import settings
-from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
+from app.core.exceptions import (
+    NotFoundError,
+    PermissionDeniedError,
+    ResultExpiredError,
+    RubicError,
+)
 from app.models import audit as A
 from app.models.audit import DownloadEvent
 from app.models.permission import RESOURCE_TEMPLATE, SUBJECT_USER
-from app.models.query_job import JOB_SUCCESS, SOURCE_API, QueryJob
+from app.models.query_job import JOB_SUCCESS, SOURCE_API, SOURCE_SUBSCRIBE, QueryJob
+from app.models.subscription import TaskSubscription
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
-from app.schemas.template import TemplateCreateIn, TemplateUpdateIn
-from app.schemas.v1 import V1RunIn
-from app.services import analytics_service, audit_service, permission_service, query_service, template_service
+from app.schemas.query import JobOut
+from app.schemas.template import TemplateCreateIn, TemplateUpdateIn, ValueListOut
+from app.schemas.v1 import V1JobOut, V1RunIn
+from app.services import (
+    analytics_service,
+    audit_service,
+    enum_cache_service,
+    permission_service,
+    query_service,
+    result_service,
+    template_service,
+)
 from tests.conftest import max_audit_id, new_audit_rows, one_audit_row
 
 # ID 段 9410–9413
@@ -136,9 +153,27 @@ def test_run_gate_open_enqueues_with_api_source(db, task_api, viewer):
     assert row.detail["via"] == "api" and row.detail["job_id"] == out.id
 
 
-def test_run_permission_checked_before_gate(db, task_api, outsider):
-    """没运行权限的人撞上的是「无权运行」,而不是运行闸 ——
-    闸的开关状态不该泄露给无权运行的人。"""
+def test_run_on_invisible_task_is_404(db, task_api, outsider):
+    """连看都看不见的任务:404,不是 403。
+
+    「不可见一律 404,不暴露存在但无权」是全平台口径(单条运行记录一直如此,见
+    test_poll_and_runs_list_visibility),此前只有这条入队路径是例外 —— 于是拿一枚 token
+    逐个试编号,就能从 403 与 404 的差别里问出平台上有哪些任务。
+    """
+    since = max_audit_id(db)
+    with pytest.raises(NotFoundError):
+        v1_routes.run_task(task_api.id, V1RunIn(values={"d": "2026-09-21"}), db, outsider, ip=None)
+    assert [r.action for r in new_audit_rows(db, since)] == []
+
+
+def test_run_permission_checked_before_gate(db, task_api, author, outsider):
+    """看得见、但没被授权运行的人撞上的是「无权运行」,而不是运行闸 ——
+    闸的开关状态不该泄露给无权运行的人(它是任务编辑者的配置,不是给外人的信息)。"""
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
+        resource_id=str(task_api.id), actions=["view"],
+        granted_by=author.id, subject_id=str(outsider.id),
+    )
     since = max_audit_id(db)
     with pytest.raises(PermissionDeniedError, match="无权运行"):
         v1_routes.run_task(task_api.id, V1RunIn(values={"d": "2026-09-21"}), db, outsider, ip=None)
@@ -160,9 +195,20 @@ def test_poll_and_runs_list_visibility(db, task_api, viewer, outsider):
     assert job.id not in [j.id for j in v1_routes.list_runs(db, outsider)]
 
 
-def test_preview_and_download_direct(db, task_api, viewer, spy_connector):
-    """跑通(假连接器)→ 预览 JSON → Bearer 直出 CSV;下载按 via=api 留痕。"""
+def test_preview_and_download_direct(db, task_api, author, viewer, spy_connector):
+    """跑通(假连接器)→ 预览 JSON → Bearer 直出 CSV;下载按 via=api 留痕。
+
+    本用例测的是下载通道的留痕,不是下载闸(闸单独两条)。所以在用例内显式补一条 download
+    授权,而**不改 task_api fixture** —— 它的「只有 view+run」正是闸那两条用例的前提,
+    也被 test_tasks_list_visibility_and_shape 的 can_download is False 依赖着。
+    顺带这也覆盖了闸的放行分支之一:团队外、被显式授予 download 的业务使用者。
+    """
     spy_connector(rows=[("2026-09-21",), ("2026-09-22",)])
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
+        resource_id=str(task_api.id), actions=["download"],
+        granted_by=author.id, subject_id=str(viewer.id),
+    )
     job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     query_service.execute_job(job.id)
     db.refresh(job)
@@ -195,11 +241,241 @@ def test_preview_and_download_direct(db, task_api, viewer, spy_connector):
     assert ev_web.via == "web"
 
 
-def test_download_of_unfinished_run_is_rejected(db, task_api, viewer):
+def test_download_of_unfinished_run_is_rejected(db, task_api, author, viewer):
+    """状态这一层的回归。
+
+    下载半边必须用**有下载权**的人(author 是团队成员)来撞 —— 闸在状态之前,用 viewer
+    撞到的会是 403,这条用例就测不到它本来要守的东西了。预览半边刻意留给没有下载权的
+    viewer:它顺带断言了「预览不叠下载闸」。
+    """
     job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     with pytest.raises(RubicError, match="无可下载结果"):
-        v1_routes.download_result(job.id, db, viewer, ip=None)
+        v1_routes.download_result(job.id, db, author, ip=None)
     with pytest.raises(RubicError, match="无可预览结果"):
+        v1_routes.preview_run(job.id, db, viewer)
+
+
+ENUM_SQL = "SELECT DISTINCT region FROM orders"
+
+
+@pytest.fixture
+def task_enum(db, author, ds, team, viewer):
+    """带一个**配了枚举 SQL 的值列表变量**的已上线任务,并已采集过一批候选值。
+
+    v1 的参数投影与候选值都要它:单值参数那条路上 enum_sql 恒为 None,测不出泄漏。
+    """
+    tmpl = template_service.create_template(
+        db, author,
+        TemplateCreateIn(
+            name="v1-枚举任务", team_id=team.id, datasource_id=ds.id,
+            sql_text="SELECT c FROM t WHERE region IN (:regions)",
+            params=[ParamDef(
+                name="regions", kind="list", label="大区(可多选)",
+                enum_sql=ENUM_SQL, allow_bulk_input=True, test_value=["华东"],
+            )],
+            allow_api=True,
+        ),
+    )
+    template_service.publish(db, tmpl, author, None)
+    db.refresh(tmpl)
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
+        resource_id=str(tmpl.id), actions=["view", "run"],
+        granted_by=author.id, subject_id=str(viewer.id),
+    )
+    enum_cache_service.upsert(
+        db, template_id=tmpl.id, variable="regions", datasource_id=ds.id, enum_sql=ENUM_SQL,
+        result=ValueListOut(values=["华东", "华南"], truncated=False, duration_ms=3),
+        user_id=author.id,
+    )
+    db.commit()
+    return tmpl
+
+
+def _row_of(db, user, template_id):
+    return next(t for t in v1_routes.list_tasks(db, user) if t.id == template_id)
+
+
+def test_task_params_expose_the_contract_and_nothing_else(db, task_enum, viewer):
+    """参数投影只给文档 3.1 承诺的五个字段。
+
+    此前 v1 直接外抛内部 ParamDef,把 **enum_sql(取候选值的 SQL 原文)** 连同 test_value、
+    allow_bulk_input、enum_sql_duration_ms 一起发给了纯业务身份的 token —— 而业务用户
+    在界面上是看不到任何 SQL 的。这条断言点名 enum_sql,将来有人把它加回来时一眼能读懂。
+    """
+    p = _row_of(db, viewer, task_enum.id).params[0]
+    assert set(p.model_dump()) == {"name", "kind", "value_type", "label", "enum"}
+    assert "enum_sql" not in p.model_dump()
+    assert (p.name, p.kind, p.value_type, p.label) == (
+        "regions", "list", "text", "大区(可多选)"
+    )
+
+
+def test_task_params_carry_shared_enum_candidates(db, task_enum, viewer, author):
+    """文档 3.1 承诺的 enum:有候选就给出来,Agent 据此把选项列给用户而不是让他盲猜。
+
+    作者改掉枚举 SQL 后旧候选作废 —— 给空数组,**不回旧值**(与界面同一条产品决策:
+    旧 SQL 的结果不能冒充新 SQL 的候选)。
+    """
+    assert _row_of(db, viewer, task_enum.id).params[0].enum == ["华东", "华南"]
+
+    update_template(
+        task_enum.id,
+        TemplateUpdateIn(params=[ParamDef(
+            name="regions", kind="list", label="大区(可多选)",
+            enum_sql="SELECT DISTINCT region FROM orders WHERE dt > '2026-01-01'",
+        )]),
+        db, author, ip=None,
+    )
+    assert _row_of(db, viewer, task_enum.id).params[0].enum == []
+
+
+def test_enum_candidates_only_for_tasks_i_can_run(db, task_enum, outsider, admin):
+    """候选值只给「我能跑的」任务带 —— 跑不了的任务,候选对调用方没用,而载荷是
+    任务数 × 变量数 × 每变量上千个值,压在 Agent 每次开场的第一枪上。"""
+    # 平台管理员看得见、也能跑 → 带候选
+    assert _row_of(db, admin, task_enum.id).params[0].enum == ["华东", "华南"]
+    # 路人压根看不见这个任务(可见口径与界面同源)
+    assert task_enum.id not in [t.id for t in v1_routes.list_tasks(db, outsider)]
+
+
+def test_v1_job_out_is_a_projection_of_the_internal_shape(db, task_api, viewer, spy_connector):
+    """对外的 job 形状锁死在文档 4.1 那几个字段上,且内部字段不得漏出去。
+
+    第二条断言是**内部改名探测器**:投影靠属性名读值,JobOut 里某个字段改了名,这里只会
+    静默变 null 而不会报错 —— 只有这条 ⊆ 断言会红。
+    """
+    expected = {
+        "id", "template_id", "status", "row_count", "duration_ms", "error",
+        "queue_ahead", "source", "created_at", "started_at", "result_expired",
+    }
+    assert set(V1JobOut.model_fields) == expected
+    assert set(V1JobOut.model_fields) <= set(JobOut.model_fields)
+
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    dumped = v1_routes.get_run(job.id, db, viewer).model_dump()
+    assert set(dumped) == expected
+    # 点名三个绝不能进对外契约的:SQL 原文、他人入参原文、他人姓名
+    for leaked in ("executed_sql", "params", "user_name"):
+        assert leaked not in dumped
+
+
+def _succeed_a_run(db, spy_connector, task, user):
+    """跑出一条成功的运行记录(假连接器),返回 job。"""
+    spy_connector(rows=[("2026-09-21",)])
+    job = query_service.enqueue(db, user, task.id, {"d": "2026-09-21"}, source="api")
+    query_service.execute_job(job.id)
+    db.refresh(job)
+    assert job.status == JOB_SUCCESS
+    return job
+
+
+def test_download_without_grant_is_denied_and_leaves_no_trace(
+    db, task_api, viewer, spy_connector
+):
+    """被授 view+run 但没授 download 的人:能跑、能预览,**取不走完整 CSV**。
+
+    三份手册都承诺了这道闸,而它此前只存在于文档里 —— 界面靠不渲染下载按钮遮住,
+    开放 API 上一条 curl 就绕过去了。
+
+    还断言「被拒的请求不留痕」:闸必须在 log_download 之前,否则运营分析的下载量会
+    把拒绝也算成一次下载。
+    """
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    since = max_audit_id(db)
+
+    with pytest.raises(PermissionDeniedError) as ei:
+        v1_routes.download_result(job.id, db, viewer, ip=None)
+    assert ei.value.status_code == 403
+    # 报错要能让人走下一步:说清是哪个任务、少的是哪项授权、该找谁
+    assert task_api.name in ei.value.message and "「下载」授权" in ei.value.message
+
+    assert new_audit_rows(db, since) == []
+    assert db.scalar(
+        select(func.count(DownloadEvent.id)).where(DownloadEvent.job_id == job.id)
+    ) == 0
+
+    # 同一个人预览照常:能跑就能看前 50 行,这是与界面一致的口径
+    assert v1_routes.preview_run(job.id, db, viewer)["row_count"] == 1
+
+
+def test_web_download_url_is_gated_by_the_same_rule(db, task_api, viewer, spy_connector):
+    """界面那条签名 URL 通道叠的是同一道闸 —— 否则补了 API、网页仍是个洞。"""
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    with pytest.raises(PermissionDeniedError, match="「下载」授权"):
+        query_service.get_download_url(db, viewer, job)
+
+
+def test_download_gate_has_no_runner_short_circuit(db, task_api, viewer, spy_connector):
+    """**本次改动的核心不变式**:发起人身份不构成下载资格。
+
+    can_access_job 有一条 job.user_id == user.id 的短路(发起人当然看得见自己跑的记录)。
+    下载闸绝不能继承它:任何有 run 权限的人自己跑一次就能绕过去,闸直接架空。
+    谁要是「顺手把两个函数对齐」,这条会红。
+    """
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    assert job.user_id == viewer.id
+    assert permission_service.can_access_job(db, viewer, job) is True
+    assert permission_service.can_download_job(db, viewer, job) is False
+
+
+def test_subscriber_can_download_the_issue_pushed_to_them(
+    db, task_api, author, viewer, spy_connector
+):
+    """订阅者取得走推送给他的那一期 —— 代订阅只补 view,而订阅就是「定期送你这份结果」。
+
+    放行只限订阅跑出来的那些期:同一个任务下**他人手动跑**的结果仍要 download 授权,
+    否则订阅会变成一条绕开授权的旁路。
+    """
+    subscribed = _succeed_a_run(db, spy_connector, task_api, viewer)
+    subscribed.source = SOURCE_SUBSCRIBE
+    manual = _succeed_a_run(db, spy_connector, task_api, viewer)
+    db.add(TaskSubscription(template_id=task_api.id, user_id=viewer.id))
+    db.commit()
+
+    assert permission_service.can_download_job(db, viewer, subscribed) is True
+    assert permission_service.can_download_job(db, viewer, manual) is False
+
+
+def test_expired_result_is_404_on_both_download_and_preview(
+    db, task_api, author, viewer, spy_connector
+):
+    """结果过了保留期:下载与预览都给 **404**,不是 400。
+
+    Agent 按状态码分流(404 → 去重跑,400 → 去改参数),这两条在 rubick-skill.md 里是
+    写死的行为;给 400 会让它反复改参数重发一个永远不会再有的结果。
+    """
+    spy_connector(rows=[("2026-09-21",)])
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
+    query_service.execute_job(job.id)
+    db.refresh(job)
+    job.created_at = datetime.now() - timedelta(days=settings.RESULT_RETENTION_DAYS + 1)
+    db.commit()
+
+    # 下载半边用 author(有下载权):闸在保留期之前,viewer 撞到的会是 403 而非过期
+    for call in (
+        lambda: v1_routes.download_result(job.id, db, author, ip=None),
+        lambda: v1_routes.preview_run(job.id, db, viewer),
+    ):
+        with pytest.raises(ResultExpiredError) as ei:
+            call()
+        assert ei.value.status_code == 404
+        assert "保留期" in ei.value.message
+
+
+def test_preview_says_so_when_result_file_is_gone(db, task_api, viewer, spy_connector):
+    """文件被手工清掉(没过保留期):预览也要说「取不到」,而不是回一张空表。
+
+    此前预览只判保留期、不判文件在不在盘上,于是 read_csv_preview 读不到行就回
+    columns=[] —— 业务方分不清「结果没了」和「这次真的一行都没查到」。
+    """
+    spy_connector(rows=[("2026-09-21",)])
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
+    query_service.execute_job(job.id)
+    db.refresh(job)
+    result_service.local_path(job.result_object_key).unlink()
+
+    with pytest.raises(ResultExpiredError):
         v1_routes.preview_run(job.id, db, viewer)
 
 

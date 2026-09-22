@@ -114,6 +114,16 @@ def exists(object_key: str) -> bool:
     return _abs_path(object_key).exists()
 
 
+def is_gone(job) -> bool:
+    """这次运行的结果**实际上已经取不到了**:过了保留期,或文件不在盘上(手工清理 / 迁移丢失)。
+
+    「取不到」只在这里判一次。此前预览与下载各判一半 —— 下载判了文件在不在盘上,预览没判,
+    于是文件被手工清掉时预览返回的是**一张没有任何解释的空表**(read_csv_preview 读不到
+    行就给空列表),而业务方从那张表上看不出「结果没了」还是「这次真的一行都没查到」。
+    """
+    return job.result_expired or not exists(job.result_object_key)
+
+
 def local_path(object_key: str) -> Path:
     """供下载端点做流式响应用。"""
     return _abs_path(object_key)

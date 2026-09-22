@@ -35,6 +35,7 @@ from app.models.permission import (
     Permission,
 )  # noqa: F401
 from app.models.query_job import SOURCE_SUBSCRIBE, QueryJob
+from app.models.subscription import TaskSubscription
 from app.models.team import TeamMember
 from app.models.template import STATUS_PUBLISHED, SqlTemplate
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, User, is_platform_admin  # noqa: F401
@@ -303,8 +304,11 @@ def is_subscribable(tmpl) -> bool:
 
 def can_subscribe(scope: TeamScope, tmpl) -> bool:
     """能不能订阅这个任务(资格判定;任务是否开启了订阅计划由路由层叠加,那是业务状态
-    不是权限)。口径 = can_view 且已上线:订阅的产出是运行结果,而 can_access_job 对
-    非发起人的判据就是 can_view —— 用同一把尺,订阅者天然下载得到推送给他的结果。"""
+    不是权限)。口径 = can_view 且已上线:订阅的产出是运行结果,而结果的可见判据
+    (can_access_job 对非发起人)就是 can_view —— 用同一把尺。
+
+    「看得见」到此为止:取走完整 CSV 另需 download 授权(can_download_job)。订阅者不必
+    为此专门被授权 —— 那条闸对**订阅跑出来的那些期**单独放行,理由见 can_download_job。"""
     return is_subscribable(tmpl) and can_view(scope, tmpl)
 
 
@@ -485,6 +489,56 @@ def can_access_job(db: Session, user: User, job) -> bool:
     if tmpl is None:
         return False
     return can_view(team_scope(db, user), tmpl)
+
+
+def _is_subscriber(db: Session, user_id: int, template_id: int) -> bool:
+    """这个人是不是该任务的在册订阅者。直接查模型不经 subscription_service ——
+    那个模块反过来依赖本模块(见它里面的延迟 import),走 service 会成环。"""
+    return db.scalar(
+        select(TaskSubscription.id).where(
+            TaskSubscription.template_id == template_id,
+            TaskSubscription.user_id == user_id,
+        ).limit(1)
+    ) is not None
+
+
+def can_download_job(db: Session, user: User, job) -> bool:
+    """能不能把这一次运行的**完整结果文件**取走。与 can_access_job 并排:
+    那条答「看得见这条记录吗」(不可见 → 404),这条答「拿得走文件吗」(没授权 → 403)。
+
+    **刻意不继承 can_access_job 的发起人短路**(job.user_id == user.id):
+    「能跑、能看前 50 行预览,取走完整结果另需授权」是产品口径(三份手册都这么写),
+    给发起人开短路等于把这道闸架空 —— 任何有 run 权限的人自己跑一次就绕过去了。
+    平台管理员与任务所属团队成员由 can_download 的 is_insider 放行,这里不重复一遍。
+
+    订阅推送的那一期结果对在册订阅者放行:代订阅只补 view(见 subscription_service
+    .subscribe_for),而订阅本身就是「把这份结果定期送给你」的承诺。这与
+    job_visibility_condition 里「被授 view 的任务,其 subscribe 来源运行对他可见」
+    是同一条口径的两半 —— 看得见却取不走是半截承诺。放行只限订阅跑出来的那些期,
+    同任务下**他人手动跑**的结果仍要 download 授权。
+    """
+    if can(db, user, ACTION_DOWNLOAD, RESOURCE_TEMPLATE, job.template_id):
+        return True
+    return job.source == SOURCE_SUBSCRIBE and _is_subscriber(db, user.id, job.template_id)
+
+
+def require_can_download_job(db: Session, user: User, job) -> None:
+    """下载闸的**唯一守卫**。两条下载路径(界面签名 URL / 开放 API 的 Bearer 直出)
+    共用同一个 assert_downloadable,所以「被挡的人该找谁」这句话只写一次。
+    """
+    if can_download_job(db, user, job):
+        return
+    tmpl = db.get(SqlTemplate, job.template_id)
+    which = f"《{tmpl.name}》(#{tmpl.id})" if tmpl is not None else f"#{job.template_id}"
+    who = (
+        f"任务作者或团队《{tmpl.team_name}》的团队管理员"
+        if tmpl is not None and tmpl.team_name
+        else "任务作者"
+    )
+    raise PermissionDeniedError(
+        f"无权下载任务{which}的完整结果:你可以运行它、也可以预览前 50 行,"
+        f"取走完整 CSV 另需「下载」授权 —— 请联系{who}在任务卡片的授权入口勾上「下载」"
+    )
 
 
 def require_can_create_in_team(db: Session, user: User, team_id: int | None) -> None:
@@ -672,8 +726,9 @@ def grant_view(db: Session, *, template_id: int, user_id: int, granted_by: int |
     同 grant_edit(提交)/ discard_edit_grant(不提交)的分工 —— 一件事两种事务约定各给一个
     具名函数,别让调用方去猜。
 
-    只开放 view 这一个动作:订阅结果的预览与下载都走 can_access_job → can_view,
-    run / download 是「自己填参跑一次」才需要的,代订阅不该顺手给。
+    只开放 view 这一个动作:订阅结果的预览走 can_access_job → can_view,而下载那一期的
+    资格由 can_download_job 按「他是不是在册订阅者」单独放行 —— 都不需要 download 授权行。
+    run / download 是「自己填参跑一次、把任意一期取走」才需要的,代订阅不该顺手给。
     """
     return bool(
         _add_rows(

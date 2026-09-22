@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
@@ -131,6 +132,46 @@ def read(db: Session, tmpl: SqlTemplate, pdef: dict) -> SharedEnumValuesOut:
         # 按产品决策:旧 SQL 的结果不能冒充新 SQL 的候选,一律不展示
         return SharedEnumValuesOut(values=[], cached=False, stale=True)
     return _out(db, row)
+
+
+#: read_bulk 内部的哨兵。不能用 None —— enum_sql 本身就可以是 None
+_MISSING = object()
+
+
+def read_bulk(
+    db: Session, items: Sequence[tuple[SqlTemplate, Sequence[ParamDef]]]
+) -> dict[tuple[int, str], list[str]]:
+    """批量读多任务多变量的共享候选值。**一次查询**,与任务数、变量数都无关。
+
+    给开放 API 的任务列表用:那个端点一次返回全部可见任务,逐个 read() 就是
+    N(任务) × M(变量) 次查询,而它是 Agent 每次开场的第一枪。
+    刻意不复用 _out():它为了渲染「谁更新的」对每行再 db.get(User) 一次,正是要躲的
+    N+1,而对外契约里根本没有更新人这一项。
+
+    与 read() 同一条产品决策:未命中、以及产出前提已不成立的行(_is_stale:作者改了
+    enum_sql 或换了数据源)**都不出现在返回里** —— 旧 SQL 的结果不冒充新 SQL 的候选。
+    """
+    wanted: dict[int, dict[str, str | None]] = {}
+    ds_of: dict[int, int | None] = {}
+    for tmpl, params in items:
+        ds_of[tmpl.id] = tmpl.datasource_id
+        for p in params:
+            if p.has_enum_candidates:  # 口径唯一来源,见 schemas/common.ParamDef
+                wanted.setdefault(tmpl.id, {})[p.name] = p.enum_sql
+    if not wanted:
+        return {}  # 一个值列表变量都没有 ⇒ 零查询
+
+    out: dict[tuple[int, str], list[str]] = {}
+    for row in db.scalars(
+        select(TemplateEnumValues).where(TemplateEnumValues.template_id.in_(wanted))
+    ):
+        enum_sql = wanted.get(row.template_id, {}).get(row.variable, _MISSING)
+        if enum_sql is _MISSING:  # 这个变量已经不是「有候选可言」的变量了
+            continue
+        if _is_stale(row, datasource_id=ds_of.get(row.template_id), enum_sql=enum_sql):
+            continue
+        out[(row.template_id, row.variable)] = row.enum_values or []
+    return out
 
 
 def refresh(db: Session, tmpl: SqlTemplate, pdef: dict, user: User) -> SharedEnumValuesOut:

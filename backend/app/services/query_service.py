@@ -22,6 +22,7 @@ from app.core.exceptions import (
     CredentialRequiredError,
     NotFoundError,
     PermissionDeniedError,
+    ResultExpiredError,
     RubicError,
 )
 from app.core.sql_gateway import validate_readonly
@@ -34,7 +35,7 @@ from app.models.audit import (
     VIA_WEB,
 )
 from app.models.datasource import DataSource
-from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE
+from app.models.permission import RESOURCE_TEMPLATE
 from app.models.query_job import (
     JOB_FAILED,
     JOB_QUEUED,
@@ -113,9 +114,15 @@ def enqueue(
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
         raise NotFoundError("任务不存在")
+    # 一次算出视角,可见与可运行两问共用 —— 各问一次 permission_service.can 要各算一遍
+    scope = permission_service.team_scope(db, user)
+    if not permission_service.can_view(scope, tmpl):
+        # **不可见一律 404**,与单条运行记录同口径(routes.query.load_job):不暴露
+        # 「存在但无权」。否则拿一枚 token 逐个试编号就能问出平台上有哪些任务。
+        raise NotFoundError("任务不存在")
     if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
         raise RubicError("任务未上线,不可运行")
-    if not permission_service.can(db, user, ACTION_RUN, RESOURCE_TEMPLATE, template_id):
+    if not permission_service.can_run(scope, tmpl):
         raise PermissionDeniedError("无权运行该任务")
     if source == SOURCE_API and not tmpl.allow_api:
         # 此刻还没有任何写入(建行在下方),audit_service.log 的 commit 不会误提交半成品
@@ -363,19 +370,24 @@ def reclaim_stale_jobs() -> int:
 
 
 def assert_downloadable(db: Session, user: User, job: QueryJob) -> None:
-    """「这次运行的结果现在拿得到吗」—— 权限、状态、保留期三道校验。
+    """「这次运行的结果现在拿得到吗」—— 可见、下载权、状态、保留期四道校验。
 
     界面(签名 URL 两步)与开放 API(Bearer 直出)共用:改保留期文案或判据只改这一处。
-    「谁能看这次运行的结果」只有一条规则,住在 permission_service.can_access_job。
+    两条权限规则都住在 permission_service:能不能看见这条记录(can_access_job)、
+    能不能取走文件(require_can_download_job)。**预览不叠第二道** —— 跑完能看前 50 行、
+    取走完整结果另需「下载」授权,是产品口径(见 routes/query.preview_payload)。
+
+    顺序即语义:权限(恒定答案)在状态与保留期(此刻答案)之前。反过来的话,同一个没有
+    下载权的人对同一条记录会先后收到两句不同的话 —— 跑完之前「无可下载结果」、跑完之后
+    「无权下载」,而 Agent 会把前者当瞬时故障一路轮询下去。
     """
     if not permission_service.can_access_job(db, user, job):
         raise PermissionDeniedError("无权下载该次运行结果")
+    permission_service.require_can_download_job(db, user, job)
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可下载结果")
-    if job.result_expired or not result_service.exists(job.result_object_key):
-        raise RubicError(
-            f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
-        )
+    if result_service.is_gone(job):
+        raise ResultExpiredError()
 
 
 def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:

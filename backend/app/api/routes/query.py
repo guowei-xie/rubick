@@ -5,9 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import client_ip, get_current_user
-from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, RubicError
+from app.core.exceptions import NotFoundError, ResultExpiredError, RubicError
 from app.core.security import verify_download_token
 from app.models.query_job import JOB_QUEUED, JOB_SUCCESS, QueryJob
 from app.models.user import User
@@ -112,10 +111,8 @@ def download_file(job_id: int, t: str, db: Session = Depends(get_db)):
     job = db.get(QueryJob, job_id)
     if job is None or job.status != JOB_SUCCESS or not job.result_object_key:
         raise NotFoundError("该次运行结果不存在")
-    if job.result_expired or not result_service.exists(job.result_object_key):
-        raise RubicError(
-            f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
-        )
+    if result_service.is_gone(job):
+        raise ResultExpiredError()
     return csv_file_response(job)
 
 
@@ -130,10 +127,8 @@ def preview_payload(db: Session, user: User, job: QueryJob) -> dict:
     """
     if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可预览结果")
-    if job.result_expired:
-        raise RubicError(
-            f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,无法预览"
-        )
+    if result_service.is_gone(job):
+        raise ResultExpiredError("无法预览")
     columns, rows = result_service.read_csv_preview(job.result_object_key, PREVIEW_ROWS)
     # 订阅消费打点:预览与下载同算「消费」(需求口径),非订阅 job / 非订阅者零成本
     subscription_service.mark_consumed(db, user.id, job)
