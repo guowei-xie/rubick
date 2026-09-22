@@ -266,9 +266,9 @@ def require_can_transfer_author(db: Session, user: User, tmpl) -> tuple[object, 
 def visible_templates(db: Session, scope: TeamScope) -> list[SqlTemplate]:
     """我看得见的任务(整份实体,按 id 倒序)。「可见集怎么取」只在这里写一次。
 
-    任务列表(routes.tasks.list_tasks)与批量交接的候选人接口都走它 —— 两处各写一遍
-    `select + visible_condition` 的话,任何加在可见集上的条件(软删、归档、scope 变形)
-    只会改到其中一处,而另一处的产物正是前端的置灰依据。
+    任务列表(routes.tasks.list_tasks)、/templates、开放 API 的 /v1/tasks 与批量交接的
+    候选人接口都走它 —— 各写一遍 `select + visible_condition` 的话,任何加在可见集上的
+    条件(软删、归档、scope 变形)只会改到其中一处,而另一处的产物正是前端的置灰依据。
     """
     stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
     cond = visible_condition(scope)

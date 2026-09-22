@@ -651,7 +651,7 @@
 - 依赖：`get_api_user` 解析 token → 用户；任务列表、运行权限、下载权限复用既有
   permission / template / query service，**不在 API 层重写权限规则**。
 - token 存储：SHA-256 哈希列 + 吊销标记，明文不落库。
-- 限流：`rate_limit`，120 请求/分钟/token，超限 429。
+- 限流：`rate_limit`（阈值见 [12.1 口径速查](#121-口径速查代码默认值管理员可在部署配置里调整)），超限 429。
 - 审计与来源：`submit_query` / `run_query` / `download` 带 `via=api` 标记；
   运行记录 `source='api'`（见 [12.2](#122-你的操作在审计里长什么样) 与 [12.4](#124-术语对照与研发管理员沟通时用)）。
 

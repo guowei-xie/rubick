@@ -84,9 +84,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
     几百行逐行判定,逐行查库必然 N+1(见 permission_service.TeamScope)。
     """
     scope = permission_service.team_scope(db, user)
-    stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
-    cond = permission_service.visible_condition(scope)
-    rows = list(db.scalars(stmt if cond is None else stmt.where(cond)))
+    rows = permission_service.visible_templates(db, scope)
 
     ids = [t.id for t in rows]
     authorized = permission_service.authorized_run_users(db, ids)  # 一次批量查
@@ -124,6 +122,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
                 idle_days=idle, is_idle=template_service.is_idle(idle),
                 idle_threshold_days=settings.TASK_IDLE_DAYS,
                 timeout_seconds=t.timeout_seconds,
+                allow_api=bool(t.allow_api),
                 can_manage=permission_service.can_edit(scope, t),
                 can_view_detail=permission_service.is_insider(scope, t),
                 developed_by_me=permission_service.is_author_or_grantee(scope, t),

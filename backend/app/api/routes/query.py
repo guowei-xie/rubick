@@ -32,6 +32,27 @@ def job_out(db: Session, job: QueryJob) -> JobOut:
     return out
 
 
+def load_job(db: Session, user: User, job_id: int) -> QueryJob:
+    """取一条我有权看的运行记录。不可见一律 404(不暴露「存在但无权」)。
+
+    公开供 routes/v1 复用:界面与开放 API 对「谁能看这条记录」只有一份口径。
+    """
+    job = db.get(QueryJob, job_id)
+    if job is None or not permission_service.can_access_job(db, user, job):
+        raise NotFoundError("运行记录不存在")
+    return job
+
+
+def csv_file_response(job: QueryJob) -> FileResponse:
+    """结果 CSV 的文件响应。两条下载路径(签名 URL 与开放 API 的 Bearer 直出)共用 ——
+    media_type 与兜底文件名只表述一次。"""
+    return FileResponse(
+        result_service.local_path(job.result_object_key),
+        media_type="text/csv; charset=utf-8",
+        filename=job.result_filename or f"result_{job.id}.csv",
+    )
+
+
 @router.post("/run", response_model=JobOut)
 def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """业务用户填参运行:入队异步执行,立即返回运行记录(前端轮询 /jobs/{id} 或看通知)。"""
@@ -39,11 +60,16 @@ def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user
     return job_out(db, job)
 
 
-@router.get("/jobs", response_model=list[JobOut])
-def my_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """本人发起的 + 我所属团队任务下的全部运行;平台管理员看全部。
-    口径与 /tasks/{id}/jobs 同源(见 permission_service.job_visibility_condition)。"""
-    stmt = select(QueryJob).order_by(QueryJob.id.desc()).limit(100)
+# 运行记录列表的条数上限。界面与开放 API 同一个数
+JOBS_LIMIT = 100
+
+
+def visible_jobs(db: Session, user: User) -> list[QueryJob]:
+    """我可见的运行记录(最近 JOBS_LIMIT 条)。
+
+    公开供 routes/v1 复用:可见口径(job_visibility_condition)与条数上限只表述一次。
+    """
+    stmt = select(QueryJob).order_by(QueryJob.id.desc()).limit(JOBS_LIMIT)
     cond = permission_service.job_visibility_condition(
         permission_service.team_scope(db, user)
     )
@@ -52,12 +78,16 @@ def my_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_user
     return list(db.scalars(stmt))
 
 
+@router.get("/jobs", response_model=list[JobOut])
+def my_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """本人发起的 + 我所属团队任务下的全部运行;平台管理员看全部。
+    口径与 /tasks/{id}/jobs 同源(见 permission_service.job_visibility_condition)。"""
+    return visible_jobs(db, user)
+
+
 @router.get("/jobs/{job_id}", response_model=JobOut)
 def get_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    job = db.get(QueryJob, job_id)
-    if job is None or not permission_service.can_access_job(db, user, job):
-        raise NotFoundError("运行记录不存在")
-    return job_out(db, job)
+    return job_out(db, load_job(db, user, job_id))
 
 
 @router.get("/jobs/{job_id}/download")
@@ -86,26 +116,31 @@ def download_file(job_id: int, t: str, db: Session = Depends(get_db)):
         raise RubicError(
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
         )
-    return FileResponse(
-        result_service.local_path(job.result_object_key),
-        media_type="text/csv; charset=utf-8",
-        filename=job.result_filename or f"result_{job.id}.csv",
-    )
+    return csv_file_response(job)
 
 
-@router.get("/jobs/{job_id}/preview")
-def preview(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """运行结果预览(表头 + 前 50 行)。发起人本人,或对该任务可见的人可看。"""
-    job = db.get(QueryJob, job_id)
-    if job is None or not permission_service.can_access_job(db, user, job):
-        raise NotFoundError("运行记录不存在")
-    if job.status != "success" or not job.result_object_key:
+# 预览返回多少行。界面与开放 API 同一个数,改一处即可
+PREVIEW_ROWS = 50
+
+
+def preview_payload(db: Session, user: User, job: QueryJob) -> dict:
+    """结果预览的返回体(校验 + 读前 PREVIEW_ROWS 行 + 订阅消费打点)。
+
+    公开供 routes/v1 复用:预览行数、过期文案、「预览也算消费」这三条口径只表述一次。
+    """
+    if job.status != JOB_SUCCESS or not job.result_object_key:
         raise RubicError("该次运行无可预览结果")
     if job.result_expired:
         raise RubicError(
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,无法预览"
         )
-    columns, rows = result_service.read_csv_preview(job.result_object_key, 50)
+    columns, rows = result_service.read_csv_preview(job.result_object_key, PREVIEW_ROWS)
     # 订阅消费打点:预览与下载同算「消费」(需求口径),非订阅 job / 非订阅者零成本
     subscription_service.mark_consumed(db, user.id, job)
     return {"columns": columns, "rows": rows, "row_count": job.row_count}
+
+
+@router.get("/jobs/{job_id}/preview")
+def preview(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """运行结果预览(表头 + 前 50 行)。发起人本人,或对该任务可见的人可看。"""
+    return preview_payload(db, user, load_job(db, user, job_id))

@@ -11,13 +11,19 @@ from app.models.user import User, is_platform_admin
 from app.services import api_token_service, permission_service
 
 
+def _bearer_token(authorization: str | None) -> str:
+    """从 Authorization 头取出 Bearer 凭证本体。两条鉴权通道共用 ——
+    「头长什么样、缺了怎么说」只表述一次,凭证本身怎么认由各自的依赖决定。"""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise UnauthorizedError("缺少认证令牌")
+    return authorization.split(" ", 1)[1]
+
+
 def get_current_user(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise UnauthorizedError("缺少认证令牌")
-    payload = decode_access_token(authorization.split(" ", 1)[1])
+    payload = decode_access_token(_bearer_token(authorization))
     if not payload:
         raise UnauthorizedError("令牌无效或已过期")
     user = db.get(User, int(payload["sub"]))
@@ -37,9 +43,7 @@ def get_api_user(
     浏览器脚本拿着 JWT 调 v1 就会被记成 api。
     token 即用户本人身份,权限判定照旧从 User 出发(permission_service 零改动)。
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise UnauthorizedError("缺少认证令牌")
-    token = authorization.split(" ", 1)[1]
+    token = _bearer_token(authorization)
     if not token.startswith(API_TOKEN_PREFIX):
         raise UnauthorizedError(f"该接口仅接受 API Token(以 {API_TOKEN_PREFIX} 开头,可在「API Token」页面生成)")
     user = api_token_service.authenticate(db, token)

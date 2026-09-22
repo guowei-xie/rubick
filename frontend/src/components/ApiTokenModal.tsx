@@ -49,8 +49,9 @@ export default function ApiTokenModal({
     setActing(true);
     try {
       const r = await createApiToken();
+      // 只置 freshToken:渲染立刻切到「一次性明文」分支,而回到状态视图的唯一路径是
+      // 关窗重开,那时 useEffect 会重新 load() —— 在这里顺手推一份 info 观察不到
       setFreshToken(r.token);
-      setInfo({ exists: true, issued_at: r.issued_at, last_used_at: null });
     } catch (e: any) {
       message.error(errMsg(e, "生成 API Token 失败"));
     } finally {
@@ -63,7 +64,7 @@ export default function ApiTokenModal({
     try {
       await revokeApiToken();
       message.success("API Token 已吊销");
-      setFreshToken(null);
+      // 吊销按钮只在状态视图里(freshToken 为空),无需再清一次
       setInfo({ exists: false, issued_at: null, last_used_at: null });
     } catch (e: any) {
       message.error(errMsg(e, "吊销 API Token 失败"));

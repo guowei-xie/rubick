@@ -15,7 +15,7 @@ from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models import audit as A
 from app.models.audit import DownloadEvent
 from app.models.permission import RESOURCE_TEMPLATE, SUBJECT_USER
-from app.models.query_job import JOB_SUCCESS, SOURCE_API, SOURCE_RUN, QueryJob
+from app.models.query_job import JOB_SUCCESS, SOURCE_API, QueryJob
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn, TemplateUpdateIn
@@ -59,8 +59,9 @@ def team(db, ds, author, team_factory, team_credential):
     return t
 
 
-def _make_task(db, author, ds, team, name, *, allow_api: bool):
-    """建一个带一个单值参数、已上线的任务;allow_api 由用例显式指定(运行闸是被测对象)。"""
+def _make_task(db, author, ds, team, viewer, name, *, allow_api: bool):
+    """建一个带一个单值参数、已上线的任务,并给 viewer 授 view+run(**不含 download** ——
+    能力位必须分得开)。allow_api 由用例显式指定:运行闸正是被测对象。"""
     tmpl = template_service.create_template(
         db, author,
         TemplateCreateIn(
@@ -71,31 +72,24 @@ def _make_task(db, author, ds, team, name, *, allow_api: bool):
     )
     template_service.publish(db, tmpl, author, None)
     db.refresh(tmpl)
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
+        resource_id=str(tmpl.id), actions=["view", "run"],
+        granted_by=author.id, subject_id=str(viewer.id),
+    )
     return tmpl
 
 
 @pytest.fixture
 def task_api(db, author, ds, team, viewer):
-    """已开「允许 API 调用」的任务;viewer 被授 view+run(不含 download)。"""
-    tmpl = _make_task(db, author, ds, team, "v1-开放任务", allow_api=True)
-    permission_service.grant(
-        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
-        resource_id=str(tmpl.id), actions=["view", "run"],
-        granted_by=author.id, subject_id=str(viewer.id),
-    )
-    return tmpl
+    """已开「允许 API 调用」的任务。"""
+    return _make_task(db, author, ds, team, viewer, "v1-开放任务", allow_api=True)
 
 
 @pytest.fixture
 def task_web(db, author, ds, team, viewer):
-    """未开「允许 API 调用」的任务(默认关);viewer 同样有 view+run —— 权限够,闸没开。"""
-    tmpl = _make_task(db, author, ds, team, "v1-网页任务", allow_api=False)
-    permission_service.grant(
-        db, subject_type=SUBJECT_USER, resource_type=RESOURCE_TEMPLATE,
-        resource_id=str(tmpl.id), actions=["view", "run"],
-        granted_by=author.id, subject_id=str(viewer.id),
-    )
-    return tmpl
+    """未开「允许 API 调用」的任务(默认关):权限够,闸没开。"""
+    return _make_task(db, author, ds, team, viewer, "v1-网页任务", allow_api=False)
 
 
 def test_tasks_list_visibility_and_shape(db, task_api, viewer, outsider):
@@ -152,7 +146,7 @@ def test_run_permission_checked_before_gate(db, task_api, outsider):
 
 
 def test_poll_and_runs_list_visibility(db, task_api, viewer, outsider):
-    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, via="api")
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
 
     out = v1_routes.get_run(job.id, db, viewer)
     assert out.id == job.id and out.status == "queued"
@@ -169,7 +163,7 @@ def test_poll_and_runs_list_visibility(db, task_api, viewer, outsider):
 def test_preview_and_download_direct(db, task_api, viewer, spy_connector):
     """跑通(假连接器)→ 预览 JSON → Bearer 直出 CSV;下载按 via=api 留痕。"""
     spy_connector(rows=[("2026-09-21",), ("2026-09-22",)])
-    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, via="api")
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     query_service.execute_job(job.id)
     db.refresh(job)
     assert job.status == JOB_SUCCESS
@@ -202,7 +196,7 @@ def test_preview_and_download_direct(db, task_api, viewer, spy_connector):
 
 
 def test_download_of_unfinished_run_is_rejected(db, task_api, viewer):
-    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, via="api")
+    job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     with pytest.raises(RubicError, match="无可下载结果"):
         v1_routes.download_result(job.id, db, viewer, ip=None)
     with pytest.raises(RubicError, match="无可预览结果"):
@@ -242,7 +236,7 @@ def test_analytics_api_block(db, admin, author, team, task_api, viewer, clean_jo
     token, _ = api_token_service.issue(db, viewer)
     api_token_service.authenticate(db, token)  # 盖上「最近使用」→ 近 7 天活跃
 
-    api_job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, via="api")
+    api_job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     audit_service.log_download(
         db, user=viewer, job_id=api_job.id, filename="a.csv", row_count=1, ip=None, via="api"
     )

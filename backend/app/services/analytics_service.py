@@ -29,7 +29,7 @@ from app.models.permission import (
     ACTION_EDIT, ACTION_RUN, RESOURCE_TEMPLATE, SUBJECT_USER, Permission,
 )
 from app.models.query_job import (
-    JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS,
+    JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SOURCES, JOB_SUCCESS,
     SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST, QueryJob,
 )
 from app.models.subscription import TaskSchedule, TaskSubscription
@@ -364,7 +364,9 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
     by_day: dict = {}
     for d, src, n in series_rows:
         key = am.to_date(d).isoformat()
-        point = by_day.setdefault(key, {"date": key, "run": 0, "test": 0, "subscribe": 0})
+        # 键集由 JOB_SOURCES 生成,不写字面量 —— 新增一种来源时,前端图例不会因为
+        # 「有数据的那天有这个键、没数据的那天没有」而时有时无
+        point = by_day.setdefault(key, {"date": key, **{s: 0 for s in JOB_SOURCES}})
         point[src] = point.get(src, 0) + n
 
     run_n = counts.get(SOURCE_RUN, (0, 0, 0, 0))[0]

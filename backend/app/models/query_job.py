@@ -22,6 +22,10 @@ SOURCE_SUBSCRIBE = "subscribe"
 # (运营分析按 source 聚合即可),运行记录列表也能据此区分来源
 SOURCE_API = "api"
 
+# 全部来源,给「按来源逐日铺点」这类需要**稳定键集**的地方用:新增一种来源只改上面的常量,
+# 不必再去各处补字面量(运营分析的日序列曾因此漏掉 api,有数据的那天多一个键、没有的那天没有)
+JOB_SOURCES = (SOURCE_RUN, SOURCE_TEST, SOURCE_SUBSCRIBE, SOURCE_API)
+
 # executed_sql 落的是 Text 列(MySQL 上限 65535 **字节**),而它的内容直接由用户填的参数决定:
 # 业务方用「上传/粘贴列表」粘 5000 个 10 位 ID(前端 LIST_CAP 就是 5000),渲染出来是 70KB。
 # 严格模式下 MySQL 抛 1406,而那次 commit 发生在**把 SQL 发给目标库之前** —— 整次取数在还没

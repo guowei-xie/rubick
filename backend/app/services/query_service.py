@@ -98,13 +98,17 @@ def queue_ahead(db: Session, job: QueryJob) -> int:
 
 def enqueue(
     db: Session, user: User, template_id: int, values: dict,
-    ip: str | None = None, *, via: str = VIA_WEB,
+    ip: str | None = None, *, source: str = SOURCE_RUN,
 ) -> QueryJob:
     """前置校验后入队。返回 queued 任务(RUN_INLINE 模式下返回时可能已完成)。
 
-    via = 触发通道("web"=界面 / "api"=开放 API)。**运行闸 fail-closed**:
-    API 触发要求任务显式开启了「允许 API 调用」(allow_api),默认关 —— 没开的任务
-    不该因为某枚 token 就对外可跑;拒绝会记审计(排查 Agent 接入时第一个要看的地方)。
+    source = 这次运行从哪来,直接用 QueryJob 的既有词表(run=界面 / api=开放 API)——
+    「触发通道」与「运行来源」是同一个事实,不为入队路径再建一套 via 词汇。
+    审计 detail 里仍写 via(那是审计自己的词表,DownloadEvent 也用它)。
+
+    **运行闸 fail-closed**:API 触发要求任务显式开启了「允许 API 调用」(allow_api),
+    默认关 —— 没开的任务不该因为某枚 token 就对外可跑;拒绝会记审计
+    (排查 Agent 接入时第一个要看的地方)。
     """
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
@@ -113,7 +117,7 @@ def enqueue(
         raise RubicError("任务未上线,不可运行")
     if not permission_service.can(db, user, ACTION_RUN, RESOURCE_TEMPLATE, template_id):
         raise PermissionDeniedError("无权运行该任务")
-    if via == VIA_API and not tmpl.allow_api:
+    if source == SOURCE_API and not tmpl.allow_api:
         # 此刻还没有任何写入(建行在下方),audit_service.log 的 commit 不会误提交半成品
         audit_service.log(
             db, user=user, action=ACTION_API_RUN_DENIED,
@@ -146,7 +150,7 @@ def enqueue(
         params=values,
         status=JOB_QUEUED,
         # API 触发的运行与界面触发的分开记账:分析维度与运行记录来源标记全靠它
-        source=SOURCE_API if via == VIA_API else SOURCE_RUN,
+        source=source,
     )
     db.add(job)
     db.commit()
@@ -154,7 +158,11 @@ def enqueue(
 
     audit_service.log(
         db, user=user, action=ACTION_SUBMIT_QUERY, resource_type=RESOURCE_TEMPLATE,
-        resource_id=tmpl.id, detail={"job_id": job.id, "params": values, "via": via}, ip=ip,
+        resource_id=tmpl.id, ip=ip,
+        detail={
+            "job_id": job.id, "params": values,
+            "via": VIA_API if source == SOURCE_API else VIA_WEB,
+        },
     )
 
     # 交给 worker 后台执行;RUN_INLINE 模式则在请求内同步执行(便于本地开发,无需 worker)
@@ -354,9 +362,12 @@ def reclaim_stale_jobs() -> int:
         db.close()
 
 
-def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:
-    # 「谁能看这次运行的结果」只有一条规则,住在 permission_service.can_access_job。
-    # 这里曾有一个 can_view_job_result 重复表述同一件事,已删除。
+def assert_downloadable(db: Session, user: User, job: QueryJob) -> None:
+    """「这次运行的结果现在拿得到吗」—— 权限、状态、保留期三道校验。
+
+    界面(签名 URL 两步)与开放 API(Bearer 直出)共用:改保留期文案或判据只改这一处。
+    「谁能看这次运行的结果」只有一条规则,住在 permission_service.can_access_job。
+    """
     if not permission_service.can_access_job(db, user, job):
         raise PermissionDeniedError("无权下载该次运行结果")
     if job.status != JOB_SUCCESS or not job.result_object_key:
@@ -365,6 +376,10 @@ def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = No
         raise RubicError(
             f"结果已超过保留期({settings.RESULT_RETENTION_DAYS} 天)并被自动清理,请重新运行取数"
         )
+
+
+def get_download_url(db: Session, user: User, job: QueryJob, ip: str | None = None) -> str:
+    assert_downloadable(db, user, job)
     # 返回带签名 token 的根相对 URL,浏览器新标签页可直接下载(不需 Authorization 头)。
     # 单端口部署下 /api 与 SPA 同源;本地 split dev 模式由 vite 代理到后端。
     from app.core.security import create_download_token

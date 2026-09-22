@@ -1,7 +1,8 @@
+import { useEffect, useState } from "react";
 import { Button, Input, Modal, Space, Typography, message } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 
-import { withBase } from "../api";
+import { getAuthConfig, withBase } from "../api";
 import { copyText } from "../clipboard";
 
 /** 「Agent Skill」按钮弹出的安装指令面板。
@@ -13,16 +14,27 @@ import { copyText } from "../clipboard";
  *  回落 window.location。
  *
  *  为什么做成「展示 + 手动点复制」而不是点了按钮直接写剪贴板:剪贴板静默改写是不可见的
- *  副作用,用户理应在复制前看到自己即将发出去的内容(里面含平台地址)。 */
+ *  副作用,用户理应在复制前看到自己即将发出去的内容(里面含平台地址)。
+ *
+ *  地址**自己在打开时取**,不由页面传进来:它只有这个弹窗用得到,挂到任务页的 state 上
+ *  就等于让每个从不点开它的人都多发一趟配置请求(同 ApiTokenModal 的写法)。 */
 export default function AgentSkillModal({
   open,
   onClose,
-  appBaseUrl,
 }: {
   open: boolean;
   onClose: () => void;
-  appBaseUrl: string;
 }) {
+  const [appBaseUrl, setAppBaseUrl] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    // 取不到就当没配置,**不弹错** —— 下面会回落到当前来源,弹窗仍然可用
+    getAuthConfig()
+      .then((c) => setAppBaseUrl(c.app_base_url))
+      .catch(() => {});
+  }, [open]);
+
   const url = appBaseUrl
     ? `${appBaseUrl}/rubick-skill.md`
     : `${window.location.origin}${withBase("/rubick-skill.md")}`;

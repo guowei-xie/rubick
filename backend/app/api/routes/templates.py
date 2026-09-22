@@ -91,16 +91,14 @@ def list_templates(
     这里的 mine 严格等于「author_id 是我」,与任务列表那个「我开发的」筛选
     (TaskOut.developed_by_me = 作者**或**被授予编辑权)不是一回事,别互相套用。
     """
-    stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc())
     if mine:
-        stmt = stmt.where(SqlTemplate.author_id == user.id)
+        stmt = select(SqlTemplate).order_by(SqlTemplate.id.desc()).where(
+            SqlTemplate.author_id == user.id
+        )
         return list(db.scalars(stmt))
 
     # 与 /tasks 同一条可见性规则(此前这里完全忽略了授权,只按 published 过滤)
-    cond = permission_service.visible_condition(permission_service.team_scope(db, user))
-    if cond is not None:
-        stmt = stmt.where(cond)
-    return list(db.scalars(stmt))
+    return permission_service.visible_templates(db, permission_service.team_scope(db, user))
 
 
 @router.post("", response_model=TemplateOut)

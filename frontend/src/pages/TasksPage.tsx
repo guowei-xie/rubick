@@ -160,10 +160,6 @@ export default function TasksPage() {
   // 飞书应用申请链接(后端 /auth/config 下发,没配就是 null)。给「登不进来的同事」用,
   // 由已经在里面的人复制转发 —— 见下面 extra 里的「申请链接」按钮。
   const [applyUrl, setApplyUrl] = useState<string | null>(null);
-  // 平台对外规范地址(后端 APP_BASE_URL,经 /auth/config 下发)。Agent Skill 安装指令里的
-  // URL 必须用它:那句指令是被粘贴到用户本机的 Agent 里执行的,而用户此刻可能正通过
-  // 内网 IP 或反代访问平台,浏览器地址栏不一定是 Agent 能到达的地址。
-  const [appBaseUrl, setAppBaseUrl] = useState("");
   const [skillOpen, setSkillOpen] = useState(false);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
@@ -252,15 +248,13 @@ export default function TasksPage() {
   }, []);
   useEffect(load, []);
 
-  // 申请链接只有管理者用得上,但 app_base_url(Agent Skill 安装指令)人人要用,所以
-  // /auth/config 对所有人取一次;取不到就当没配置,**不弹错** —— 这些都是锦上添花的入口,
-  // 不该为它们在任务列表上糊一条红色提示。
+  // 申请链接只有管理者用得上,所以也只替他们取一次;取不到就当没配置,**不弹错** ——
+  // 这是个锦上添花的入口,不该为它在任务列表上糊一条红色提示。
+  // (Agent Skill 弹窗要的 app_base_url 由它自己在打开时取,不占这条路径)
   useEffect(() => {
+    if (!isManager) return;
     getAuthConfig()
-      .then((c) => {
-        setAppBaseUrl(c.app_base_url);
-        if (isManager) setApplyUrl(c.feishu_apply_url);
-      })
+      .then((c) => setApplyUrl(c.feishu_apply_url))
       .catch(() => {});
   }, [isManager]);
 
@@ -859,11 +853,7 @@ export default function TasksPage() {
           load();
         }}
       />
-      <AgentSkillModal
-        open={skillOpen}
-        onClose={() => setSkillOpen(false)}
-        appBaseUrl={appBaseUrl}
-      />
+      <AgentSkillModal open={skillOpen} onClose={() => setSkillOpen(false)} />
     </Card>
   );
 }

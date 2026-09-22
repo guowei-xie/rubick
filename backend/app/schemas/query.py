@@ -86,6 +86,9 @@ class TaskOut(BaseModel):
     # 或让前端硬编码 90(那就成了「前端自己推导规则」,正是本 schema 一直在避免的)。
     idle_threshold_days: int = 0
     timeout_seconds: int | None = None  # 该任务查询超时(秒);None=按引擎默认
+    # 是否允许开放 API 触发(运行闸)。列表据此透出「允许 API」标记 —— 与 TemplateOut 同名同义,
+    # 两个列表接口对同一个开关只有一种说法
+    allow_api: bool = False
     # 可编辑/授权/下线。四条口径见 permission_service.can_edit(平台管理员 / 该团队的团队管理员 /
     # 仍在团队内的作者 / 被授予该任务编辑权的成员)。前端只消费这个布尔,**不要自己算团队规则**
     can_manage: bool = False
