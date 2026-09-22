@@ -13,7 +13,7 @@ analytics 的收窄结果 ⊆ 这个人的 visible set(见 tests/test_analytics_
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import case, distinct, func, select
 from sqlalchemy.orm import Session
@@ -22,7 +22,7 @@ from app.core import timewindow
 from app.core.config import settings
 from app.core.exceptions import PermissionDeniedError
 from app.models.audit import (
-    ACTION_LOGIN, ACTION_META, ACTION_TASK_PUBLISH, AuditLog, DownloadEvent,
+    ACTION_LOGIN, ACTION_META, ACTION_TASK_PUBLISH, VIA_API, AuditLog, DownloadEvent,
 )
 from app.models.datasource import DataSource
 from app.models.permission import (
@@ -30,7 +30,7 @@ from app.models.permission import (
 )
 from app.models.query_job import (
     JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCESS,
-    SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST, QueryJob,
+    SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST, QueryJob,
 )
 from app.models.subscription import TaskSchedule, TaskSubscription
 from app.models.team import Team, TeamMember
@@ -1132,3 +1132,98 @@ def governance(db: Session, scope: AnalyticsScope, window) -> dict:
         }
 
     return envelope(scope, window, body)
+
+
+# ---------------------------------------------------------------- 板块⑤ 开放 API
+
+# 「活跃 token」的固定回看窗口。刻意**不吃页面上的时间范围**:它回答的是「这些长期凭证
+# 最近还活没活着」(安全卫生问题),而不是「这段时间 API 用得怎样」(那是 api_runs)
+API_TOKEN_ACTIVE_DAYS = 7
+
+
+def api_usage(db: Session, scope: AnalyticsScope, window) -> dict:
+    """「开放 API 有没有被用起来」—— token 发放与活跃、API 来源的运行与下载、Top 任务。
+
+    token 属于**人**而不是任务,团队视角按「该团队的成员」收窄(成员身份天然可收窄,
+    同 scope_template_ids 的取舍);运行与下载照旧走 job_conditions / by_job,
+    不另立收窄口径。
+    """
+    jc = job_conditions(scope)
+    win = in_window(QueryJob.created_at, window)
+
+    # ① token:发放数(此刻快照)与近 7 天活跃数。三列同生同灭(见 api_token_service),
+    #    以 hash 非空为「有 token」的唯一判据
+    token_conds = [User.api_token_hash.isnot(None)]
+    if not scope.is_platform:
+        token_conds.append(
+            User.id.in_(select(TeamMember.user_id).where(TeamMember.team_id == scope.team_id))
+        )
+    active_since = datetime.now() - timedelta(days=API_TOKEN_ACTIVE_DAYS)
+    # 发放数与近 7 天活跃数是同一批行上的两个聚合,一次查完 ——
+    # 各查一次是对同一批行的重复扫描(本模块 ①② 板块的既有约定)
+    issued, active_7d = db.execute(
+        select(
+            func.count(User.id),
+            func.sum(case((User.api_token_last_used_at >= active_since, 1), else_=0)),
+        ).where(*token_conds)
+    ).one()
+    active_7d = int(active_7d or 0)
+
+    # ② API 来源的运行:窗口内次数与占比(分母 = 窗口内全部运行)。has_data 看全期,
+    #    与其它窗口指标同一约定(「这段时间没人用」与「从来没人用过」指向不同的下一步)
+    # 窗口内 API 运行数与其分母(全部运行)谓词完全一致(*jc, *win),
+    # 是同一批行上的两个聚合,一次查完;各查一次是对同一批行的重复扫描
+    total_runs, api_runs = db.execute(
+        select(
+            func.count(QueryJob.id),
+            func.sum(case((QueryJob.source == SOURCE_API, 1), else_=0)),
+        ).where(*jc, *win)
+    ).one()
+    api_runs = int(api_runs or 0)
+    api_runs_ever = db.scalar(
+        select(func.count(QueryJob.id)).where(*jc, QueryJob.source == SOURCE_API)
+    ) or 0
+
+    # ③ API 下载(DownloadEvent.via;web 下载不进这个数)
+    dl_scope = by_job(DownloadEvent.job_id, jc)
+    api_downloads = db.scalar(
+        select(func.count(DownloadEvent.id)).where(
+            *dl_scope, *in_window(DownloadEvent.created_at, window),
+            DownloadEvent.via == VIA_API,
+        )
+    ) or 0
+
+    # ④ API 调用 Top 任务:先 GROUP BY 拿 id,再一次 IN 补名字 —— 不在循环里 db.get
+    top_rows = db.execute(
+        select(QueryJob.template_id, func.count(QueryJob.id))
+        .where(*jc, *win, QueryJob.source == SOURCE_API)
+        .group_by(QueryJob.template_id)
+        .order_by(func.count(QueryJob.id).desc())
+        .limit(TOP_N)
+    ).all()
+    name_map = {
+        t.id: t
+        for t in db.scalars(
+            select(SqlTemplate).where(SqlTemplate.id.in_([tid for tid, _ in top_rows]))
+        )
+    } if top_rows else {}
+    top_tasks = []
+    for tid, n in top_rows:
+        t = name_map.get(tid)
+        top_tasks.append({
+            "template_id": tid,
+            "name": t.name if t else None,
+            "team_name": t.team_name if t else None,
+            "run_count": n,
+        })
+
+    return envelope(scope, window, {
+        "tokens_issued": metric(issued, windowed=False),
+        "tokens_active_7d": metric(active_7d, windowed=False, has_data=bool(issued)),
+        "api_runs": metric(api_runs, windowed=True, has_data=bool(api_runs_ever)),
+        # 分母为 0 时是 None(「没得算」),不是 0 —— 同 ratio 的既有口径
+        "api_run_share": metric(ratio(api_runs, total_runs), windowed=True,
+                                has_data=bool(total_runs)),
+        "api_downloads": metric(api_downloads, windowed=True, has_data=bool(api_runs_ever)),
+        "top_tasks": top_tasks,
+    })

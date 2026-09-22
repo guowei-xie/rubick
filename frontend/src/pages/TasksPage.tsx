@@ -7,6 +7,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   PlusOutlined,
+  RobotOutlined,
   SearchOutlined,
   UnorderedListOutlined,
   UserSwitchOutlined,
@@ -27,6 +28,7 @@ import {
 import { hasTeam, isManager as isManagerRole, isPlatformAdmin, useAuth } from "../auth";
 import { applyShareText } from "../applyLink";
 import { copyText } from "../clipboard";
+import AgentSkillModal from "../components/AgentSkillModal";
 import TaskEditor from "../components/TaskEditor";
 import RunDrawer from "../components/RunDrawer";
 import RunRecordsDrawer from "../components/RunRecordsDrawer";
@@ -158,6 +160,11 @@ export default function TasksPage() {
   // 飞书应用申请链接(后端 /auth/config 下发,没配就是 null)。给「登不进来的同事」用,
   // 由已经在里面的人复制转发 —— 见下面 extra 里的「申请链接」按钮。
   const [applyUrl, setApplyUrl] = useState<string | null>(null);
+  // 平台对外规范地址(后端 APP_BASE_URL,经 /auth/config 下发)。Agent Skill 安装指令里的
+  // URL 必须用它:那句指令是被粘贴到用户本机的 Agent 里执行的,而用户此刻可能正通过
+  // 内网 IP 或反代访问平台,浏览器地址栏不一定是 Agent 能到达的地址。
+  const [appBaseUrl, setAppBaseUrl] = useState("");
+  const [skillOpen, setSkillOpen] = useState(false);
   const [sp, setSp] = useSearchParams();
   // 默认卡片:只有明确选过列表才是列表(读不到/读到脏值都回落卡片)
   const [view, setView] = useState<ViewMode>(() =>
@@ -245,12 +252,15 @@ export default function TasksPage() {
   }, []);
   useEffect(load, []);
 
-  // 申请链接只有管理者用得上,所以也只替他们取一次;取不到就当没配置,**不弹错** ——
-  // 这是个锦上添花的入口,不该为它在任务列表上糊一条红色提示。
+  // 申请链接只有管理者用得上,但 app_base_url(Agent Skill 安装指令)人人要用,所以
+  // /auth/config 对所有人取一次;取不到就当没配置,**不弹错** —— 这些都是锦上添花的入口,
+  // 不该为它们在任务列表上糊一条红色提示。
   useEffect(() => {
-    if (!isManager) return;
     getAuthConfig()
-      .then((c) => setApplyUrl(c.feishu_apply_url))
+      .then((c) => {
+        setAppBaseUrl(c.app_base_url);
+        if (isManager) setApplyUrl(c.feishu_apply_url);
+      })
       .catch(() => {});
   }, [isManager]);
 
@@ -594,6 +604,18 @@ export default function TasksPage() {
           使用文档
         </Button>
       </Tooltip>
+      {/* Agent Skill:点击弹出安装指令面板(展示待复制内容,取消/复制二选一)。
+          指令里的地址与安装闭环为什么这样设计,见 AgentSkillModal 的 docstring。 */}
+      <Tooltip title="获取一句安装指令,粘贴给你的 AI Agent 即可自动安装(rubick-skill)">
+        <Button
+          type="text"
+          icon={<RobotOutlined />}
+          onClick={() => setSkillOpen(true)}
+          style={{ color: "var(--ink-secondary)" }}
+        >
+          Agent Skill
+        </Button>
+      </Tooltip>
       {/* 申请链接:发给还没有飞书应用权限、因而卡在登录页外面的同事 —— 他连登录页的按钮都
           点不通,平台这边看到的只是「他没登录」,唯一能帮上忙的就是把这条链接发过去。
           门控 isManager:「把人拉进来」与新建 / 授权是同一类职能。
@@ -836,6 +858,11 @@ export default function TasksPage() {
           exitBulk();
           load();
         }}
+      />
+      <AgentSkillModal
+        open={skillOpen}
+        onClose={() => setSkillOpen(false)}
+        appBaseUrl={appBaseUrl}
       />
     </Card>
   );

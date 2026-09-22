@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Layout, Dropdown, Avatar, Tag, Tooltip } from "antd";
 import {
   UserOutlined,
@@ -13,6 +14,7 @@ import {
 } from "@ant-design/icons";
 import { useLocation, useNavigate } from "react-router-dom";
 import { canSeeAnalytics, isManager, useAuth } from "../auth";
+import ApiTokenModal from "./ApiTokenModal";
 import NotificationBell from "./NotificationBell";
 import { ROLE } from "./StatusTag";
 
@@ -86,6 +88,7 @@ function SideNav() {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
+  const [apiTokenOpen, setApiTokenOpen] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh", background: "var(--app-bg)" }}>
@@ -118,6 +121,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <Dropdown
             menu={{
               items: [
+                {
+                  key: "api-token",
+                  label: "API Token",
+                  icon: <KeyOutlined />,
+                  onClick: () => setApiTokenOpen(true),
+                },
                 // 「我的取数账号」已随个人取数账号功能下线;团队账号在左侧「我的团队」里
                 {
                   key: "logout",
@@ -153,6 +162,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
         <Content style={{ padding: "8px 24px 24px 0" }}>{children}</Content>
       </Layout>
+
+      <ApiTokenModal open={apiTokenOpen} onClose={() => setApiTokenOpen(false)} />
     </Layout>
   );
 }

@@ -500,6 +500,21 @@ def main() -> None:
     _ensure_column(tbl("sql_templates"), "team_id", "BIGINT")
     _ensure_index(tbl("sql_templates"), f"ix_{tbl('sql_templates')}_team_id", "team_id")
 
+    # 增量列 + 索引:开放 API token(每用户单枚,只存 SHA-256 哈希)。三列可空:
+    # 存量用户没有 token,这个空值是事实;「有没有 token」就看 hash 是不是 NULL
+    _ensure_column(tbl("users"), "api_token_hash", "VARCHAR(64)")
+    _ensure_column(tbl("users"), "api_token_issued_at", "DATETIME")
+    _ensure_column(tbl("users"), "api_token_last_used_at", "DATETIME")
+    _ensure_index(tbl("users"), f"ix_{tbl('users')}_api_token_hash", "api_token_hash")
+
+    # 增量列:「允许 API 调用」运行闸。带 DEFAULT 的 NOT NULL 是 _ensure_column 惯例
+    # (只加可空列)的唯一例外:默认值 False 正是这个开关的语义(没开就是没开),
+    # 而可空会把「未设置」变成第三种状态,所有读取处都得兜 None
+    _ensure_column(tbl("sql_templates"), "allow_api", "BOOLEAN NOT NULL DEFAULT 0")
+
+    # 增量列:下载通道(web/api)。存量回填 web —— 彼时 API 尚不存在,这是事实
+    _ensure_column(tbl("download_events"), "via", "VARCHAR(16) NOT NULL DEFAULT 'web'")
+
     # 存量敏感字段明文 → 密文(P0-2)
     reencrypt_secrets()
 

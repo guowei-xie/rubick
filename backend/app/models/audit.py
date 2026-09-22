@@ -22,6 +22,14 @@ ACTION_RUN_QUERY_FAILED = "run_query_failed"
 ACTION_DOWNLOAD = "download"
 ACTION_EXPORT_AUDIT = "export_audit"
 
+# 开放 API:token 生命周期(签发含重置 —— 重置就是「签发一枚新的并让旧的失效」)
+ACTION_API_TOKEN_CREATE = "api_token_create"
+ACTION_API_TOKEN_REVOKE = "api_token_revoke"
+# 运行闸拒绝:任务未开「允许 API 调用」时的 API 触发。独立成码而不是塞进 submit_query
+# 的失败里 —— 入队根本没发生,没有 job 可挂;而「谁在试图用 API 跑没开放的任务」
+# 是排查 Agent 接入问题时第一个要问的
+ACTION_API_RUN_DENIED = "api_run_denied"
+
 # 新增动作码统一 <域>_<动词>
 # 任务生命周期(「任务」= SqlTemplate;回收站 = status archived)
 ACTION_TASK_CREATE = "task_create"
@@ -102,9 +110,12 @@ GROUPS = {
 # 动作码 → (中文标签, 分组)。顺序即管理端下拉的展示顺序(按域归拢,不按字母)
 ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_LOGIN: ("登录", GROUP_AUTH),
+    ACTION_API_TOKEN_CREATE: ("签发/重置 API Token", GROUP_AUTH),
+    ACTION_API_TOKEN_REVOKE: ("吊销 API Token", GROUP_AUTH),
     ACTION_SUBMIT_QUERY: ("提交取数", GROUP_QUERY),
     ACTION_RUN_QUERY: ("运行取数", GROUP_QUERY),
     ACTION_RUN_QUERY_FAILED: ("取数失败", GROUP_QUERY),
+    ACTION_API_RUN_DENIED: ("API 调用被运行闸拒绝", GROUP_QUERY),
     ACTION_DOWNLOAD: ("下载结果", GROUP_QUERY),
     ACTION_TASK_CREATE: ("新建任务", GROUP_TASK),
     ACTION_TASK_UPDATE: ("编辑任务", GROUP_TASK),
@@ -190,6 +201,12 @@ class AuditLog(Base, TimestampMixin):
     ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
+# 通道取值:web=界面,api=开放 API。DownloadEvent.via、审计 detail 的 via、
+# enqueue/log_download 的 via 参数共用这一对(与 QueryJob.source 的 "api" 同串不同域,刻意不共用)
+VIA_WEB = "web"
+VIA_API = "api"
+
+
 class DownloadEvent(Base, TimestampMixin):
     """结果下载事件,单列以便高频检索与配额统计。"""
 
@@ -202,4 +219,7 @@ class DownloadEvent(Base, TimestampMixin):
     job_id: Mapped[int] = mapped_column(BigInteger, index=True)
     filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     row_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 下载通道:web=界面内签名 URL,api=开放 API 直出。存量行由迁移回填 web ——
+    # 彼时 API 尚不存在,这个默认值是事实而不是占位。server_default 是 SQL 字面量,保持字符串
+    via: Mapped[str] = mapped_column(String(16), default=VIA_WEB, nullable=False, server_default="web")
     ip: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

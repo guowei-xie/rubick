@@ -17,13 +17,14 @@ from app.services import permission_service, query_service, result_service, subs
 router = APIRouter(tags=["query"])
 
 
-def _job_out(db: Session, job: QueryJob) -> JobOut:
+def job_out(db: Session, job: QueryJob) -> JobOut:
     """运行记录的单条响应。排队中的额外算一次「前面还有几个」。
 
     只在 queued 时算:已经在跑的还报位次会让人以为还在排队。一次按 status 索引的 COUNT,
     而轮询是每人每几秒一次,代价可忽略 —— 换来的是用户分得清「系统在跑我的活」和
     「在等别人的活跑完」。位次怎么算住在 query_service.queue_ahead(与 worker 的认领顺序
     同一模块),这里只留「什么时候展示」这个决定。
+    公开供 routes/v1 复用:开放 API 的轮询响应与界面轮询是同一份形状。
     """
     out = JobOut.model_validate(job)
     if job.status == JOB_QUEUED:
@@ -35,7 +36,7 @@ def _job_out(db: Session, job: QueryJob) -> JobOut:
 def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """业务用户填参运行:入队异步执行,立即返回运行记录(前端轮询 /jobs/{id} 或看通知)。"""
     job = query_service.enqueue(db, user, data.template_id, data.values, ip=client_ip(request))
-    return _job_out(db, job)
+    return job_out(db, job)
 
 
 @router.get("/jobs", response_model=list[JobOut])
@@ -56,7 +57,7 @@ def get_job(job_id: int, db: Session = Depends(get_db), user: User = Depends(get
     job = db.get(QueryJob, job_id)
     if job is None or not permission_service.can_access_job(db, user, job):
         raise NotFoundError("运行记录不存在")
-    return _job_out(db, job)
+    return job_out(db, job)
 
 
 @router.get("/jobs/{job_id}/download")

@@ -46,6 +46,13 @@ class SqlTemplate(Base, TimestampMixin):
     # 该任务的查询超时(秒);None=按数据源引擎默认(Hive 用 HIVE_QUERY_TIMEOUT_SECONDS,其余用 QUERY_TIMEOUT_SECONDS)
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # 「允许 API 调用」开关 —— 仅作**运行闸**:API 触发运行要求它为 True(fail-closed,
+    # 默认关,见 query_service.enqueue);可见性与结果下载不受它影响,仍走权限模型。
+    # server_default 让存量行直接落成 False —— 「上线前每个任务都得显式开」正是默认关的含义。
+    allow_api: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="0"
+    )
+
     # 指向当前"已上线"的版本;未上线(草稿/已下线)时为 None
     published_version_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey(tbl("template_versions.id"), use_alter=True, name=tbl("fk_published_version")),

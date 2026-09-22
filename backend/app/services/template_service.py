@@ -116,6 +116,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         status=STATUS_DRAFT,
         author_id=author.id,
         timeout_seconds=data.timeout_seconds,
+        allow_api=data.allow_api,
     )
     db.add(tmpl)
     db.flush()
@@ -162,6 +163,9 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     # 与取数身份,是平台管理员的治理动作,走 PUT /tasks/{id}/team。
     # 超时:编辑器每次提交完整表单,直接覆盖(None=恢复引擎默认)
     tmpl.timeout_seconds = data.timeout_seconds
+    # 「允许 API 调用」开关:None = 本次未动(与 name 等字段同一约定),显式 true/false 才改
+    if data.allow_api is not None:
+        tmpl.allow_api = data.allow_api
     # 方言始终跟随数据源引擎
     ds = db.get(DataSource, tmpl.datasource_id)
     tmpl.dialect = ds.engine if ds else tmpl.dialect

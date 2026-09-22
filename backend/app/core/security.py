@@ -1,5 +1,7 @@
-"""JWT 签发与校验。"""
+"""JWT 签发与校验;开放 API token 的生成与哈希。"""
 from __future__ import annotations
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
@@ -47,3 +49,19 @@ def verify_download_token(token: str) -> int | None:
     if payload.get("purpose") != "download":
         return None
     return payload.get("job_id")
+
+
+# 开放 API token 的固定前缀:一眼可辨(日志/文档里认出它),也让 v1 鉴权能在不查库时
+# 就拒绝 JWT 等其它 Bearer 凭证(见 deps.get_api_user)
+API_TOKEN_PREFIX = "rk_"
+
+
+def generate_api_token() -> str:
+    """生成一枚 API token(**明文**)。明文只在签发响应里出现一次,库里只存哈希。"""
+    return API_TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_api_token(token: str) -> str:
+    """token 的 SHA-256 hex(64 字符)。落库与按库查找都用它 —— 明文永不落库,
+    库泄露不等于 token 泄露。token 本身已是高熵随机串,无需加盐。"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

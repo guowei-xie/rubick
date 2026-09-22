@@ -34,12 +34,17 @@ def auth_config():
     申请链接放在这里而不是另开接口:它正是给**还没登录、也登不进来**的人看的,
     而本接口是全站唯一免鉴权的配置出口。没配就下发 None(不是 ""),
     让「没配」在前端只有一种形态 —— 界面据此整个隐藏入口,而不是渲一个点了没反应的按钮。
+
+    app_base_url 也走这里:它是「对外怎么称呼本平台」的唯一真相(飞书回调、通知链接都
+    从它派生),前端凡是需要生成**给别人/别的机器用**的绝对链接(如 Agent Skill 安装地址),
+    都必须用它而不是浏览器地址栏 —— 用户可能正通过内网 IP 或反向代理访问。
     """
     feishu_ready = bool(settings.FEISHU_APP_ID)
     return {
         "mock_auth": settings.MOCK_AUTH,
         "feishu_authorize_url": feishu_service.build_authorize_url() if feishu_ready else None,
         "feishu_apply_url": settings.FEISHU_APP_APPLY_URL or None,
+        "app_base_url": settings.APP_BASE_URL,
     }
 
 

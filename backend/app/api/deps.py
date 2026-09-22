@@ -1,4 +1,4 @@
-"""FastAPI 依赖:解析 JWT → 当前用户;角色校验。"""
+"""FastAPI 依赖:解析 JWT → 当前用户;开放 API 的 token → 当前用户;角色校验。"""
 from __future__ import annotations
 
 from fastapi import Depends, Header, Request
@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.exceptions import PermissionDeniedError, UnauthorizedError
-from app.core.security import decode_access_token
+from app.core.security import API_TOKEN_PREFIX, decode_access_token
 from app.models.user import User, is_platform_admin
-from app.services import permission_service
+from app.services import api_token_service, permission_service
 
 
 def get_current_user(
@@ -23,6 +23,28 @@ def get_current_user(
     user = db.get(User, int(payload["sub"]))
     if user is None or not user.is_active:
         raise UnauthorizedError("用户不存在或已停用")
+    return user
+
+
+def get_api_user(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    """开放 API(/api/v1/*)专用鉴权:**只认 rk_ 前缀的 API token**,不认登录 JWT。
+
+    两条鉴权通道完全分离是刻意的:审计 detail 里的 via("web"/"api")要无歧义,
+    就得让「走的哪个通道」由路由而不是由凭证内容猜测 —— v1 路由若同时接受 JWT,
+    浏览器脚本拿着 JWT 调 v1 就会被记成 api。
+    token 即用户本人身份,权限判定照旧从 User 出发(permission_service 零改动)。
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise UnauthorizedError("缺少认证令牌")
+    token = authorization.split(" ", 1)[1]
+    if not token.startswith(API_TOKEN_PREFIX):
+        raise UnauthorizedError(f"该接口仅接受 API Token(以 {API_TOKEN_PREFIX} 开头,可在「API Token」页面生成)")
+    user = api_token_service.authenticate(db, token)
+    if user is None:
+        raise UnauthorizedError("API Token 无效、已吊销,或账号已停用")
     return user
 
 

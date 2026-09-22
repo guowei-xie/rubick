@@ -1,5 +1,5 @@
 import { Avatar, Button, Dropdown, Tooltip } from "antd";
-import { ClockCircleOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
+import { ClockCircleOutlined, ApiOutlined, MoreOutlined, UserOutlined, WarningOutlined } from "@ant-design/icons";
 import { CREDENTIAL_STATUS, TEMPLATE_STATUS } from "./StatusTag";
 import TaskIdTag from "./TaskIdTag";
 import {
@@ -208,7 +208,7 @@ export default function TaskCard({
             {r.description}
           </div>
         )}
-        {(r.datasource_name || r.team_name || r.subscribe_enabled) && (
+        {(r.datasource_name || r.team_name || r.subscribe_enabled || r.allow_api) && (
           <div
             style={{
               display: "flex",
@@ -243,6 +243,16 @@ export default function TaskCard({
               >
                 <ClockCircleOutlined style={{ marginRight: 4 }} />
                 {scheduleLabel(r)}
+              </span>
+            )}
+            {/* 「允许 API」标签:与订阅标签同档,只是告诉人这任务能被开放 API 触发 */}
+            {r.allow_api && (
+              <span
+                style={chipStyle}
+                title="允许 API 调用:持有 API Token 的用户可通过开放 API 触发本任务运行"
+              >
+                <ApiOutlined style={{ marginRight: 4 }} />
+                API
               </span>
             )}
           </div>

@@ -17,7 +17,7 @@ class JobOut(BaseModel):
     user_name: str | None = None
     params: dict[str, Any] = {}
     status: str
-    source: str = "run"  # run=正式取数,test=试跑,subscribe=订阅定时运行
+    source: str = "run"  # run=正式取数,test=试跑,subscribe=订阅定时运行,api=开放 API 触发
     row_count: int | None = None
     duration_ms: int | None = None
     error: str | None = None
@@ -26,7 +26,7 @@ class JobOut(BaseModel):
     executed_sql: str | None = None  # 实际发给数据库的最终 SQL
     # 排在前面还有几个 queued 任务。没有它,前端就只能对「在排队」和「在跑」说同一句话,
     # 长等待读起来像卡死。
-    # 不是模型上的列,由路由现算(见 routes/query._job_out),所以**只有 POST /run 与
+    # 不是模型上的列,由路由现算(见 routes/query.job_out),所以**只有 POST /run 与
     # GET /jobs/{id} 的响应里有值,且仅当 status=queued**;列表接口 GET /jobs 直接把 ORM
     # 行喂给 response_model,这一项恒为 null —— 别在运行记录列表里指望它。
     queue_ahead: int | None = None

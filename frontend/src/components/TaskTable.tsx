@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import { Button, Dropdown, Table, TableColumnType } from "antd";
+import { Button, Dropdown, Table, TableColumnType, Tag } from "antd";
 import { ClockCircleOutlined, MoreOutlined, WarningOutlined } from "@ant-design/icons";
 import StatusTag, {
   CREDENTIAL_STATUS,
@@ -124,14 +124,28 @@ export default function TaskTable({
         width: 150,
         ellipsis: true,
         render: (_: any, r: any) =>
-          r.subscribe_enabled ? (
-            <span
-              title={scheduleHint(r)}
-              // 已订阅换品牌色,一眼分清「任务可订」与「我订了」
-              style={r.subscribed ? { color: "var(--brand)", fontWeight: 600 } : undefined}
-            >
-              <ClockCircleOutlined style={{ marginRight: 4 }} />
-              {scheduleLabel(r)}
+          r.subscribe_enabled || r.allow_api ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {r.subscribe_enabled && (
+                <span
+                  title={scheduleHint(r)}
+                  // 已订阅换品牌色,一眼分清「任务可订」与「我订了」
+                  style={r.subscribed ? { color: "var(--brand)", fontWeight: 600 } : undefined}
+                >
+                  <ClockCircleOutlined style={{ marginRight: 4 }} />
+                  {scheduleLabel(r)}
+                </span>
+              )}
+              {/* 「允许 API」小标签:与卡片视图的 chip 同一语义,颜色与运行记录的「API」来源标签一致 */}
+              {r.allow_api && (
+                <Tag
+                  color="cyan"
+                  style={{ marginRight: 0 }}
+                  title="允许 API 调用:持有 API Token 的用户可通过开放 API 触发本任务运行"
+                >
+                  API
+                </Tag>
+              )}
             </span>
           ) : (
             dash(null)

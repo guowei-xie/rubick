@@ -114,3 +114,21 @@ def analytics_governance(
     """
     scope, window = _scoped(db, user, team_id, start, end, days)
     return analytics_service.governance(db, scope, window)
+
+
+@router.get("/api")
+def analytics_api(
+    team_id: int | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    days: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """板块⑤:开放 API 用得怎么样 —— token 发放与活跃、API 来源的运行与下载、Top 任务。
+
+    同为只读聚合,不记审计(理由见模块 docstring)。
+    注意 `tokens_*` 两项是**此刻**的快照(且活跃窗口固定 7 天),不吃时间范围。
+    """
+    scope, window = _scoped(db, user, team_id, start, end, days)
+    return analytics_service.api_usage(db, scope, window)

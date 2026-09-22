@@ -42,7 +42,15 @@ from app.schemas.template import PublishIn, TemplateCreateIn, TemplateUpdateIn
 AUDITED: dict[str, frozenset[str]] = {
     "POST /api/auth/mock-login": frozenset({A.ACTION_LOGIN}),
     "POST /api/auth/feishu/callback": frozenset({A.ACTION_LOGIN}),
+    # API Token 管理:签发与重置共用同一个端点同一个动作码(重置就是「签发一枚新的」)
+    "POST /api/auth/api-token": frozenset({A.ACTION_API_TOKEN_CREATE}),
+    "DELETE /api/auth/api-token": frozenset({A.ACTION_API_TOKEN_REVOKE}),
     "POST /api/run": frozenset({A.ACTION_SUBMIT_QUERY}),
+    # 开放 API 触发运行:成功入队记 submit_query(detail.via=api);
+    # 运行闸拒绝(任务未开「允许 API 调用」)记 api_run_denied
+    "POST /api/v1/tasks/{template_id}/runs": frozenset(
+        {A.ACTION_SUBMIT_QUERY, A.ACTION_API_RUN_DENIED}
+    ),
     "POST /api/templates": frozenset({A.ACTION_TASK_CREATE}),
     "PUT /api/templates/{template_id}": frozenset({A.ACTION_TASK_UPDATE}),
     # 上线 / 从回收站恢复共用一个端点,按原状态分派两个动作码

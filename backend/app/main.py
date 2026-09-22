@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import (
     admin,
     analytics,
+    api_tokens,
     audit,
     auth,
     credentials,
@@ -23,6 +24,7 @@ from app.api.routes import (
     tasks,
     teams,
     templates,
+    v1,
 )
 from app.core.config import settings
 from app.core.exceptions import RubicError
@@ -103,6 +105,9 @@ app.include_router(notifications.router, prefix=api)
 app.include_router(admin.router, prefix=api)
 app.include_router(analytics.router, prefix=api)
 app.include_router(lookup.router, prefix=api)
+# API Token 管理(Web 端,JWT 鉴权)与开放 API v1(仅 API token)是两条完全分离的通道
+app.include_router(api_tokens.router, prefix=api)
+app.include_router(v1.router, prefix=api)
 
 
 # 托管前端静态产物(frontend/dist),后端单端口即可提供完整应用,无需 nginx。

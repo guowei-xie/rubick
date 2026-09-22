@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     # 0 或负数 = 关掉这项提示(界面上不再出现闲置标记与筛选片)。
     TASK_IDLE_DAYS: int = 90
 
+    # ---- 开放 API(/api/v1/*)----
+    # 内存滑动窗口限流:每用户每分钟最多多少次调用(按 token 对应的用户计)。
+    # Agent 轮询运行状态建议每 5s 一次(12 次/分),默认 120 余量充足;
+    # 超限返回 429。0 或负数 = 关闭限流(不推荐)。
+    API_RATE_LIMIT_PER_MINUTE: int = 120
+
     # ---- 访问地址 / 端口(可配置)----
     # 后端监听地址与端口(部署脚本据此启动 uvicorn)
     BACKEND_HOST: str = "0.0.0.0"

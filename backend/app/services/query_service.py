@@ -25,7 +25,14 @@ from app.core.exceptions import (
     RubicError,
 )
 from app.core.sql_gateway import validate_readonly
-from app.models.audit import ACTION_RUN_QUERY, ACTION_RUN_QUERY_FAILED, ACTION_SUBMIT_QUERY
+from app.models.audit import (
+    ACTION_API_RUN_DENIED,
+    ACTION_RUN_QUERY,
+    ACTION_RUN_QUERY_FAILED,
+    ACTION_SUBMIT_QUERY,
+    VIA_API,
+    VIA_WEB,
+)
 from app.models.datasource import DataSource
 from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE
 from app.models.query_job import (
@@ -33,6 +40,8 @@ from app.models.query_job import (
     JOB_QUEUED,
     JOB_RUNNING,
     JOB_SUCCESS,
+    SOURCE_API,
+    SOURCE_RUN,
     SOURCE_SUBSCRIBE,
     QueryJob,
 )
@@ -87,8 +96,16 @@ def queue_ahead(db: Session, job: QueryJob) -> int:
     ) or 0
 
 
-def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | None = None) -> QueryJob:
-    """前置校验后入队。返回 queued 任务(RUN_INLINE 模式下返回时可能已完成)。"""
+def enqueue(
+    db: Session, user: User, template_id: int, values: dict,
+    ip: str | None = None, *, via: str = VIA_WEB,
+) -> QueryJob:
+    """前置校验后入队。返回 queued 任务(RUN_INLINE 模式下返回时可能已完成)。
+
+    via = 触发通道("web"=界面 / "api"=开放 API)。**运行闸 fail-closed**:
+    API 触发要求任务显式开启了「允许 API 调用」(allow_api),默认关 —— 没开的任务
+    不该因为某枚 token 就对外可跑;拒绝会记审计(排查 Agent 接入时第一个要看的地方)。
+    """
     tmpl = db.get(SqlTemplate, template_id)
     if tmpl is None:
         raise NotFoundError("任务不存在")
@@ -96,6 +113,16 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
         raise RubicError("任务未上线,不可运行")
     if not permission_service.can(db, user, ACTION_RUN, RESOURCE_TEMPLATE, template_id):
         raise PermissionDeniedError("无权运行该任务")
+    if via == VIA_API and not tmpl.allow_api:
+        # 此刻还没有任何写入(建行在下方),audit_service.log 的 commit 不会误提交半成品
+        audit_service.log(
+            db, user=user, action=ACTION_API_RUN_DENIED,
+            resource_type=RESOURCE_TEMPLATE, resource_id=tmpl.id, resource_name=tmpl.name,
+            detail={"reason": "allow_api_off"}, ip=ip,
+        )
+        raise PermissionDeniedError(
+            "该任务未开放 API 调用:请让任务编辑者在编辑器中开启「允许 API 调用」"
+        )
 
     version = db.get(TemplateVersion, tmpl.published_version_id)
     # 请求内先做参数校验与安全网关,把可预见的错误即时反馈给用户
@@ -118,6 +145,8 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
         datasource_id=tmpl.datasource_id,
         params=values,
         status=JOB_QUEUED,
+        # API 触发的运行与界面触发的分开记账:分析维度与运行记录来源标记全靠它
+        source=SOURCE_API if via == VIA_API else SOURCE_RUN,
     )
     db.add(job)
     db.commit()
@@ -125,7 +154,7 @@ def enqueue(db: Session, user: User, template_id: int, values: dict, ip: str | N
 
     audit_service.log(
         db, user=user, action=ACTION_SUBMIT_QUERY, resource_type=RESOURCE_TEMPLATE,
-        resource_id=tmpl.id, detail={"job_id": job.id, "params": values}, ip=ip,
+        resource_id=tmpl.id, detail={"job_id": job.id, "params": values, "via": via}, ip=ip,
     )
 
     # 交给 worker 后台执行;RUN_INLINE 模式则在请求内同步执行(便于本地开发,无需 worker)

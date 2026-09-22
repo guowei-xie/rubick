@@ -81,6 +81,9 @@ export interface AuthConfig {
   mock_auth: boolean;
   feishu_authorize_url: string | null;
   feishu_apply_url: string | null;
+  /** 平台对外规范地址(后端 APP_BASE_URL,可能含子路径)。生成给外部用的绝对链接必须用它,
+   *  而不是 window.location —— 用户可能正通过内网 IP 或反代访问。 */
+  app_base_url: string;
 }
 export const getAuthConfig = () => http.get("/auth/config").then((r) => r.data as AuthConfig);
 export const mockLogin = (feishu_open_id: string) =>
@@ -88,6 +91,20 @@ export const mockLogin = (feishu_open_id: string) =>
 export const feishuCallback = (code: string) =>
   http.post("/auth/feishu/callback", { code }).then((r) => r.data);
 export const getMe = () => http.get("/auth/me").then((r) => r.data as User);
+
+// ---- API Token(开放 API 的个人凭证)----
+// 明文只在生成/重置那一刻返回一次,此后服务端只肯说「有没有、何时签发、最近何时用过」,
+// 前端拿不回也**不该**拿回 token 本体 —— 故「查看 token」这个入口不存在。
+export interface ApiTokenInfo {
+  exists: boolean;
+  issued_at: string | null;
+  last_used_at: string | null;
+}
+export const getApiToken = () => http.get("/auth/api-token").then((r) => r.data as ApiTokenInfo);
+/** 生成或重置(旧 token 立即失效)。返回的 token 是唯一一次明文,展示完就丢。 */
+export const createApiToken = () =>
+  http.post("/auth/api-token").then((r) => r.data as { token: string; issued_at: string });
+export const revokeApiToken = () => http.delete("/auth/api-token").then((r) => r.data);
 
 // ---- templates ----
 export const getTemplate = (id: number) => http.get(`/templates/${id}`).then((r) => r.data);

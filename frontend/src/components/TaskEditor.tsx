@@ -164,6 +164,7 @@ export default function TaskEditor({
           timeout_seconds: d.timeout_seconds,
           sql_text: v?.sql_text,
           params,
+          allow_api: !!d.allow_api,
           ...subFormFields(d.subscription),
         });
         setOriginalTeamId(d.team_id ?? null);
@@ -178,6 +179,7 @@ export default function TaskEditor({
       form.setFieldsValue({
         params: [],
         team_id: mine.length === 1 ? mine[0].id : undefined,
+        allow_api: false,
         ...subFormFields(),
       });
       setActiveKeys([]);
@@ -273,6 +275,7 @@ export default function TaskEditor({
     }
     return {
       ...rest,
+      allow_api: !!v.allow_api,
       subscription,
       enum_samples,
       // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
@@ -759,6 +762,15 @@ export default function TaskEditor({
           )}
         </Space>
 
+        <Divider orientation="left">开放 API</Divider>
+        <Space align="center" size={10}>
+          <Form.Item name="allow_api" valuePropName="checked" noStyle>
+            <Switch />
+          </Form.Item>
+          <span>
+            允许 API 调用 —— 开启后,持有 API Token 的用户可通过开放 API 触发本任务运行
+          </span>
+        </Space>
       </Form>
 
       {/* 试跑结果浮窗:底部「测试运行」成功后弹出 */}

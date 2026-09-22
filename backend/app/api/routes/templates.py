@@ -46,6 +46,7 @@ router = APIRouter(prefix="/templates", tags=["templates"])
 # 进审计 detail 的任务元信息字段(SQL 单独记,不混在 diff 里)
 _TMPL_AUDIT_FIELDS = (
     "name", "description", "tags", "datasource_id", "team_id", "timeout_seconds", "status",
+    "allow_api",
 )
 
 # 审计里 SQL 原文的截断长度,与 query_service 记录 executed_sql 的口径一致

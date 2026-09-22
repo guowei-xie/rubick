@@ -151,6 +151,8 @@ class TemplateCreateIn(BaseModel):
     sql_text: str
     params: list[ParamDef] = []
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
+    # 允许开放 API 触发该任务(运行闸;默认关,见 models/template.py 的 allow_api 注释)
+    allow_api: bool = False
     # 作者测出来的候选值,按变量名归集。**缺省 ≠ 清空**:编辑器每次开窗都清空测试结果,
     # 所以「只改任务名、没重测」发来的就是空 dict,此时必须保留已有的共享候选。
     enum_samples: dict[str, EnumSampleIn] = {}
@@ -173,6 +175,8 @@ class TemplateUpdateIn(BaseModel):
     sql_text: str | None = None
     params: list[ParamDef] | None = None
     timeout_seconds: int | None = None  # 查询超时(秒);留空=按引擎默认
+    # None = 本次保存未动这个开关(与 name 等字段同一约定);显式 true/false 才改
+    allow_api: bool | None = None
     # 同 TemplateCreateIn.enum_samples:缺省/空 dict 表示「本次没有新测的候选」,不是「清空」
     enum_samples: dict[str, EnumSampleIn] | None = None
     # 订阅计划;None = 维持现状。显式 enabled=False 视为「关闭订阅」(清退订阅者并通知)
@@ -248,6 +252,8 @@ class TemplateOut(BaseModel):
     author_id: int
     published_version_id: int | None
     timeout_seconds: int | None = None
+    # 是否允许开放 API 触发(运行闸)。前端任务列表据此透出「允许 API」标记
+    allow_api: bool = False
 
     class Config:
         from_attributes = True

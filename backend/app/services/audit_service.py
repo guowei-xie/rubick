@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.models.audit import ACTION_DOWNLOAD, RESOURCE_JOB, AuditLog, DownloadEvent
+from app.models.audit import ACTION_DOWNLOAD, RESOURCE_JOB, VIA_WEB, AuditLog, DownloadEvent
 from app.models.user import User
 
 # 绝不允许进入审计 detail 的字段名。
@@ -96,11 +96,12 @@ def log(
 
 
 def log_download(
-    db: Session, *, user: User, job_id: int, filename: str | None, row_count: int | None, ip: str | None
+    db: Session, *, user: User, job_id: int, filename: str | None, row_count: int | None,
+    ip: str | None, via: str = VIA_WEB,
 ) -> None:
     db.add(
         DownloadEvent(
-            user_id=user.id, job_id=job_id, filename=filename, row_count=row_count, ip=ip
+            user_id=user.id, job_id=job_id, filename=filename, row_count=row_count, ip=ip, via=via
         )
     )
     log(
@@ -110,6 +111,6 @@ def log_download(
         resource_type=RESOURCE_JOB,
         resource_id=job_id,
         resource_name=filename,
-        detail={"filename": filename, "row_count": row_count},
+        detail={"filename": filename, "row_count": row_count, "via": via},
         ip=ip,
     )

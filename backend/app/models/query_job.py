@@ -14,10 +14,13 @@ JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_FAILED = "failed"
 
-# 运行来源:业务正式取数 / 作者在编辑器里的试跑 / 订阅计划定时自动运行
+# 运行来源:业务正式取数 / 作者在编辑器里的试跑 / 订阅计划定时自动运行 / 开放 API 触发
 SOURCE_RUN = "run"
 SOURCE_TEST = "test"
 SOURCE_SUBSCRIBE = "subscribe"
+# api = 由 /api/v1/* 用 API token 触发。它让「API 用得怎么样」成为免费维度
+# (运营分析按 source 聚合即可),运行记录列表也能据此区分来源
+SOURCE_API = "api"
 
 # executed_sql 落的是 Text 列(MySQL 上限 65535 **字节**),而它的内容直接由用户填的参数决定:
 # 业务方用「上传/粘贴列表」粘 5000 个 10 位 ID(前端 LIST_CAP 就是 5000),渲染出来是 70KB。
@@ -69,7 +72,8 @@ class QueryJob(Base, TimestampMixin):
 
     params: Mapped[dict] = mapped_column(JSON, default=dict)  # 用户填入的参数值
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, index=True)
-    # 运行来源:run=业务正式取数,test=作者在编辑器里的试跑(运行记录里据此区分)
+    # 运行来源:run=业务正式取数,test=作者在编辑器里的试跑,subscribe=订阅定时运行,
+    # api=开放 API 触发(运行记录里据此区分)
     source: Mapped[str] = mapped_column(String(16), default=SOURCE_RUN, nullable=False, index=True)
 
     row_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

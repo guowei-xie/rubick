@@ -60,3 +60,13 @@ class User(Base, TimestampMixin):
     feishu_token: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     feishu_refresh_token: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     feishu_token_exp: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # 开放 API token(每用户**单枚**,重置即旧的失效)。库里只存 SHA-256 hex(64 字符),
+    # 明文只在签发响应里出现一次、永不落库 —— 库泄露不等于 token 泄露。
+    # 三列同生同灭:hash 为 None 即「没有 token」,另两列也无意义(签发/吊销成对维护,
+    # 见 services/api_token_service)。
+    api_token_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    api_token_issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # 节流写入:距上次写入超过 60s 才更新(见 api_token_service.authenticate),
+    # 否则轮询中的 Agent 每 5 秒就带来一次 UPDATE
+    api_token_last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
