@@ -40,7 +40,7 @@ function subFormFields(sub?: { enabled?: boolean; freq?: string; days?: number[]
     sub_freq: sub?.freq || "daily",
     sub_weekdays: sub?.freq === "weekly" ? sub.days : [],
     sub_monthdays: sub?.freq === "monthly" ? sub.days : [],
-    sub_time: dayjs(sub?.at_time || "09:00", "HH:mm"),
+    sub_time: dayjs(sub?.at_time || "10:30", "HH:mm"),
   };
 }
 
@@ -267,7 +267,7 @@ export default function TaskEditor({
           : sub_freq === "monthly"
             ? sub_monthdays || []
             : [],
-      at_time: sub_time ? sub_time.format("HH:mm") : "09:00",
+      at_time: sub_time ? sub_time.format("HH:mm") : "10:30",
     };
     if (subscription.enabled && subscription.freq !== "daily" && !subscription.days.length) {
       message.warning(

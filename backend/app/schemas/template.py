@@ -24,7 +24,7 @@ class SubscriptionScheduleIn(BaseModel):
     # weekly: ISO 星期几(1=周一 … 7=周日);monthly: 几号(1-31),可多选。
     # 29/30/31 遇小月顺延到月末最后一天(见 subscription_service.latest_planned_at)
     days: list[int] = []
-    at_time: str = "09:00"  # "HH:MM",服务器本地时间
+    at_time: str = "10:30"  # "HH:MM",服务器本地时间
 
     @model_validator(mode="after")
     def _check(self) -> "SubscriptionScheduleIn":
@@ -49,7 +49,7 @@ class SubscriptionScheduleOut(BaseModel):
     enabled: bool = False
     freq: str = "daily"
     days: list[int] = []
-    at_time: str = "09:00"
+    at_time: str = "10:30"
 
     class Config:
         from_attributes = True

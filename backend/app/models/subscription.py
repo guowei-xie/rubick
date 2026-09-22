@@ -70,7 +70,7 @@ class TaskSchedule(Base, TimestampMixin):
     days: Mapped[list] = mapped_column(JSON, default=list)
     # "HH:MM",服务器本地时间。存字符串而不是 Time 列:它只参与自写的 due 计算,
     # 不参与任何 SQL 端时间运算,字符串在 MySQL/SQLite 间零歧义。
-    at_time: Mapped[str] = mapped_column(String(5), default="09:00", nullable=False)
+    at_time: Mapped[str] = mapped_column(String(5), default="10:30", nullable=False)
     # 调度水位:已消化到的**计划时刻**(不是实际运行时刻)。「原子推进水位」就是去重锁
     # (UPDATE ... WHERE last_planned_at < planned,rowcount==1 才 fire),
     # 与 worker._claim_next_job_id 同一套路,多实例安全。
