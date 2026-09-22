@@ -1,4 +1,4 @@
-"""护栏:四个板块各自的 SQL 次数上限。
+"""护栏:各板块各自的 SQL 次数上限。
 
 运营分析全是聚合,最容易退化的方式是「在循环里补名字」——  Top10 排行里逐行 db.get 作者与
 团队,一眼看不出来,数据一多就是几十次往返。这个文件用 SQLAlchemy 的 before_cursor_execute
@@ -28,7 +28,7 @@ NOW = datetime(2026, 6, 15, 12, 0)
 WINDOW = Window(NOW - timedelta(days=30), NOW)
 
 # 当前实现的条数 + 3 条余量(实测,平台/团队两种视角:adoption 10/10、health 10/10、
-# assets 11/10、governance 14/9)。留余量是为了「多加一个指标」不必连带改这里,
+# assets 11/10、governance 14/9、api_usage 5/5)。留余量是为了「多加一个指标」不必连带改这里,
 # 但多出十几条一定会被挡住。
 #
 # 上限要**跟着实现往下走**:一次重构把条数砍掉三分之一后不收紧,这里就成了一个再也拦不住
@@ -37,7 +37,7 @@ WINDOW = Window(NOW - timedelta(days=30), NOW)
 # 真正判 N+1 的是后面两条:test_budget_does_not_grow_with_data_volume 要求数据翻倍后条数
 # **完全不变**,test_meta_does_not_query_per_managed_team 要求它不随管的团队数增长。
 # 那两个才是硬判据,这里的上限只是量级护栏。
-BUDGET = {"adoption": 13, "health": 13, "assets": 14, "governance": 17}
+BUDGET = {"adoption": 13, "health": 13, "assets": 14, "governance": 17, "api_usage": 8}
 
 
 class _Counter:
@@ -111,7 +111,7 @@ def loaded(db, dev, biz, ds, team_a, job_factory):
     return True
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "api_usage"])
 def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     fn = getattr(analytics_service, board)
     scope = analytics_service.resolve_scope(db, plat)
@@ -122,7 +122,7 @@ def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     )
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "api_usage"])
 def test_board_stays_within_query_budget_team(db, a_admin, loaded, board):
     """团队视角会多几条子查询,但**不该随任务数增长**。"""
     fn = getattr(analytics_service, board)

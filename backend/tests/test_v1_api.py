@@ -20,7 +20,7 @@ from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.schemas.common import ParamDef
 from app.schemas.template import TemplateCreateIn, TemplateUpdateIn
 from app.schemas.v1 import V1RunIn
-from app.services import analytics_service, api_token_service, audit_service, permission_service, query_service, template_service
+from app.services import analytics_service, audit_service, permission_service, query_service, template_service
 from tests.conftest import max_audit_id, new_audit_rows, one_audit_row
 
 # ID 段 9410–9413
@@ -231,32 +231,20 @@ def test_allow_api_toggle_lands_in_update_audit(db, task_web, author):
     assert task_web.allow_api is True
 
 
-def test_analytics_api_block(db, admin, author, team, task_api, viewer, clean_jobs):
-    """API 板块:token 发放/活跃、API 运行数与占比、API 下载数、Top 任务。"""
-    token, _ = api_token_service.issue(db, viewer)
-    api_token_service.authenticate(db, token)  # 盖上「最近使用」→ 近 7 天活跃
+def test_analytics_api_block(db, admin, task_api, viewer, clean_jobs):
+    """**链路**:v1 真的跑出来的运行与下载,接得上运营分析的开放 API 板块。
 
+    口径断言(固定 7 天、占比分母、Top 排序、团队收窄)在 tests/test_analytics_api.py ——
+    那边用 job_factory 直接落行,造得出历史分布。这里刻意走**真实的 enqueue / log_download**:
+    它钉的是「来源常量与通道标记确实被写进了库」,而那正是另一个文件假设成立、却验不到的一段。
+    哪天 enqueue 把 source 改了名,只有这条会红。
+    """
     api_job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
     audit_service.log_download(
         db, user=viewer, job_id=api_job.id, filename="a.csv", row_count=1, ip=None, via="api"
     )
-    # 一条对照组:界面来源的运行,占比的分母
-    query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-22"})
 
     scope = analytics_service.resolve_scope(db, admin)
     res = analytics_service.api_usage(db, scope, timewindow.resolve_window(days=7))
-    assert res["scope"]["level"] == "platform"
-    assert res["tokens_issued"]["value"] >= 1
-    assert res["tokens_issued"]["windowed"] is False
-    assert res["tokens_active_7d"]["value"] >= 1
     assert res["api_runs"]["value"] == 1
-    assert res["api_run_share"]["value"] == 0.5
     assert res["api_downloads"]["value"] == 1
-    assert res["top_tasks"][0]["template_id"] == task_api.id
-    assert res["top_tasks"][0]["run_count"] == 1
-
-    # 团队视角:token 与运行都收窄到本团队成员/本团队任务
-    team_scope_ = analytics_service.resolve_scope(db, author, team_id=team.id)
-    res_team = analytics_service.api_usage(db, team_scope_, timewindow.resolve_window(days=7))
-    assert res_team["api_runs"]["value"] == 1
-    assert res_team["tokens_issued"]["value"] == 0  # viewer 不在团队里,token 不计入

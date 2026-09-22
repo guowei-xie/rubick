@@ -4,7 +4,7 @@ import { Metric } from "../../api";
 import { fmtDayTime, fmtDuration, fmtPercent } from "../../format";
 
 /**
- * 四个板块的数字卡统一用这套响应式列宽。**别在每个板块各写一份** ——
+ * 各板块的数字卡统一用这套响应式列宽。**别在每个板块各写一份** ——
  * 改一次栅格要改四个文件,而漏掉的那个只在某一档屏宽下看得出来。
  */
 export const CARD_COL = { xs: 12, sm: 8, lg: 6, xxl: 4 };

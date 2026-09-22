@@ -479,7 +479,7 @@ export const setUserRole = (userId: number, role: string) =>
 
 // ---- analytics(运营分析)----
 //
-// 给平台管理员与团队管理员看平台被用得怎么样。四个板块各自一个接口:切时间范围时治理块
+// 给平台管理员与团队管理员看平台被用得怎么样。五个板块各自一个接口:切时间范围时治理块
 // 不必重算、某块慢不拖累整页、团队管理员被隐藏的块直接不请求。
 //
 // 两条贯穿全模块的约定,读这些类型前先知道:
@@ -712,7 +712,29 @@ export interface GovernanceData extends AnalyticsEnvelope {
   };
 }
 
-/** 四个板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
+export interface ApiUsageData extends AnalyticsEnvelope {
+  /** 此刻持有 token 的人数,每人至多一枚。团队视角按**团队成员**收窄(不是按任务归属)——
+   *  所以团队视角下「3 枚 token / 100 次调用」并不矛盾,两者收窄口径本就不同 */
+  tokens_issued: Metric;
+  /** 固定回看 7 天,**不吃上方的时间范围** —— 它问的是「这些长期凭证还活着吗」。
+   *  卡片标题里必须带「近 7 天」:光靠 windowed=false 的「此刻」标记说不出窗口有多长,
+   *  读者会拿它跟按 30 天算的调用数对账 */
+  tokens_active_7d: Metric;
+  api_runs: Metric;
+  /** API 调用 ÷ 本区间全部运行。分母为 0 时是 null(「没得算」),不是 0 */
+  api_run_share: Metric;
+  api_downloads: Metric;
+  /** 排行,最多 10 条。**不是 Metric**,没有三态 —— 空列表就是空列表。
+   *  任务被硬删后名字取不到、编号仍在,所以这两列可空 */
+  top_tasks: {
+    template_id: number;
+    name: string | null;
+    team_name: string | null;
+    run_count: number;
+  }[];
+}
+
+/** 五个板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
 export interface AnalyticsQuery {
   team_id?: number | null;
   start?: string;
@@ -742,3 +764,5 @@ export const analyticsAssets = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/assets", analyticsParams(q, signal)).then((r) => r.data as AssetsData);
 export const analyticsGovernance = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/governance", analyticsParams(q, signal)).then((r) => r.data as GovernanceData);
+export const analyticsApi = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
+  http.get("/analytics/api", analyticsParams(q, signal)).then((r) => r.data as ApiUsageData);

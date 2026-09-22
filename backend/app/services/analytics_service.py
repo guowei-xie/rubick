@@ -1,4 +1,4 @@
-"""运营分析:可见范围(scope)、收窄谓词,以及四个板块的聚合口径。
+"""运营分析:可见范围(scope)、收窄谓词,以及各板块的聚合口径。
 
 **「谁能看到哪一片」在本项目只由 resolve_scope 表述一次**;所有聚合只从三个条件构造器
 (job_conditions / template_conditions / scope_template_ids)拿收窄条件,不自己拼 where。
@@ -673,7 +673,7 @@ PRESET_DAYS = [7, 30, 90]
 
 # 每条指标的口径说明。**单一真源** —— 前端不自己维护一份中文解释,否则口径改了文案不改,
 # 页面上那句「什么算活跃」会变成一句错话,而且没人会发现。
-# 四个板块的 note 都必须从这里取(前端 notes[key]?.note);在 JSX 里直接写中文,
+# 各板块的 note 都必须从这里取(前端 notes[key]?.note);在 JSX 里直接写中文,
 # 等于把这条约定破掉一半 —— 而破掉的那一半不会报错,只会慢慢说假话。
 METRIC_NOTES: list[dict] = [
     {"key": "run_jobs", "label": "正式取数", "windowed": True,
@@ -723,6 +723,18 @@ METRIC_NOTES: list[dict] = [
      "note": "下载最多的那个人占了多少。偏高通常意味着一个人在替全组取数——不是问题，但值得知道。"},
     {"key": "teams_without_admin", "label": "没有团队管理员", "windowed": False,
      "note": "没人能给它配取数账号、加成员、授编辑权——治理黑洞。"},
+    {"key": "tokens_issued", "label": "已发放 Token", "windowed": False,
+     "note": "此刻持有开放 API 凭证的人数，每人至多一枚，吊销后立即不计入。"
+             "团队视角按**团队成员**收窄，不是按任务归属——token 属于人，不属于任务。"},
+    {"key": "tokens_active_7d", "label": "近 7 天用过", "windowed": False,
+     "note": "最近 7 天调用过开放 API 的 Token 数。**固定看 7 天**，不随上方时间范围变化"
+             "——它问的是「这些长期凭证还活着吗」，不是「这段时间 API 用得多不多」。"},
+    {"key": "api_runs", "label": "API 调用", "windowed": True,
+     "note": "来源是开放 API 的运行次数。同一张任务在界面上被跑的次数不计入。"},
+    {"key": "api_run_share", "label": "API 占比", "windowed": True,
+     "note": "API 调用 ÷ 本区间**全部**运行（含试跑与定时）。一次运行都没有时是「没得算」，不是 0%。"},
+    {"key": "api_downloads", "label": "API 下载", "windowed": True,
+     "note": "经开放 API 直出 CSV 的次数。界面里点导出记的是另一条通道，不计入。"},
 ]
 
 

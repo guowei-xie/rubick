@@ -4,7 +4,7 @@
 是因为导出把数据带离了平台;而看一眼汇总数字没有这个性质。把它记下来只会把
 audit_logs 撑大、淹没真正的治理动作。将来若加 CSV 导出,那时再登记 `analytics_export`。
 
-四个板块的响应刻意**不挂 response_model**,理由见 schemas/analytics.py 的模块 docstring
+各板块的响应刻意**不挂 response_model**,理由见 schemas/analytics.py 的模块 docstring
 (平台专属指标要求「键不存在」,而 Metric 的 `value: null` 又必须留住,两者在
 response_model 下不可兼得)。
 

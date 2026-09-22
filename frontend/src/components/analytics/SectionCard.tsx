@@ -25,7 +25,7 @@ export default function SectionCard({
 }: {
   id?: string;
   title: string;
-  /** 「全平台」/ 团队名。由 AnalyticsPage 统一算一次往下传 —— 四个板块各自拼一遍的话,
+  /** 「全平台」/ 团队名。由 AnalyticsPage 统一算一次往下传 —— 各板块各自拼一遍的话,
    *  平台管理员下钻到某个队时,总有一块还写着「全平台」 */
   scopeLabel?: string;
   extra?: React.ReactNode;

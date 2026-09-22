@@ -75,7 +75,7 @@ export function useAnalyticsScope(user: User | null, meta: AnalyticsMeta | null)
     return { days: Number(preset.replace("d", "")) || DEFAULT_DAYS };
   }, [preset, sp]);
 
-  /** 发给四个板块的查询参数。板块拿到的就是这个,不再加工。 */
+  /** 发给各板块的查询参数。板块拿到的就是这个,不再加工。 */
   const query = useMemo<AnalyticsQuery>(
     () => ({ team_id: teamId, ...range }),
     [teamId, range]

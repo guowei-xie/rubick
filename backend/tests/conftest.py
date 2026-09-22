@@ -389,7 +389,7 @@ def clean_credentials(db):
 
 @pytest.fixture
 def template_factory(db):
-    """get-or-create 一张任务。运营分析的四个板块测试共用。
+    """get-or-create 一张任务。运营分析的各板块测试共用。
 
     **按名字 get-or-create**,同 team_factory:这些用例之间不清 sql_templates
     (clean_jobs 只清运行记录),同名再建会撞唯一约束,而各文件的名字本来就带自己的前缀。
