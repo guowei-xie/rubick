@@ -641,6 +641,7 @@ skill 正文要求 Agent 每个会话第一次调 API 前拉一次 `/rubick-skil
 |---|---|
 | `GET /api/v1/tasks` | 我可见的任务数组，含参数定义 `params`（带共享候选值 `enum`）与 `can_run` / `can_download` / `allow_api` |
 | `POST /api/v1/tasks/{id}/runs` | 填参触发一次运行，立即返回 job |
+| `POST /api/v1/tasks/{id}/runs/reusable` | 触发前先问：今天有没有同参、同上线版本、结果还在的现成运行（`{job}` 或 `{job: null}`）；参数比对在服务端做，因为对外 job 不带 `params`（见 `query_service.find_reusable_job`） |
 | `GET /api/v1/runs` | 我看得见的运行记录列表（口径同网页，不只有本人发起的） |
 | `GET /api/v1/runs/{job_id}` | 单个 job：`status`（`queued/running/success/failed`）、`queue_ahead` 排队位次等 |
 | `GET /api/v1/runs/{job_id}/preview` | 表头 + 前 50 行 |

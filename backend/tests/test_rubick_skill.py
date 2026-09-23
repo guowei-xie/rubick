@@ -9,8 +9,8 @@ from pathlib import Path
 SKILL_FILE = Path(__file__).resolve().parents[2] / "frontend" / "public" / "rubick-skill.md"
 
 # 改了 skill 正文:先把 frontmatter 的 version 升一格,再把这里两项一起更新
-SNAPSHOT_VERSION = "2026.09.23.1"
-SNAPSHOT_BODY_SHA256 = "4190ccecde8337418cf0fc181ffab2d1599b373af52113ee14df40e34c7b18c5"
+SNAPSHOT_VERSION = "2026.09.23.2"
+SNAPSHOT_BODY_SHA256 = "1806bdc5b4922e631964f0ce827e6eb72bfcb244f6b835f2b16613fd64ab4167"
 
 
 def _split():

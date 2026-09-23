@@ -122,10 +122,12 @@ def _make_task(
     return tmpl
 
 
-def _succeed_a_run(db, spy_connector, task, user, rows=(("2026-09-21",),)):
+def _succeed_a_run(db, spy_connector, task, user, rows=(("2026-09-21",),), values=None):
     """跑出一条成功的运行记录(假连接器),返回 job。"""
     spy_connector(rows=list(rows))
-    job = query_service.enqueue(db, user, task.id, {"d": "2026-09-21"}, source="api")
+    job = query_service.enqueue(
+        db, user, task.id, values or {"d": "2026-09-21"}, source="api"
+    )
     query_service.execute_job(job.id)
     db.refresh(job)
     assert job.status == JOB_SUCCESS
@@ -554,3 +556,61 @@ def test_analytics_api_block(db, admin, task_api, viewer, clean_jobs):
     res = analytics_service.api_usage(db, scope, timewindow.resolve_window(days=7))
     assert res["api_runs"]["value"] == 1
     assert res["api_downloads"]["value"] == 1
+
+
+# ---- 先找现成结果:POST /tasks/{id}/runs/reusable ----
+
+def _reusable(db, user, task, values):
+    return v1_routes.find_reusable_run(task.id, V1RunIn(values=values), db, user).job
+
+
+def test_reusable_hits_todays_same_param_run(db, task_api, author, viewer, spy_connector):
+    """团队外的授权使用者今天用同参跑过 → 团队里的人直接命中(不只认自己跑的),
+    多条取最新;换个参数就没有。"""
+    _succeed_a_run(db, spy_connector, task_api, viewer)
+    newer = _succeed_a_run(db, spy_connector, task_api, viewer)
+    assert _reusable(db, author, task_api, {"d": "2026-09-21"}).id == newer.id
+    assert _reusable(db, author, task_api, {"d": "2026-09-22"}) is None
+
+
+def test_reusable_list_params_ignore_order(db, task_enum, viewer, spy_connector):
+    job = _succeed_a_run(
+        db, spy_connector, task_enum, viewer, values={"regions": ["华东", "华南"]}
+    )
+    assert _reusable(db, viewer, task_enum, {"regions": ["华南", "华东"]}).id == job.id
+    assert _reusable(db, viewer, task_enum, {"regions": ["华东"]}) is None
+
+
+@pytest.mark.parametrize("spoil", ["yesterday", "failed", "test", "file_gone"])
+def test_reusable_skips_unusable_runs(db, task_api, viewer, spy_connector, spoil):
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    if spoil == "yesterday":
+        job.created_at = datetime.now() - timedelta(days=1)
+    elif spoil == "failed":
+        job.status = JOB_FAILED
+    elif spoil == "test":
+        job.source = "test"
+    elif spoil == "file_gone":
+        result_service.local_path(job.result_object_key).unlink()
+    db.commit()
+    assert _reusable(db, viewer, task_api, {"d": "2026-09-21"}) is None
+
+
+def test_reusable_ignores_runs_of_an_older_version(db, task_api, author, viewer, spy_connector):
+    """任务改了 SQL 重新上线,旧版本跑出来的结果不算数。"""
+    _succeed_a_run(db, spy_connector, task_api, viewer)
+    update_template(task_api.id, TemplateUpdateIn(sql_text="SELECT :d AS dd"), db, author, ip=None)
+    assert _reusable(db, viewer, task_api, {"d": "2026-09-21"}) is None
+
+
+def test_reusable_respects_visibility_and_validates_params(
+    db, task_api, author, viewer, outsider, spy_connector
+):
+    # 团队外的使用者看不见作者跑的那条(运行记录列表同口径),就不能拿来复用
+    _succeed_a_run(db, spy_connector, task_api, author)
+    assert _reusable(db, viewer, task_api, {"d": "2026-09-21"}) is None
+    with pytest.raises(NotFoundError):
+        _reusable(db, outsider, task_api, {"d": "2026-09-21"})
+    # 缺参与 POST runs 同样报错,而不是答「没有」让调用方去跑一次注定失败的
+    with pytest.raises(RubicError):
+        _reusable(db, viewer, task_api, {})

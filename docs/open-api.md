@@ -75,6 +75,30 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
   -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
 ```
 
+### 3.3 `POST /api/v1/tasks/{id}/runs/reusable` —— 触发前先找今天的现成结果
+
+请求体与 [3.2](#32-post-apiv1tasksidruns--触发一次运行) 完全相同（`{"values": {...}}`）。返回：
+
+```json
+{ "job": { ...job 对象... } }   // 命中：直接拿 job.id 去 preview / result
+{ "job": null }                 // 今天没有能用的：再调 3.2 触发
+```
+
+命中条件（全部满足，取最新一条）：
+
+- 你**看得见**这条运行（口径同 [4.2](#42-get-apiv1runs--我的运行记录列表)，所以同事、订阅定时跑出来的也算）；
+- **今天**提交的（平台所在时区的自然日）；
+- 跑的是任务**当前上线的版本**——任务改过 SQL 重新上线后，旧版本的结果不算；
+- **参数相同**：按参数定义归一后比较，值列表参数不看顺序；
+- `status=success`、不是作者的试跑，且结果还在（没过保留期、文件没丢）。
+
+说明：
+
+- 这是给「要不要重跑」做判断用的：同参结果今天已经有了，重跑只是白占队列。**job 对象不带参数**，
+  所以别自己在 `GET /runs` 里按时间挑——比对只能由平台做。
+- 只查不跑，**不要求**运行权限和 `allow_api`；取文件时的下载权照旧由 4.5 把关。
+- 参数不合法（缺参、需为数值等）与 3.2 同样返回 **400**；任务不可见返回 **404**。
+
 ## 4. 运行
 
 ### 4.1 job 对象
@@ -154,6 +178,11 @@ H="Authorization: Bearer $TOKEN"
 
 # ① 列出任务，读取参数定义与 allow_api / can_run
 curl -s "$BASE/api/v1/tasks" -H "$H"
+
+# ①½ 先找今天同参的现成结果；{"job": {...}} 就跳到 ④，{"job": null} 再 ②
+curl -s -X POST "$BASE/api/v1/tasks/128/runs/reusable" \
+  -H "$H" -H "Content-Type: application/json" \
+  -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
 
 # ② 触发运行，记下返回的 job.id
 curl -s -X POST "$BASE/api/v1/tasks/128/runs" \

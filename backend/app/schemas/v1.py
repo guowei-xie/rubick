@@ -85,6 +85,16 @@ class V1JobOut(BaseModel):
         from_attributes = True
 
 
+class V1ReusableOut(BaseModel):
+    """「今天有没有同参的现成结果」的回答:有就是那条运行,没有为 null。
+
+    包一层而不是直接回 job 或 404:「没有」是正常答案、不是错误,而 404 在 v1 里
+    已经表示「任务不可见」与「结果过期」,再叠一层含义调用方就分不清了。
+    """
+
+    job: V1JobOut | None = None
+
+
 class V1TaskOut(BaseModel):
     """任务列表的一行:身份与描述 + 填参所需的参数定义 + 当前 token 主人的能力位。
 

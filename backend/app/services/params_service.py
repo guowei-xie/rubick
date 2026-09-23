@@ -65,6 +65,15 @@ def validate_and_bind(param_defs: list[dict | ParamDef], values: dict[str, Any])
     return bound
 
 
+def canonical(bound: dict[str, Any]) -> dict[str, Any]:
+    """validate_and_bind 的结果 → 可判等的形状:两次运行「是不是同参」就比这个。
+
+    list 参数按集合比 —— 执行时展开成 IN (...)(见 expand_list_params),顺序与重复
+    都不改变查询结果。哪天出现不走 IN 的 list 用法,这里要跟着改。
+    """
+    return {k: frozenset(v) if isinstance(v, list) else v for k, v in bound.items()}
+
+
 def expand_list_params(sql: str, bound: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """把值为 list 的绑定参数展开成 :x__0, :x__1, … 逐值绑定。非 list 参数原样透传。
 

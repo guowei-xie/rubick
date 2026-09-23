@@ -1,6 +1,6 @@
 ---
 name: rubick-skill
-version: 2026.09.23.1
+version: 2026.09.23.2
 description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取结果——当用户要用 Rubick 查数、跑任务、查看运行状态或下载结果 CSV 时使用。
 ---
 
@@ -11,7 +11,7 @@ description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取
 
 ## 用途
 
-Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，业务填参数即可取数。本 skill 教你调用它的开放 API，代替用户在网页上的手工操作：**找到任务 → 填参触发 → 轮询等待 → 预览 / 下载结果**。
+Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，业务填参数即可取数。本 skill 教你调用它的开放 API，代替用户在网页上的手工操作：**找到任务 → 先找今天的现成结果 → 没有才填参触发、轮询等待 → 预览 / 下载结果**。
 
 ## 前置：两样东西
 
@@ -71,6 +71,20 @@ curl -fsS --max-time 10 "$RUBICK_BASE_URL/rubick-skill.md" -o /tmp/rubick-skill.
 - `can_run=false` → token 主人没有被授权运行该任务，**不要重试**，告诉用户去找任务作者授权「运行」；
 - `allow_api=false` → 该任务未开放 API 触发（POST 会 403），告诉用户请任务作者打开该开关。
 
+### ①½ 触发之前：先找今天的现成结果
+
+参数定下来之后、触发之前，先问平台今天有没有同参跑好的结果：
+
+`POST {BASE_URL}/api/v1/tasks/{id}/runs/reusable`，body 与 ② 完全相同（`{ "values": {...} }`）→ `{ "job": {...} | null }`。
+
+- **命中**（`job` 非 null）→ 跳过 ②③，直接拿 `job.id` 走 ④ 取结果，并告诉用户一句：
+  「复用了今天 HH:MM 已跑好的结果（运行 #N），要最新数据可以让我重跑」（HH:MM 取 `job.created_at`）。
+- `job: null` → 今天没有能用的，照常走 ②。
+- 用户明确说了「重跑 / 刷新 / 要最新的」→ **跳过这一步**，直接 ②。
+
+「能不能直接用」由平台判定（同事、订阅定时跑出来的也算），**别自己去 `GET /runs` 里按时间挑一条**——
+那里不带参数，挑到的很可能是别的参数跑的。参数不合法这里就会报 400（与 ② 同文案），照 ② 的规则处理。
+
 ### ② 填参触发运行
 
 `POST {BASE_URL}/api/v1/tasks/{id}/runs`，body：
@@ -117,6 +131,11 @@ H="Authorization: Bearer $TOKEN"
 # ① 列出我可见的任务（含参数定义）
 curl -s "$BASE/api/v1/tasks" -H "$H"
 
+# ①½ 先找今天同参的现成结果：{"job": {...}} 命中就直接 ④；{"job": null} 再 ②
+curl -s -X POST "$BASE/api/v1/tasks/128/runs/reusable" \
+  -H "$H" -H "Content-Type: application/json" \
+  -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
+
 # ② 触发一次运行（list 参数传数组）
 curl -s -X POST "$BASE/api/v1/tasks/128/runs" \
   -H "$H" -H "Content-Type: application/json" \
@@ -144,15 +163,23 @@ tasks = requests.get(f"{BASE}/api/v1/tasks", headers=H).json()
 task = next(t for t in tasks if t["name"] == "大区日报")
 assert task["can_run"] and task["allow_api"], "未授权运行或未开放 API"
 
-# ② 触发运行
-job = requests.post(
-    f"{BASE}/api/v1/tasks/{task['id']}/runs", headers=H,
-    json={"values": {"dt": "2026-09-20", "regions": ["华东"]}},
-).json()
+values = {"dt": "2026-09-20", "regions": ["华东"]}
 
-# ③ 轮询：指数退避 5s → 60s
+# ①½ 先找今天同参的现成结果
+job = requests.post(
+    f"{BASE}/api/v1/tasks/{task['id']}/runs/reusable", headers=H, json={"values": values},
+).json()["job"]
+if job:
+    print(f"复用了今天 {job['created_at'][11:16]} 已跑好的结果（运行 #{job['id']}）")
+else:
+    # ② 触发运行
+    job = requests.post(
+        f"{BASE}/api/v1/tasks/{task['id']}/runs", headers=H, json={"values": values},
+    ).json()
+
+# ③ 轮询：指数退避 5s → 60s（命中现成结果时 status 已是 success，直接跳过）
 delay = 5
-while True:
+while job["status"] not in ("success", "failed"):
     time.sleep(delay)
     r = requests.get(f"{BASE}/api/v1/runs/{job['id']}", headers=H)
     if r.status_code == 429:          # 限流，退避重试
@@ -161,8 +188,6 @@ while True:
     job = r.json()
     if job["status"] == "queued":
         print(f"排队中，前面还有 {job.get('queue_ahead', '?')} 个")
-    if job["status"] in ("success", "failed"):
-        break
     delay = min(delay * 2, 60)
 
 # ④ 取结果 / ⑤ 失败报告
@@ -180,6 +205,7 @@ else:
   400 才是「参数不对」。job 对象上的 `result_expired` 可以让你在下载前就知道这一点。
 - **限流 120 请求/分钟/token**，超限返回 429。轮询务必按退避节奏，不要打满频率。
 - `allow_api=false` 的任务无法通过 API 触发（403）；`can_run=false` 说明没被授权。这两类 403 **重试无意义**，直接报告用户。
+- **先复用、再触发**（见 ①½）：今天已有同参结果时重跑只是白占队列、多等几十分钟。
 - 运行是**异步**的：提交返回不代表有结果，必须轮询到 `success` / `failed` 为止。
 - **长任务不要在单轮对话里死等**：Hive 类任务可能跑几十分钟。先告知用户预计时长（可参考该任务历史运行的 `duration_ms`）与当前位次，然后结束本轮、让用户稍后回来问结果，而不是空转轮询占住对话。
 - `queue_ahead` 仅在 `status=queued` 时有值；`started_at` 在还没开跑时为 null。

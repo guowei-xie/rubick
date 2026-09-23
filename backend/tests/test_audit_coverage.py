@@ -128,6 +128,7 @@ EXEMPT: dict[str, str] = {
     "POST /api/templates/enum-sql": "取参数候选值(只读 SELECT,上限 1000 行),编辑器高频触发,按产品决策不纳入",
     "POST /api/templates/test-run": "作者试跑,按产品决策不纳入;关联任务时已有 source=test 的运行记录可查",
     "POST /api/datasources/{ds_id}/test": "仅测连通性、不改状态,按产品决策不纳入",
+    "POST /api/v1/tasks/{template_id}/runs/reusable": "只读查询(POST 只因 values 可能很长),不跑数、不给文件;真正取走结果时 /runs/{id}/result 另有下载留痕",
 }
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

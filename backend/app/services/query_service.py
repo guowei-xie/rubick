@@ -26,6 +26,7 @@ from app.core.exceptions import (
     RubicError,
 )
 from app.core.sql_gateway import validate_readonly
+from app.core.timewindow import start_of_today
 from app.models.audit import (
     ACTION_API_RUN_DENIED,
     ACTION_RUN_QUERY,
@@ -44,10 +45,12 @@ from app.models.query_job import (
     SOURCE_API,
     SOURCE_RUN,
     SOURCE_SUBSCRIBE,
+    SOURCE_TEST,
     QueryJob,
 )
 from app.models.template import STATUS_PUBLISHED, SqlTemplate, TemplateVersion
 from app.models.user import User
+from app.schemas.common import ParamDef
 from app.models.datasource import ENGINE_HIVE
 from app.services import (
     audit_service,
@@ -97,6 +100,21 @@ def queue_ahead(db: Session, job: QueryJob) -> int:
     ) or 0
 
 
+def _visible_task(db: Session, user: User, template_id: int):
+    """取任务并验可见:返回 (任务, 视角)。视角一次算出,调用方后续的权限问题共用。
+
+    **不可见一律 404**,与单条运行记录同口径(routes.query.load_job):不暴露
+    「存在但无权」。否则拿一枚 token 逐个试编号就能问出平台上有哪些任务。
+    """
+    tmpl = db.get(SqlTemplate, template_id)
+    if tmpl is None:
+        raise NotFoundError("任务不存在")
+    scope = permission_service.team_scope(db, user)
+    if not permission_service.can_view(scope, tmpl):
+        raise NotFoundError("任务不存在")
+    return tmpl, scope
+
+
 def enqueue(
     db: Session, user: User, template_id: int, values: dict,
     ip: str | None = None, *, source: str = SOURCE_RUN,
@@ -111,15 +129,7 @@ def enqueue(
     但被编辑者关掉的任务不该因为某枚 token 就对外可跑;拒绝会记审计
     (排查 Agent 接入时第一个要看的地方)。
     """
-    tmpl = db.get(SqlTemplate, template_id)
-    if tmpl is None:
-        raise NotFoundError("任务不存在")
-    # 一次算出视角,可见与可运行两问共用 —— 各问一次 permission_service.can 要各算一遍
-    scope = permission_service.team_scope(db, user)
-    if not permission_service.can_view(scope, tmpl):
-        # **不可见一律 404**,与单条运行记录同口径(routes.query.load_job):不暴露
-        # 「存在但无权」。否则拿一枚 token 逐个试编号就能问出平台上有哪些任务。
-        raise NotFoundError("任务不存在")
+    tmpl, scope = _visible_task(db, user, template_id)
     if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
         raise RubicError("任务未上线,不可运行")
     if not permission_service.can_run(scope, tmpl):
@@ -177,6 +187,53 @@ def enqueue(
         execute_job(job.id, ip)
         db.refresh(job)  # 此时已是 success/failed
     return job
+
+
+def find_reusable_job(
+    db: Session, user: User, template_id: int, values: dict
+) -> QueryJob | None:
+    """今天已经用同样参数跑成、结果还在的那条运行(取最新);没有返回 None。
+
+    给开放 API 的「先找现成结果再决定跑不跑」用。**比对在服务端做**:对外的 job 投影
+    刻意不带入参(V1JobOut 注释),调用方自己在 /runs 里对不上参数,只能瞎猜。
+    调用方交出的是自己本来就要跑的参数,这里只回答有没有,不外抛任何他人的入参。
+
+    判据:看得见(与运行记录列表同源)、同任务**同一上线版本**(SQL 改过就不算)、
+    成功且非试跑、今天提交、结果没过期也没丢。只取结果不跑,所以不要求 can_run /
+    allow_api;下载权照旧由 assert_downloadable 在取文件时把关。
+    参数不合法与 enqueue 同样报错 —— 否则调用方会把「没找到」读成「去跑一次」,
+    而那一次注定失败。
+    """
+    tmpl, scope = _visible_task(db, user, template_id)
+    if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
+        return None
+    version = db.get(TemplateVersion, tmpl.published_version_id)
+    defs = [ParamDef.model_validate(p) for p in version.params]  # 只解析一次,逐行比对共用
+    want = params_service.canonical(params_service.validate_and_bind(defs, values))
+
+    # 只取比对要用的两列:整行会连带 executed_sql(大列表参数下几十 KB)与两个 joined 关系
+    stmt = (
+        select(QueryJob.id, QueryJob.params)
+        .where(
+            QueryJob.template_id == tmpl.id,
+            QueryJob.template_version_id == version.id,
+            QueryJob.status == JOB_SUCCESS,
+            QueryJob.source != SOURCE_TEST,
+            QueryJob.created_at >= start_of_today(),
+        )
+        .order_by(QueryJob.id.desc())
+    )
+    cond = permission_service.job_visibility_condition(scope)
+    if cond is not None:
+        stmt = stmt.where(cond)
+    # 同一上线版本的行入队时已按这份定义校验过,重绑只为归一(数值串 → 数值等),不会抛
+    for job_id, params in db.execute(stmt):
+        if params_service.canonical(params_service.validate_and_bind(defs, params)) != want:
+            continue
+        job = db.get(QueryJob, job_id)
+        if not result_service.is_gone(job):
+            return job
+    return None
 
 
 def enqueue_scheduled(db: Session, tmpl: SqlTemplate) -> QueryJob:

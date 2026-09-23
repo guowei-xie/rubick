@@ -39,6 +39,11 @@ class Window:
         return max(1, int((secs + 86399) // 86400))
 
 
+def start_of_today() -> datetime:
+    """今天 00:00(朴素本地时间),给「当天」这类自然日边界用。"""
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def resolve_window(
     start: datetime | None = None,
     end: datetime | None = None,

@@ -26,7 +26,7 @@ from app.models.query_job import SOURCE_API
 from app.models.template import TemplateVersion
 from app.models.user import User
 from app.schemas.common import ParamDef
-from app.schemas.v1 import V1JobOut, V1ParamOut, V1RunIn, V1TaskOut
+from app.schemas.v1 import V1JobOut, V1ParamOut, V1ReusableOut, V1RunIn, V1TaskOut
 from app.services import (
     audit_service,
     enum_cache_service,
@@ -122,6 +122,20 @@ def run_task(
     """
     job = query_service.enqueue(db, user, template_id, data.values, ip=ip, source=SOURCE_API)
     return v1_job_out(db, job)
+
+
+@router.post("/tasks/{template_id}/runs/reusable", response_model=V1ReusableOut)
+def find_reusable_run(
+    template_id: int,
+    data: V1RunIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(api_user),
+):
+    """触发之前先问一句:今天有没有同参、结果还在的现成运行。判据见
+    query_service.find_reusable_job。用 POST 是因为 values 可能是上千个值的列表。
+    """
+    job = query_service.find_reusable_job(db, user, template_id, data.values)
+    return V1ReusableOut(job=v1_job_out(db, job) if job else None)
 
 
 @router.get("/runs", response_model=list[V1JobOut])
