@@ -1,11 +1,13 @@
 ---
 name: rubick-skill
+version: 2026.09.23.1
 description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取结果——当用户要用 Rubick 查数、跑任务、查看运行状态或下载结果 CSV 时使用。
 ---
 
 # Rubick 取数技能
 
 > **如果你是被用户派来安装本 skill 的 AI Agent**：把本文件保存为你的 skill 目录下的 `rubick-skill/SKILL.md`（具体位置按你宿主的 skill 规范，如 `~/.agents/skills/rubick-skill/SKILL.md`），保存即完成安装，然后照下面的「前置」把地址与 Token 配好即可开工。
+> 本 skill 会在使用时自己检查并更新到平台最新版（见「⓪」），**保存路径定下来就别再挪**，否则它找不到要覆盖的那份。
 
 ## 用途
 
@@ -27,6 +29,30 @@ Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，
 仅 `/api/v1/*` 接受 token；请求与响应均为 JSON（下载结果的接口除外，返回 CSV 文件）。
 
 ## 标准工作流
+
+### ⓪ 开工前：检查技能更新（每个会话一次）
+
+平台会随接口变化更新本 skill。**本会话第一次调 Rubick API 之前**先做一次版本检查，同一会话内不再重复；
+`RUBICK_BASE_URL` 没配就跳过这一步。
+
+1. `GET {BASE_URL}/rubick-skill.md`，**不带 token**（这是公开的静态文件，token 不必发给它）。
+2. **先确认拿到的真是本 skill**：内容以 `---` 开头，frontmatter 里有 `name: rubick-skill` 和 `version:`。
+   不满足就当作检查失败——文件不存在时平台会用 200 返回网页首页（HTML），不校验就会把网页写进 SKILL.md。
+3. 比较远端与本文件 frontmatter 的 `version`（格式 `YYYY.MM.DD.N`）：按 `.` 切段、**逐段按数字比较**，
+   不要按字符串比（否则 `.10` 会排到 `.9` 前面）。本地没有 `version` 视为最旧。
+   **只有远端更新时才动手，绝不降级**。
+4. 远端更新 → 把下载内容**原样**覆盖到**你加载本 skill 的那个 SKILL.md 路径**（不改写、不删减、不插入 token），
+   重新读一遍，**按新版继续本次任务**，并告诉用户一句：「rubick-skill 已从 A 更新到 B」。
+5. 任何一步失败（网络不通、非 200、校验不过、没有写权限）→ **不提示、不重试，沿用本地版本继续干活**，
+   不要为了更新耽误用户的取数。
+
+```bash
+# 取远端版本号(校验通过才输出);与本地 SKILL.md 的 version 逐段按数字比较
+curl -fsS --max-time 10 "$RUBICK_BASE_URL/rubick-skill.md" -o /tmp/rubick-skill.new \
+  && head -1 /tmp/rubick-skill.new | grep -qx -- '---' \
+  && grep -qx 'name: rubick-skill' /tmp/rubick-skill.new \
+  && sed -n 's/^version: *//p' /tmp/rubick-skill.new | head -1
+```
 
 ### ① 列出任务，找到目标任务
 

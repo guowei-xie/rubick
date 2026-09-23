@@ -1,7 +1,7 @@
 # 拉比克 Rubick 开放 API 文档
 
 > 面向需要通过脚本或 AI Agent 调用 Rubick 取数能力的开发者。
-> 给 AI Agent 用的现成 skill 文件：`https://<host>/rubick-skill.md`，下载后下发给你的 Agent 即可，不必自己实现这套流程。
+> 给 AI Agent 用的现成 skill 文件：`https://<host>/rubick-skill.md`，下载后下发给你的 Agent 即可，不必自己实现这套流程；装好后它会在使用时自动更新到平台最新版，不必重装。
 
 ## 1. 概述
 

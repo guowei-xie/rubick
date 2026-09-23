@@ -609,6 +609,13 @@
 （源文件 `frontend/public/rubick-skill.md`），下载后下发给 Agent 即可，不必让他们自己摸接口。
 任务列表页右上的「**Agent Skill**」按钮把这件事包成一句话（见下一节的第二个签发入口）。
 
+**skill 带版本、客户端自更新**：frontmatter 里的 `version`（`YYYY.MM.DD.N`）是唯一的版本信号。
+skill 正文要求 Agent 每个会话第一次调 API 前拉一次 `/rubick-skill.md`，校验确实是 skill 文件后逐段按数字比较版本，
+远端较新就原样覆盖本地 SKILL.md 并按新版继续；失败就沿用旧版、不打断取数，也从不降级。
+所以**改了 skill 正文就必须升 `version`**，否则已安装的客户端拿不到这次修改——
+`backend/tests/test_rubick_skill.py` 用正文哈希快照拦这种情况，升版本时顺手更新快照。
+不加独立的版本接口是有意的：v1 端点必须带 token 且计入限流，文件本身只有几 KB，直接拉整份最省事，也不会出现第二个版本来源。
+
 ### 11.1 鉴权：API Token
 
 - 用户在界面生成自己的 token（形如 `rk_...`），**每人一个**，可重置 / 吊销；重置后旧 token 立即失效。

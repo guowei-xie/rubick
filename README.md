@@ -70,7 +70,7 @@
 API 触发的运行在运行记录里标 `source=api`、审计带 `via=api`,与网页取数分得开。
 
 给 Agent 接入不必读文档:任务列表页右上「Agent Skill」给出一句话,粘贴给自己的 AI Agent
-即可 —— 它会去 `/rubick-skill.md` 自取技能文件并装好。这句话里还能**一并附上平台地址与你的
+即可 —— 它会去 `/rubick-skill.md` 自取技能文件并装好,之后每次使用前自己检查版本、跟上平台更新。这句话里还能**一并附上平台地址与你的
 API Token**(弹窗里点一下现签),Agent 装完直接能取数,不必再问你要凭证。
 接口契约(逐字段表、错误码、限流)见 [docs/open-api.md](./docs/open-api.md)。
 
