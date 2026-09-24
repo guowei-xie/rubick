@@ -31,15 +31,36 @@ def test_numeric_refs_cover_all_user_foreign_keys():
 _TS = "2026-06-01 00:00:00"
 
 # 被本测试触碰的表(每次测试前后清空,避免与其他测试互相污染)
-_TABLES = [
+_SEEDED = [
     "users", "permissions", "query_jobs", "sql_templates",
     "template_versions", "audit_logs", "download_events", "notifications",
 ]
 
 
+def _dependents(names: list[str]) -> list[str]:
+    """清某张表就得连「外键挂在它上面」的表一起清(传递闭包),且子表先删。
+
+    手抄清单会漏:SQLite 会复用被删掉的最大 id,留下的孤儿订阅会被后面某个测试新建的
+    同号任务「继承」,凭空多出几个订阅者。从元数据推导,加新表时不必记得回来改这里。
+    """
+    wanted = {tbl(n) for n in names}
+    grew = True
+    while grew:
+        grew = False
+        for t in Base.metadata.tables.values():
+            if t.name not in wanted and any(fk.column.table.name in wanted for fk in t.foreign_keys):
+                wanted.add(t.name)
+                grew = True
+    # sorted_tables 是父先子后,倒过来删
+    return [t.name for t in reversed(Base.metadata.sorted_tables) if t.name in wanted]
+
+
+_TABLES = _dependents(_SEEDED)
+
+
 def _wipe(conn):
     for t in _TABLES:
-        conn.execute(text(f"DELETE FROM {tbl(t)}"))
+        conn.execute(text(f"DELETE FROM {t}"))
 
 
 def _user(conn, uid, open_id, created, *, login):

@@ -4,7 +4,7 @@
 —— 否则开发者调试很勤就会被读成业务很活跃,而这块板恰恰是为了戳破这种假象而存在的。
 
 其余几条都是「改了不报错、只是数字悄悄变了」的地方:系统账号有没有被排除、source 三分
-有没有串台、半开区间的边界归谁、以及平台专属指标在团队视角下是不是**键都不存在**。
+有没有串台、半开区间的边界归谁、以及两种视角的键是不是完全一样。
 """
 from datetime import datetime, timedelta
 
@@ -99,7 +99,6 @@ def test_test_runs_do_not_count_as_active_users(db, plat, dev, biz1, ds, ta, job
     """作者试跑再多也不算「活跃取数人」。
 
     这是这块板的立身之本:把试跑算进去,等于允许开发者自己刷高「业务在用」这个数字。
-    开发侧活跃单列成 active_authors,不埋没谁的工作量。
     """
     for _ in range(5):
         job_factory(user=dev, template=ta, datasource=ds,
@@ -110,8 +109,6 @@ def test_test_runs_do_not_count_as_active_users(db, plat, dev, biz1, ds, ta, job
     got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
 
     assert got["active_users"]["value"] == 1, "试跑被算进活跃取数人了"
-    assert got["active_authors"]["value"] == 1
-    assert got["test_jobs"]["value"] == 5
     assert got["run_jobs"]["value"] == 1
 
 
@@ -141,8 +138,11 @@ def test_sources_do_not_bleed_into_each_other(db, plat, dev, biz1, ds, ta, job_f
                 created_at=NOW - timedelta(days=3))
 
     got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
-    assert (got["run_jobs"]["value"], got["test_jobs"]["value"],
-            got["scheduled_jobs"]["value"]) == (1, 1, 1)
+    assert (got["run_jobs"]["value"], got["scheduled_jobs"]["value"],
+            got["api_runs"]["value"]) == (1, 1, 0)
+    # 试跑没有自己的卡,只在趋势图里单成一条线
+    [point] = got["daily_series"]
+    assert (point["run"], point["test"], point["subscribe"], point["api"]) == (1, 1, 1, 0)
 
 
 # ---------------------------------------------------------------- 时间窗边界
@@ -178,21 +178,15 @@ def test_team_scope_only_sees_own_team(db, a_admin, biz1, biz2, ds, ta, tb, job_
     assert got["active_users"]["value"] == 1
 
 
-def test_platform_only_metrics_are_absent_for_team_admin(db, plat, a_admin, ds, ta):
-    """团队管理员看不到跨团队人头 —— **键不存在**,而不是给个 0 或 null。
+def test_team_view_has_same_keys_as_platform(db, plat, a_admin, ds, ta):
+    """两种视角的键集合**完全相同** —— 这块板没有平台专属键。
 
-    渲染成 0 会让人去猜后面藏了什么,反而更想知道全平台是多少;键不存在,
-    前端就整块不渲染。
+    跨团队人头(新增用户、回访率)已经下掉;将来谁再加 platform-only 键会立刻被挡下,
+    前端也就不必写「团队视角下这个键不存在」的分支。
     """
     team_view = analytics_service.adoption(db, _team(db, a_admin), WINDOW)
     plat_view = analytics_service.adoption(db, _platform(db, plat), WINDOW)
-
-    assert "new_users" not in team_view
-    assert "retention_rate" not in team_view
-    assert "new_task_users" in team_view, "团队视角要有自己的替代指标"
-
-    assert "new_users" in plat_view
-    assert "retention_rate" in plat_view
+    assert set(team_view) == set(plat_view)
 
 
 def test_scope_travels_with_the_numbers(db, plat, a_admin, team_a):
@@ -227,19 +221,24 @@ def test_self_service_ratio_counts_only_business_users(
     assert got["self_service_ratio"]["value"] == pytest.approx(2 / 3, abs=1e-4)
 
 
-def test_reuse_multiple_is_runs_over_distinct_tasks(
-    db, a_admin, biz1, ds, ta, team_a, dev, datasource_factory, job_factory
-, template_factory):
-    """复用倍数 = 一次开发被跑了几次。"""
-    other = template_factory(dev, ds, team_a, "aad-甲队任务2")
-    for _ in range(4):
-        job_factory(user=biz1, template=ta, datasource=ds, source=SOURCE_RUN,
-                    created_at=NOW - timedelta(days=1))
-    job_factory(user=biz1, template=other, datasource=ds, source=SOURCE_RUN,
-                created_at=NOW - timedelta(days=1))
+def test_download_per_success_divides_downloads_by_successful_runs(
+    db, plat, biz1, ds, ta, job_factory
+):
+    """下载转化 = 下载次数 ÷ 成功运行次数。一次成功被下载两回就是 200%,不封顶。"""
+    from sqlalchemy import update
 
-    got = analytics_service.adoption(db, _team(db, a_admin), WINDOW)
-    assert got["reuse_multiple"]["value"] == pytest.approx(2.5)
+    from app.models.audit import DownloadEvent
+
+    base = NOW - timedelta(days=1)
+    job = job_factory(user=biz1, template=ta, datasource=ds, source=SOURCE_RUN, created_at=base)
+    for _ in range(2):
+        db.add(DownloadEvent(user_id=biz1.id, job_id=job.id, row_count=10))
+    db.commit()
+    db.execute(update(DownloadEvent).values(created_at=base))
+    db.commit()
+
+    got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
+    assert got["download_per_success"]["value"] == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------- 三态

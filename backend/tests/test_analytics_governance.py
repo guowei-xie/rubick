@@ -188,10 +188,7 @@ def test_team_view_has_no_platform_keys(db, plat, a_admin, team_a):
     plat_view = analytics_governance(db=db, user=plat)
 
     assert "platform" not in team_view
-    assert "platform" in plat_view
-    assert set(plat_view["platform"]) >= {
-        "role_distribution", "teams_total", "teams_without_admin", "audit_actions"
-    }
+    assert set(plat_view["platform"]) == {"teams_without_admin"}
 
 
 def test_credentials_block_carries_no_account_names(db, a_admin, plat, team_a, ds):
@@ -227,29 +224,3 @@ def test_grants_are_scoped_to_the_team(db, a_admin, b_admin_team, biz1, ds, dev,
 def b_admin_team(db, user_factory, team_factory):
     b = user_factory(B_ADMIN, ROLE_DEVELOPER, "乙队团队管理员", prefix="agv")
     return team_factory("agv-team-B", [(b, True)])
-
-
-# ---------------------------------------------------------------- 下载
-
-
-def test_download_concentration_surfaces_one_person_fetching_for_everyone(
-    db, plat, biz1, biz2, ds, ta, job_factory
-):
-    """不是指控,是发现「一个人在给全组取数」这种反模式。"""
-    from app.models.audit import DownloadEvent
-
-    base = NOW - timedelta(days=1)
-    job = job_factory(user=biz1, template=ta, datasource=ds, created_at=base)
-    for _ in range(9):
-        db.add(DownloadEvent(user_id=biz1.id, job_id=job.id, row_count=1000))
-    db.add(DownloadEvent(user_id=biz2.id, job_id=job.id, row_count=10))
-    db.commit()
-    from sqlalchemy import update
-
-    db.execute(update(DownloadEvent).values(created_at=base))
-    db.commit()
-
-    got = analytics_service.governance(db, analytics_service.resolve_scope(db, plat), WINDOW)
-    assert got["downloads"]["total"]["value"] == 10
-    assert got["downloads"]["concentration"]["value"] == pytest.approx(0.9)
-    assert got["downloads"]["top_users"][0]["user_id"] == biz1.id

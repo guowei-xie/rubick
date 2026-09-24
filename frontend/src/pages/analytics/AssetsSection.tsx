@@ -77,33 +77,10 @@ export default function AssetsSection({
                 note={notes["never_run"]?.note}
               />
             </Col>
-          </Row>
-
-          <div className="rk-ana-subtitle">订阅与定时</div>
-          <Row gutter={[16, 16]}>
             <Col {...CARD_COL}>
               <MetricCard label="定时运行中的任务" metric={asOf.schedules_enabled}
                           note={notes["schedules_enabled"]?.note} />
             </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="订阅关系" metric={asOf.subscribers} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="快被自动退订" metric={asOf.at_risk_subscriptions}
-                          note={notes["at_risk_subscriptions"]?.note} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="本区间新建任务" metric={data.window_changes.new_templates} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="本区间新版本" metric={data.window_changes.new_versions} />
-            </Col>
-            {/* 上线次数只能从审计里数，团队管理员不读审计，所以这个键可能不存在 */}
-            {data.window_changes.publishes && (
-              <Col {...CARD_COL}>
-                <MetricCard label="本区间上线" metric={data.window_changes.publishes} />
-              </Col>
-            )}
           </Row>
 
           <div className="rk-ana-subtitle">跑得最多的任务</div>
@@ -126,10 +103,6 @@ export default function AssetsSection({
                 render: (v: number | null) => fmtPercent(v) },
             ]}
           />
-          <div className="rk-ana-caption">
-            头部 10 个任务占了本区间 {fmtPercent(data.top10_share.value)} 的运行量；
-            跑过不超过 1 次的已上线任务有 {data.tail_count.value ?? "—"} 个。
-          </div>
 
           {idleUsable && data.idle_list.length > 0 && (
             <>

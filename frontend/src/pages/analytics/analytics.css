@@ -242,24 +242,6 @@
   color: var(--ink-secondary);
 }
 
-/* ---- 治理动作标签(点进审计页带筛选)---- */
-
-.rk-ana-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.rk-ana-action {
-  cursor: pointer;
-  margin-inline-end: 0;
-}
-
-.rk-ana-action:hover {
-  color: var(--brand);
-  border-color: var(--brand);
-}
-
 /* 排行表整行可点时给个手势 */
 .rk-ana .ant-table-tbody > tr {
   cursor: pointer;

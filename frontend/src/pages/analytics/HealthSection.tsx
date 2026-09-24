@@ -8,7 +8,7 @@ import {
   INK_MUTED, SERIES_COLORS, STATUS_COLORS, baseOption, timeAxis, valueAxis,
 } from "../../components/analytics/chartTheme";
 import { JOB_SOURCE_LONG } from "../../components/StatusTag";
-import { fmtDayTime, fmtDuration, fmtPercent } from "../../format";
+import { fmtDuration, fmtPercent } from "../../format";
 import { useSectionData } from "./useAnalyticsQuery";
 
 export default function HealthSection({
@@ -70,9 +70,6 @@ export default function HealthSection({
   }, [data]);
 
   const pts = data?.daily_series ?? [];
-  const queue = data?.queue;
-  // 排队记录覆盖率偏低时要说清楚从什么时候起可用 —— 否则那个 p50 会被当成全量口径
-  const queueThin = !!queue && queue.coverage !== null && queue.coverage < 0.9;
 
   return (
     <SectionCard
@@ -103,15 +100,8 @@ export default function HealthSection({
                           note={notes["zero_row_jobs"]?.note} />
             </Col>
             <Col {...CARD_COL}>
-              <MetricCard
-                label="排队中位数"
-                metric={data.queue_p50_ms}
-                format="duration"
-                note={notes["queue"]?.note}
-              />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="等待超过 1 分钟" metric={data.queue_over_60s} />
+              <MetricCard label="等待超过 1 分钟" metric={data.queue_over_60s}
+                          note={notes["queue"]?.note} />
             </Col>
             <Col {...CARD_COL}>
               <MetricCard
@@ -127,19 +117,13 @@ export default function HealthSection({
             </Col>
           </Row>
 
-          {queueThin && (
-            <div className="rk-ana-caption">
-              排队数据自 {fmtDayTime(queue!.stats_since)} 起可用；
-              更早的运行没有开始时刻记录，未计入（不会当成零排队）。
-            </div>
-          )}
-
-          <div className="rk-ana-subtitle">按来源分开看</div>
+          {/* 正式取数的成功率已在顶部那张卡上,这里只摆另外两路 */}
+          <div className="rk-ana-subtitle">试跑与定时分开看</div>
           <Row gutter={[16, 16]}>
-            {(["run", "test", "subscribe"] as const).map((src) => {
+            {(["test", "subscribe"] as const).map((src) => {
               const r = data.by_source[src];
               return (
-                <Col key={src} xs={24} md={8}>
+                <Col key={src} xs={24} md={12}>
                   <div className="rk-ana-rate">
                     <div className="rk-ana-rate-head">
                       <b>{JOB_SOURCE_LONG[src]}</b>
@@ -191,13 +175,10 @@ export default function HealthSection({
               <Col key={engine} xs={24} md={12}>
                 <div className="rk-ana-rate">
                   <div className="rk-ana-rate-head">
-                    <b>{engine.toUpperCase()} 执行耗时</b>
-                    <span>{d.samples} 次成功</span>
+                    <b>{engine.toUpperCase()} 执行耗时 P90</b>
+                    <span>{fmtDuration(d.p90_ms)}</span>
                   </div>
-                  <div className="rk-ana-rate-sub">
-                    P50 {fmtDuration(d.p50_ms)} · P90 {fmtDuration(d.p90_ms)} ·
-                    P95 {fmtDuration(d.p95_ms)}
-                  </div>
+                  <div className="rk-ana-rate-sub">{d.samples} 次成功运行，不含排队</div>
                 </div>
               </Col>
             ))}

@@ -5,7 +5,12 @@ import Chart from "../../components/analytics/Chart";
 import MetricCard, { CARD_COL } from "../../components/analytics/MetricCard";
 import SectionCard from "../../components/analytics/SectionCard";
 import { SOURCE_COLORS, baseOption, timeAxis, valueAxis } from "../../components/analytics/chartTheme";
+import { JOB_SOURCE_LONG } from "../../components/StatusTag";
 import { useSectionData } from "./useAnalyticsQuery";
+
+/** 趋势图的四条线。**永不合并成一条「总运行次数」** —— 它们的受众、成本、健康含义完全不同,
+ *  合起来那条线涨了也说明不了任何事。试跑没有自己的卡,只在这里露面。 */
+const SERIES = ["run", "test", "subscribe", "api"] as const;
 
 export default function AdoptionSection({
   query,
@@ -28,21 +33,15 @@ export default function AdoptionSection({
     const pts = data?.daily_series ?? [];
     return {
       ...baseOption,
-      legend: { ...baseOption.legend, data: ["正式取数", "作者试跑", "定时运行"] },
+      legend: { ...baseOption.legend, data: SERIES.map((k) => JOB_SOURCE_LONG[k]) },
       xAxis: { ...timeAxis, data: pts.map((p) => p.date.slice(5)) },
       yAxis: valueAxis,
-      series: [
-        // 三条线分开画,**永不合并成一条「总运行次数」** —— 它们的受众、成本、
-        // 健康含义完全不同,合起来那条线涨了也说明不了任何事
-        { name: "正式取数", type: "line", smooth: true, symbol: pts.length < 4 ? "circle" : "none",
-          symbolSize: 6, data: pts.map((p) => p.run), itemStyle: { color: SOURCE_COLORS.run },
-          areaStyle: { opacity: 0.08 } },
-        { name: "作者试跑", type: "line", smooth: true, symbol: pts.length < 4 ? "circle" : "none",
-          symbolSize: 6, data: pts.map((p) => p.test), itemStyle: { color: SOURCE_COLORS.test } },
-        { name: "定时运行", type: "line", smooth: true, symbol: pts.length < 4 ? "circle" : "none",
-          symbolSize: 6, data: pts.map((p) => p.subscribe),
-          itemStyle: { color: SOURCE_COLORS.subscribe } },
-      ],
+      series: SERIES.map((k) => ({
+        name: JOB_SOURCE_LONG[k], type: "line", smooth: true,
+        symbol: pts.length < 4 ? "circle" : "none", symbolSize: 6,
+        data: pts.map((p) => p[k]), itemStyle: { color: SOURCE_COLORS[k] },
+        ...(k === "run" ? { areaStyle: { opacity: 0.08 } } : {}),
+      })),
     } as any;
   }, [data]);
 
@@ -50,6 +49,12 @@ export default function AdoptionSection({
   const note = (k: string) => notes[k]?.note;
   // 一两天数据也照画,但要显式说明 —— 两个点连成的直线看着像一条有意义的趋势
   const thin = pts.length > 0 && pts.length <= 2;
+  // 开放 API 是可选能力:一枚 token 都没发过、且**全期**一次 API 运行都没有时,
+  // 两张卡整行不摆,免得没接过 API 的平台多出两张「—」。
+  // 判据用 has_data 不用 value —— 后者会把「本区间没人调、但上个月天天调」误判成没开张
+  const apiInUse = !!data && (data.api_runs.has_data || data.tokens_issued.has_data);
+  // 「1」单独摆着看不出是好是坏,「1 / 8」才读得出「发了一堆没人用」
+  const issued = data?.tokens_issued.value ?? 0;
 
   return (
     <SectionCard
@@ -78,11 +83,8 @@ export default function AdoptionSection({
                           note={note("scheduled_jobs")} />
             </Col>
             <Col {...CARD_COL}>
-              <MetricCard label="开发侧活跃" metric={data.active_authors}
-                          note={note("active_authors")} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="结果下载" metric={data.download_events} />
+              <MetricCard label="业务自助率" metric={data.self_service_ratio}
+                          format="percent" note={note("self_service_ratio")} />
             </Col>
             <Col {...CARD_COL}>
               <MetricCard label="下载转化" metric={data.download_per_success}
@@ -90,37 +92,30 @@ export default function AdoptionSection({
             </Col>
           </Row>
 
-          <div className="rk-ana-subtitle">复用与自动化</div>
-          <Row gutter={[16, 16]}>
-            <Col {...CARD_COL}>
-              <MetricCard label="业务自助率" metric={data.self_service_ratio}
-                          format="percent" note={note("self_service_ratio")} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="复用倍数" metric={data.reuse_multiple}
-                          format="multiple" note={note("reuse_multiple")} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard label="免人工率" metric={data.automation_ratio}
-                          format="percent" note={note("automation_ratio")} />
-            </Col>
-            {/* 平台专属:团队视角下这两个键**不存在**,整块不渲染 */}
-            {data.new_users && (
-              <Col {...CARD_COL}>
-                <MetricCard label="新增用户" metric={data.new_users} />
-              </Col>
-            )}
-            {data.retention_rate && (
-              <Col {...CARD_COL}>
-                <MetricCard label="回访率" metric={data.retention_rate} format="percent" />
-              </Col>
-            )}
-            {data.new_task_users && (
-              <Col {...CARD_COL}>
-                <MetricCard label="首次使用本团队任务" metric={data.new_task_users} />
-              </Col>
-            )}
-          </Row>
+          {apiInUse && (
+            <>
+              <div className="rk-ana-subtitle">
+                开放 API
+                <span className="rk-ana-subtitle-note">
+                  Token 是此刻口径、「用过」固定看近 7 天，不随上方的时间范围变化
+                </span>
+              </div>
+              <Row gutter={[16, 16]}>
+                <Col {...CARD_COL}>
+                  <MetricCard label="API 调用" metric={data.api_runs} note={note("api_runs")} />
+                </Col>
+                <Col {...CARD_COL}>
+                  <MetricCard
+                    label="近 7 天用过的 Token"
+                    metric={data.tokens_active_7d}
+                    note={note("tokens_active_7d")}
+                    // 分母跟在数字后面。issued 为 0 时不挂 ——「/ 0」不是信息,只是噪声
+                    suffix={issued ? <span className="rk-metric-sub"> / {issued}</span> : null}
+                  />
+                </Col>
+              </Row>
+            </>
+          )}
 
           <div className="rk-ana-subtitle">每日取数趋势</div>
           <Chart

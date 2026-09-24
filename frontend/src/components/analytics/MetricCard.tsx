@@ -1,7 +1,7 @@
 import { Tooltip } from "antd";
 import { Link } from "react-router-dom";
 import { Metric } from "../../api";
-import { fmtDayTime, fmtDuration, fmtPercent } from "../../format";
+import { fmtDayTime, fmtPercent } from "../../format";
 
 /**
  * 各板块的数字卡统一用这套响应式列宽。**别在每个板块各写一份** ——
@@ -9,28 +9,12 @@ import { fmtDayTime, fmtDuration, fmtPercent } from "../../format";
  */
 export const CARD_COL = { xs: 12, sm: 8, lg: 6, xxl: 4 };
 
-/**
- * 把一个后端没有做成信封的裸数字包成 Metric。**只给「必然有数据」的计数用**
- * (角色人数、团队总数这种:平台存在就有值)。
- *
- * 凡是「可能一次都没发生过」的指标,has_data 必须由**后端**按全期口径给 ——
- * 在这里按本区间的数字猜,会把「从来没跑过」渲染成一个绿色的 0。
- */
-export const plain = (value: number | null, windowed = false): Metric => ({
-  value,
-  has_data: true,
-  windowed,
-});
+/** 数字怎么显示成人话。百分比不能当整数渲染。 */
+export type MetricFormat = "int" | "percent";
 
-/** 数字怎么显示成人话。百分比与倍数不能当整数渲染。 */
-export type MetricFormat = "int" | "percent" | "multiple" | "duration";
-
-/** 百分比与耗时都走 format.ts —— 运行记录页的「排队」列用的是同一个 fmtDuration,
- *  在这儿另写一份,同一个 2 小时会在一页上显示成「120 分」、在另一页显示成「2 小时」。 */
+/** 百分比走 format.ts,与别的页面同一种写法。 */
 export function render(value: number, format: MetricFormat): string {
   if (format === "percent") return fmtPercent(value);
-  if (format === "multiple") return `${value}×`;
-  if (format === "duration") return fmtDuration(value);
   return value.toLocaleString("zh-CN");
 }
 

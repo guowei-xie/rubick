@@ -154,8 +154,7 @@ def test_queued_and_running_are_not_in_the_denominator(db, plat, biz, ds, ta, jo
     assert got["by_source"][SOURCE_RUN]["total"] == 1
     assert got["by_source"][SOURCE_RUN]["success_rate"] == 1.0
     # 但它们要出现在「此刻队列」里 —— 那是个不吃时间窗的快照
-    assert got["in_flight"] == {"queued": 1, "running": 1,
-                                "oldest_queued_at": got["in_flight"]["oldest_queued_at"]}
+    assert got["in_flight"] == {"queued": 1, "running": 1}
 
 
 def test_success_rate_is_split_by_source(db, plat, dev, biz, ds, ta, job_factory):
@@ -192,45 +191,36 @@ def test_success_rate_is_none_not_zero_without_runs(db, a_admin, team_a):
 # ---------------------------------------------------------------- 排队
 
 
-def test_queue_stats_ignore_rows_without_a_stamp(db, plat, biz, ds, ta, job_factory):
-    """没有 started_at 的历史行不参与分位数,也不被当成 0。
-
-    当成 0 的话,刚上线时 coverage 很低而 p50 会是 0 —— 页面上显示「排队中位数 0 秒」,
-    一个看起来完美、实际凭空捏造的数字。
-    """
+def test_queue_ignores_rows_without_a_stamp(db, plat, biz, ds, ta, job_factory):
+    """没有 started_at 的历史行不参与,也不被当成「零等待」。"""
     base = NOW - timedelta(days=1)
     # 有记录:排了 2 分钟
     job_factory(user=biz, template=ta, datasource=ds, status=JOB_SUCCESS,
                 created_at=base, started_at=base + timedelta(seconds=120))
+    # 有记录:排了 10 秒,不到一分钟
+    job_factory(user=biz, template=ta, datasource=ds, status=JOB_SUCCESS,
+                created_at=base, started_at=base + timedelta(seconds=10))
     # 历史行:没有记录
     job_factory(user=biz, template=ta, datasource=ds, status=JOB_SUCCESS, created_at=base)
 
-    q = analytics_service.health(db, _platform(db, plat), WINDOW)["queue"]
-    assert q["samples"] == 1
-    assert q["p50_ms"] == 120_000
-    assert q["coverage"] == pytest.approx(0.5)
-    assert q["over_60s"] == 1
+    got = analytics_service.health(db, _platform(db, plat), WINDOW)
+    assert got["queue_over_60s"]["value"] == 1
 
 
 def test_queue_excludes_test_runs(db, plat, dev, biz, ds, ta, job_factory):
-    """试跑同步执行、不入队。把它算进来,一堆 0 会把分位数拉平。"""
+    """试跑同步执行、不入队 —— 它的「排队」不算数。"""
     base = NOW - timedelta(days=1)
-    job_factory(user=biz, template=ta, datasource=ds, source=SOURCE_RUN, status=JOB_SUCCESS,
-                created_at=base, started_at=base + timedelta(seconds=300))
-    for _ in range(9):
-        job_factory(user=dev, template=ta, datasource=ds, source=SOURCE_TEST,
-                    status=JOB_SUCCESS, created_at=base, started_at=base)
+    job_factory(user=dev, template=ta, datasource=ds, source=SOURCE_TEST,
+                status=JOB_SUCCESS, created_at=base, started_at=base + timedelta(seconds=300))
 
-    q = analytics_service.health(db, _platform(db, plat), WINDOW)["queue"]
-    assert q["samples"] == 1
-    assert q["p50_ms"] == 300_000, "试跑的 0 把排队中位数拉平了"
+    got = analytics_service.health(db, _platform(db, plat), WINDOW)
+    assert got["queue_over_60s"]["value"] is None, "试跑被当成排队样本了"
 
 
 def test_queue_is_none_when_no_samples(db, a_admin, team_a):
-    got = analytics_service.health(db, _team(db, a_admin), WINDOW)["queue"]
-    assert got["samples"] == 0
-    assert got["p50_ms"] is None
-    assert got["coverage"] is None
+    """一条带开始时刻的样本都没有时是「没得算」,不是「零次超时」。"""
+    got = analytics_service.health(db, _team(db, a_admin), WINDOW)
+    assert got["queue_over_60s"]["value"] is None
 
 
 # ---------------------------------------------------------------- 失败归因与耗时
@@ -261,7 +251,7 @@ def test_unbucketed_samples_are_returned_so_the_rules_can_evolve(
 def test_duration_percentiles_are_split_by_engine(
     db, plat, biz, ds, hive_ds, ta, dev, team_a, job_factory
 , template_factory):
-    """Hive 超时上限 3600s、MySQL 120s —— 混在一起的分位数没有可比性。"""
+    """Hive 超时上限 3600s、MySQL 120s —— 混在一起的分位数没有可比性。只给 P90。"""
     hive_tmpl = template_factory(dev, hive_ds, team_a, "ahe-hive 任务")
     hive_tmpl.datasource_id = hive_ds.id
     db.commit()
@@ -272,8 +262,8 @@ def test_duration_percentiles_are_split_by_engine(
                 duration_ms=900_000, created_at=base)
 
     got = analytics_service.health(db, _platform(db, plat), WINDOW)["duration_by_engine"]
-    assert got["mysql"]["p50_ms"] == 1_000
-    assert got["hive"]["p50_ms"] == 900_000
+    assert got["mysql"] == {"samples": 1, "p90_ms": 1_000}
+    assert got["hive"] == {"samples": 1, "p90_ms": 900_000}
 
 
 def test_duration_only_counts_successful_runs(db, plat, biz, ds, ta, job_factory):
@@ -286,7 +276,7 @@ def test_duration_only_counts_successful_runs(db, plat, biz, ds, ta, job_factory
 
     got = analytics_service.health(db, _platform(db, plat), WINDOW)["duration_by_engine"]
     assert got["mysql"]["samples"] == 1
-    assert got["mysql"]["p50_ms"] == 5_000
+    assert got["mysql"]["p90_ms"] == 5_000
 
 
 def test_zero_row_successes_are_surfaced(db, plat, biz, ds, ta, job_factory):

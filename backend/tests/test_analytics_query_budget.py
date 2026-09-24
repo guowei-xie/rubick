@@ -27,8 +27,8 @@ PLAT, DEV, BIZ, A_ADMIN = 9360, 9361, 9362, 9363
 NOW = datetime(2026, 6, 15, 12, 0)
 WINDOW = Window(NOW - timedelta(days=30), NOW)
 
-# 当前实现的条数 + 3 条余量(实测,平台/团队两种视角:adoption 10/10、health 10/10、
-# assets 11/10、governance 14/9、api_usage 5/5)。留余量是为了「多加一个指标」不必连带改这里,
+# 当前实现的条数 + 3 条余量(实测,平台/团队两种视角:adoption 8/8、health 10/10、
+# assets 6/6、governance 14/12;loaded 自带授权,治理板补名字的分支必走,条数不随测试顺序变)。留余量是为了「多加一个指标」不必连带改这里,
 # 但多出十几条一定会被挡住。
 #
 # 上限要**跟着实现往下走**:一次重构把条数砍掉三分之一后不收紧,这里就成了一个再也拦不住
@@ -37,7 +37,7 @@ WINDOW = Window(NOW - timedelta(days=30), NOW)
 # 真正判 N+1 的是后面两条:test_budget_does_not_grow_with_data_volume 要求数据翻倍后条数
 # **完全不变**,test_meta_does_not_query_per_managed_team 要求它不随管的团队数增长。
 # 那两个才是硬判据,这里的上限只是量级护栏。
-BUDGET = {"adoption": 13, "health": 13, "assets": 14, "governance": 17, "api_usage": 8}
+BUDGET = {"adoption": 11, "health": 13, "assets": 9, "governance": 17}
 
 
 class _Counter:
@@ -89,9 +89,16 @@ def team_a(db, a_admin, dev, team_factory):
 
 
 @pytest.fixture
-def loaded(db, dev, biz, ds, team_a, job_factory):
-    """铺一批任务与运行 —— 空库量不出 N+1,排行榜为空时根本不会去补名字。"""
+def loaded(db, dev, biz, a_admin, ds, team_a, job_factory):
+    """铺一批任务、运行与授权 —— 空库量不出 N+1,排行榜为空时根本不会去补名字。
+
+    授权那一笔(给一个从不跑的人授运行权)让治理板的「空转明细 / 授权面排行」两段
+    补名字的分支**必走**:否则它走不走取决于别的文件有没有留下授权,条数跟着测试顺序变。
+    """
     from sqlalchemy import select
+
+    from app.models.permission import ACTION_RUN, RESOURCE_TEMPLATE, SUBJECT_USER
+    from app.services import permission_service
 
     base = NOW - timedelta(days=2)
     for i in range(12):
@@ -108,10 +115,15 @@ def loaded(db, dev, biz, ds, team_a, job_factory):
         for _ in range(3):
             job_factory(user=biz, template=t, datasource=ds, source=SOURCE_RUN,
                         created_at=base)
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, subject_id=str(a_admin.id),
+        resource_type=RESOURCE_TEMPLATE, resource_id=str(t.id),
+        actions=[ACTION_RUN], granted_by=dev.id,
+    )
     return True
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "api_usage"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
 def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     fn = getattr(analytics_service, board)
     scope = analytics_service.resolve_scope(db, plat)
@@ -122,7 +134,7 @@ def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     )
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "api_usage"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
 def test_board_stays_within_query_budget_team(db, a_admin, loaded, board):
     """团队视角会多几条子查询,但**不该随任务数增长**。"""
     fn = getattr(analytics_service, board)

@@ -1,27 +1,20 @@
-"""板块⑤「开放 API」的口径。
+"""采纳板里开放 API 那几项的口径(API 调用、token 发放与活跃)。
 
-三条最值钱:
+开放 API 原先单立一块板,瘦身后并进采纳板 —— 它只是运行来源中的一种。三条最值钱:
 
   · test_active_window_is_fixed_seven_days_not_the_page_window —— 活跃判据固定看 7 天,
     页面把范围拖到 90 天也不放宽。它是全页唯一一个既不是「本区间」也不是「此刻」的窗口;
   · test_team_view_narrows_tokens_to_members —— token 按团队成员、运行按任务归属,
     同一块板里两套收窄口径并存是有意为之,不是等着被「修正」的不一致;
-  · test_active_has_data_follows_issued —— 界面整块空态压在这两个 has_data 上,
-    判据一变,一块本该说「还没开张」的板就会变成一屏「—」。
+  · test_active_has_data_follows_issued —— 界面「没接过 API 就不摆这两张卡」压在
+    这两个 has_data 上,判据一变,没开张的平台就会多出两张「—」。
 """
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import update
 
-from app.api.routes.analytics import analytics_api
-from app.core.exceptions import PermissionDeniedError
 from app.core.timewindow import Window
-from app.models.audit import VIA_API, VIA_WEB, DownloadEvent
-from app.models.query_job import (
-    SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST,
-)
-from app.models.template import SqlTemplate
+from app.models.query_job import SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST
 from app.models.user import ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER
 from app.services import analytics_service, api_token_service
 
@@ -94,11 +87,6 @@ def ta(db, dev, ds, team_a, template_factory):
     return template_factory(dev, ds, team_a, "aap-甲队任务")
 
 
-@pytest.fixture
-def tb(db, dev, ds, team_a, template_factory):
-    return template_factory(dev, ds, team_a, "aap-甲队任务2")
-
-
 def _platform(db, plat):
     return analytics_service.resolve_scope(db, plat)
 
@@ -131,10 +119,10 @@ def test_tokens_count_only_live_hashes(db, plat, caller, outsider):
     """以 hash 非空为唯一判据:吊销(三列一起清空)后立刻不再计入发放数。"""
     _give_token(db, caller)
     _give_token(db, outsider)
-    assert analytics_service.api_usage(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 2
+    assert analytics_service.adoption(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 2
 
     api_token_service.revoke(db, outsider)  # 「三列同生同灭」的定义住在它那里
-    assert analytics_service.api_usage(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 1
+    assert analytics_service.adoption(db, _platform(db, plat), WINDOW)["tokens_issued"]["value"] == 1
 
 
 def test_active_window_is_fixed_seven_days_not_the_page_window(db, plat, caller, outsider):
@@ -146,58 +134,44 @@ def test_active_window_is_fixed_seven_days_not_the_page_window(db, plat, caller,
     _give_token(db, outsider, used_days_ago=8)   # 刚过 7 天
 
     # windowed=False 是前端挂「此刻」标记的依据,与窗口无关,断言一次即可
-    assert analytics_service.api_usage(
+    assert analytics_service.adoption(
         db, _platform(db, plat), WINDOW
     )["tokens_active_7d"]["windowed"] is False
 
     for window in (WINDOW, WIDE_WINDOW):
-        got = analytics_service.api_usage(db, _platform(db, plat), window)
+        got = analytics_service.adoption(db, _platform(db, plat), window)
         assert got["tokens_active_7d"]["value"] == 1, "活跃窗口跟着页面范围变宽了"
 
 
 def test_active_has_data_follows_issued(db, plat, caller):
-    """**前端整块空态的地基**:发过 token 却没人用过 ⇒ value=0 且 has_data=True。
+    """**前端空态的地基**:发过 token 却没人用过 ⇒ value=0 且 has_data=True。
 
     界面据此说「本区间没有发生」(绿色,正向结果),而不是「还没有数据」(灰色「—」)。
-    一枚都没发过时两者都为空,整块才换成「还没开张」的指引。
+    一枚都没发过、也从没有过 API 调用时,采纳板干脆不摆这两张卡。
     """
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
+    got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
     assert got["tokens_issued"]["value"] == 0 and got["tokens_issued"]["has_data"] is False
     assert got["tokens_active_7d"]["has_data"] is False
 
     _give_token(db, caller)  # 发了,但从没用过
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
+    got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
     assert got["tokens_issued"]["has_data"] is True
     assert got["tokens_active_7d"]["value"] == 0
     assert got["tokens_active_7d"]["has_data"] is True, "发过 token 就不该说「还没有数据」"
 
 
-# ---------------------------------------------------------------- 运行与下载(窗口口径)
+# ---------------------------------------------------------------- API 调用(窗口口径)
 
 
-def test_api_runs_counts_only_source_api_and_share_divides_by_all(
-    db, plat, caller, dev, ds, ta, job_factory
-):
-    """分子只认 source=api(另三种来源一条都不许串),分母是窗口内**全部**运行。
-
-    分子与占比是同一批数据的两个读法,分开测就要把这四行铺数据抄两遍。
-    """
+def test_api_runs_counts_only_source_api(db, plat, caller, dev, ds, ta, job_factory):
+    """只认 source=api,另三种来源一条都不许串。"""
     base = NOW - timedelta(days=1)
     for src in (SOURCE_RUN, SOURCE_TEST, SOURCE_SUBSCRIBE):
         job_factory(user=dev, template=ta, datasource=ds, source=src, created_at=base)
     job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API, created_at=base)
 
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
+    got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
     assert got["api_runs"]["value"] == 1
-    # 分母含试跑与定时,不是只有正式取数 —— 否则这里会是 1/2
-    assert got["api_run_share"]["value"] == pytest.approx(0.25)
-
-
-def test_api_run_share_is_none_when_nothing_ran(db, plat):
-    """一次运行都没有时是「没得算」(None),不是 0% —— 同 ratio 的既有口径。"""
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
-    assert got["api_run_share"]["value"] is None
-    assert got["api_run_share"]["has_data"] is False
 
 
 def test_api_runs_has_data_looks_at_all_time(db, plat, caller, ds, ta, job_factory):
@@ -207,58 +181,9 @@ def test_api_runs_has_data_looks_at_all_time(db, plat, caller, ds, ta, job_facto
     """
     job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API,
                 created_at=NOW - timedelta(days=200))
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
+    got = analytics_service.adoption(db, _platform(db, plat), WINDOW)
     assert got["api_runs"]["value"] == 0
     assert got["api_runs"]["has_data"] is True
-
-
-def test_downloads_count_only_via_api(db, plat, caller, ds, ta, job_factory):
-    """同一次运行上两条下载事件,只数走开放 API 那条;界面导出记 web,不计入。"""
-    base = NOW - timedelta(days=1)
-    job = job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API, created_at=base)
-    db.add(DownloadEvent(user_id=caller.id, job_id=job.id, row_count=1, via=VIA_API))
-    db.add(DownloadEvent(user_id=caller.id, job_id=job.id, row_count=1, via=VIA_WEB))
-    db.commit()
-    db.execute(update(DownloadEvent).values(created_at=base))
-    db.commit()
-
-    got = analytics_service.api_usage(db, _platform(db, plat), WINDOW)
-    assert got["api_downloads"]["value"] == 1
-
-
-# ---------------------------------------------------------------- Top 任务
-
-
-def test_top_tasks_ranked_by_api_calls_only(db, plat, caller, dev, ds, ta, tb, job_factory):
-    """排行只按 API 调用次数倒序;同一张任务在界面上被跑多少次都不参与排序。"""
-    base = NOW - timedelta(days=1)
-    for _ in range(3):
-        job_factory(user=caller, template=tb, datasource=ds, source=SOURCE_API, created_at=base)
-    job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API, created_at=base)
-    # ta 在界面上被跑了很多次 —— 不该因此排到前面
-    for _ in range(10):
-        job_factory(user=dev, template=ta, datasource=ds, source=SOURCE_RUN, created_at=base)
-
-    top = analytics_service.api_usage(db, _platform(db, plat), WINDOW)["top_tasks"]
-    assert [(r["template_id"], r["run_count"]) for r in top] == [(tb.id, 3), (ta.id, 1)]
-    assert len(top) <= analytics_service.TOP_N
-
-
-def test_top_tasks_keeps_id_when_template_is_gone(db, plat, caller, ds, ta, job_factory):
-    """任务被硬删后名字取不到,但编号与次数仍在 —— 前端那两列可空的契约由这条守着。
-
-    编号还在才有得查:顺着它能在审计里找到这批调用是谁发起的。
-    """
-    base = NOW - timedelta(days=1)
-    job_factory(user=caller, template=ta, datasource=ds, source=SOURCE_API, created_at=base)
-    tid = ta.id
-    db.delete(db.get(SqlTemplate, tid))
-    db.commit()
-
-    top = analytics_service.api_usage(db, _platform(db, plat), WINDOW)["top_tasks"]
-    assert len(top) == 1
-    assert top[0]["template_id"] == tid and top[0]["run_count"] == 1
-    assert top[0]["name"] is None and top[0]["team_name"] is None
 
 
 # ---------------------------------------------------------------- 团队视角
@@ -275,32 +200,7 @@ def test_team_view_narrows_tokens_to_members(db, a_admin, caller, outsider, ds, 
     job_factory(user=outsider, template=ta, datasource=ds, source=SOURCE_API,
                 created_at=NOW - timedelta(days=1))
 
-    got = analytics_service.api_usage(db, _team(db, a_admin), WINDOW)
+    got = analytics_service.adoption(db, _team(db, a_admin), WINDOW)
     assert got["tokens_issued"]["value"] == 1, "队外的人的 token 被算进来了"
     assert got["tokens_active_7d"]["value"] == 1
     assert got["api_runs"]["value"] == 1, "运行该按任务归属收窄,不是按发起人是否在队里"
-
-
-def test_team_view_has_same_keys_as_platform(db, plat, a_admin, caller):
-    """两种视角的键集合**完全相同** —— 这块板没有平台专属键。
-
-    有了它,将来谁加了 platform-only 键会立刻被挡下;前端也就永远不必写那条
-    「团队视角下这个键不存在」的分支(Adoption / Governance 都为此写过)。
-    """
-    _give_token(db, caller)
-    plat_keys = set(analytics_service.api_usage(db, _platform(db, plat), WINDOW))
-    team_keys = set(analytics_service.api_usage(db, _team(db, a_admin), WINDOW))
-    assert plat_keys == team_keys
-
-
-# ---------------------------------------------------------------- 路由层
-
-
-def test_route_refuses_plain_developer(db, dev):
-    """端点级冒烟:新路由确实过了 _scoped(权限与窗口都在那里解算)。
-
-    _scoped 自身的行为由 test_analytics_scope.py 覆盖,缺省 30 天由 test_timewindow.py
-    覆盖 —— 这里只证明这条新路由接上了它们,不重复钉它们的规格。
-    """
-    with pytest.raises(PermissionDeniedError):
-        analytics_api(db=db, user=dev)

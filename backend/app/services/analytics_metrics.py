@@ -1,4 +1,4 @@
-"""运营分析的**纯函数**层:失败归因分桶、分位数、区间分桶、日期归一。
+"""运营分析的**纯函数**层:失败归因分桶、分位数、日期归一。
 
 刻意与 analytics_service 分开:这一层不碰 db、不碰 scope,输入输出都是普通 Python 值。
 失败归因的规则表注定要长期迭代(错误文案来自三种引擎 + 平台自己),而只有纯函数才测得动
@@ -108,7 +108,7 @@ def classify_error(text: str | None) -> str:
 
 # ---------------------------------------------------------------- 分位数
 
-# 一次聚合最多把多少行拉进内存算分位。超了就截断并在响应里说明,而不是静默算一个偏的数。
+# 一次聚合最多把多少行拉进内存(算分位、数排队)。窗口内成功运行上万时只看前这么多条。
 PERCENTILE_SAMPLE_CAP = 50_000
 
 
@@ -131,37 +131,6 @@ def percentiles(values, ps=(50, 90, 95)) -> dict[int, int | None]:
         rank = max(1, min(n, math.ceil(p / 100 * n)))
         out[p] = int(xs[rank - 1])
     return out
-
-
-# ---------------------------------------------------------------- 区间分桶
-
-# 耗时分档的边界(毫秒)。边界值归**上面**那一档(区间是 [lo, hi)),
-# 即恰好 5000ms 算「5–30 秒」而不是「<5 秒」—— 与时间窗的半开区间同一个约定。
-DURATION_BUCKETS_MS: tuple[int, ...] = (5_000, 30_000, 120_000, 600_000)
-DURATION_BUCKET_LABELS: tuple[str, ...] = (
-    "<5 秒", "5–30 秒", "30 秒–2 分钟", "2–10 分钟", ">10 分钟",
-)
-
-
-def bucketize(values, edges=DURATION_BUCKETS_MS, labels=DURATION_BUCKET_LABELS):
-    """把一串数分到 len(edges)+1 个档里,返回 [(标签, 个数), ...],顺序即档位顺序。
-
-    空输入返回全部为 0 的完整档位表(而不是空列表)—— 前端画分布图时需要稳定的档位,
-    不该因为这一天没数据就少几根柱子。
-    """
-    if len(labels) != len(edges) + 1:
-        raise ValueError("labels 必须比 edges 多一个")
-    counts = [0] * len(labels)
-    for v in values:
-        if v is None:
-            continue
-        idx = len(edges)  # 默认落在最后一档
-        for i, edge in enumerate(edges):
-            if v < edge:
-                idx = i
-                break
-        counts[idx] += 1
-    return list(zip(labels, counts))
 
 
 # ---------------------------------------------------------------- 日期归一

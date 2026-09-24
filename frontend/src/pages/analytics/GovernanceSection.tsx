@@ -1,10 +1,9 @@
-import { Col, Row, Table, Tag } from "antd";
+import { Col, Row, Table } from "antd";
 import { useNavigate } from "react-router-dom";
 import { AnalyticsQuery, GovernanceData, MetricNote, analyticsGovernance } from "../../api";
-import MetricCard, { CARD_COL, plain } from "../../components/analytics/MetricCard";
+import MetricCard, { CARD_COL } from "../../components/analytics/MetricCard";
 import RankBarTable, { taskRankColumns } from "../../components/analytics/RankBarTable";
 import SectionCard from "../../components/analytics/SectionCard";
-import { ROLE } from "../../components/StatusTag";
 import { fmtDayTime } from "../../format";
 import { taskLink } from "../../taskSearch";
 import { useSectionData } from "./useAnalyticsQuery";
@@ -55,9 +54,6 @@ export default function GovernanceSection({
               />
             </Col>
             <Col {...CARD_COL}>
-              <MetricCard label="空转比例" metric={asOf.dormant_ratio} format="percent" />
-            </Col>
-            <Col {...CARD_COL}>
               <MetricCard
                 label="失效的编辑权"
                 metric={asOf.stale_edit_grants}
@@ -85,6 +81,18 @@ export default function GovernanceSection({
                 }
               />
             </Col>
+            {/* 平台专属。团队视角下 data.platform 这个键**不存在**,这张卡不渲染 ——
+                而不是渲染成 0 或「无权限」,那会让人去猜后面藏了什么 */}
+            {data.platform && (
+              <Col {...CARD_COL}>
+                <MetricCard
+                  label="没有团队管理员"
+                  metric={data.platform.teams_without_admin}
+                  to="/admin/teams"
+                  note={notes["teams_without_admin"]?.note}
+                />
+              </Col>
+            )}
           </Row>
 
           {data.dormant_detail.length > 0 && (
@@ -127,92 +135,6 @@ export default function GovernanceSection({
             </>
           )}
 
-          <div className="rk-ana-subtitle">结果下载</div>
-          <Row gutter={[16, 16]}>
-            <Col {...CARD_COL}>
-              <MetricCard label="下载次数" metric={data.downloads.total} />
-            </Col>
-            <Col {...CARD_COL}>
-              <MetricCard
-                label="下载集中度"
-                metric={data.downloads.concentration}
-                format="percent"
-                note={notes["download_concentration"]?.note}
-              />
-            </Col>
-          </Row>
-          {data.downloads.top_users.length > 0 && (
-            <Table
-              size="small"
-              style={{ marginTop: 12 }}
-              pagination={false}
-              rowKey="user_id"
-              dataSource={data.downloads.top_users}
-              scroll={{ x: "max-content" }}
-              columns={[
-                { title: "下载人", dataIndex: "user_name" },
-                { title: "次数", dataIndex: "downloads", width: 88 },
-                { title: "单次最大行数", dataIndex: "max_rows", width: 130,
-                  render: (v: number | null) => (v == null ? "—" : v.toLocaleString("zh-CN")) },
-              ]}
-            />
-          )}
-
-          {/* 平台专属。团队视角下 data.platform 这个键**不存在**,整块不渲染 ——
-              而不是渲染成 0 或「无权限」,那会让人去猜后面藏了什么 */}
-          {data.platform && (
-            <>
-              <div className="rk-ana-subtitle">平台结构</div>
-              <Row gutter={[16, 16]}>
-                {Object.entries(data.platform.role_distribution).map(([role, n]) => (
-                  <Col key={role} {...CARD_COL}>
-                    <MetricCard
-                      label={ROLE[role]?.label ?? role}
-                      metric={plain(n)}
-                      to="/admin/users"
-                    />
-                  </Col>
-                ))}
-                <Col {...CARD_COL}>
-                  <MetricCard
-                    label="团队总数"
-                    metric={plain(data.platform.teams_total)}
-                    to="/admin/teams"
-                  />
-                </Col>
-                <Col {...CARD_COL}>
-                  <MetricCard
-                    label="没有团队管理员"
-                    metric={data.platform.teams_without_admin}
-                    to="/admin/teams"
-                    note={notes["teams_without_admin"]?.note}
-                  />
-                </Col>
-              </Row>
-
-              <div className="rk-ana-subtitle">本区间治理动作</div>
-              <div className="rk-ana-actions">
-                {data.platform.audit_actions.slice(0, 12).map((a) => (
-                  <Tag
-                    key={a.action}
-                    className="rk-ana-action"
-                    onClick={() =>
-                      nav(
-                        `/admin/audit?action=${a.action}` +
-                          `&start=${encodeURIComponent(data.window.start)}` +
-                          `&end=${encodeURIComponent(data.window.end)}`
-                      )
-                    }
-                  >
-                    {a.label} <b>{a.count}</b>
-                  </Tag>
-                ))}
-                {data.platform.audit_actions.length === 0 && (
-                  <span className="rk-ana-caption">这段时间没有留痕动作</span>
-                )}
-              </div>
-            </>
-          )}
         </>
       )}
     </SectionCard>

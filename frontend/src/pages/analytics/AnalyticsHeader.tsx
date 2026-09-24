@@ -11,7 +11,6 @@ export const SECTIONS = [
   { id: "health", label: "运行健康" },
   { id: "assets", label: "任务资产" },
   { id: "governance", label: "权限与配置" },
-  { id: "api", label: "开放 API" },
 ];
 
 /**

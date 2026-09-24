@@ -1,7 +1,7 @@
-"""运营分析纯函数层的口径:失败归因、分位数、区间分桶、按周上卷。
+"""运营分析纯函数层的口径:失败归因、分位数、日期归一。
 
 这一层不碰 db,所以每条规则都测得起。值得逐条钉住的是那些「改了也不报错、只是数字悄悄变了」
-的地方:分桶的优先级顺序、边界值归哪一档、空样本返回 None 还是 0、跨方言的日期形状。
+的地方:分桶的优先级顺序、空样本返回 None 还是 0、跨方言的日期形状。
 """
 from datetime import date, datetime
 
@@ -9,10 +9,8 @@ import pytest
 
 from app.services.analytics_metrics import (
     BUCKET_OTHER,
-    DURATION_BUCKETS_MS,
     FAILURE_LABELS,
     FAILURE_RULES,
-    bucketize,
     classify_error,
     percentiles,
     to_date,
@@ -119,29 +117,6 @@ def test_percentiles_use_nearest_rank_not_interpolation():
 
 def test_percentiles_ignore_none_values():
     assert percentiles([1, None, 3], ps=(100,))[100] == 3
-
-
-# ---------------------------------------------------------------- 区间分桶
-
-
-def test_bucketize_boundary_goes_to_upper_bucket():
-    """边界值归上面那一档([lo, hi)),与时间窗的半开区间同一个约定。"""
-    got = dict(bucketize([4_999, 5_000, 29_999, 30_000]))
-    assert got["<5 秒"] == 1
-    assert got["5–30 秒"] == 2      # 5000 与 29999
-    assert got["30 秒–2 分钟"] == 1  # 30000
-
-
-def test_bucketize_empty_still_returns_all_buckets():
-    """这一天没数据不该让分布图少几根柱子。"""
-    got = bucketize([])
-    assert len(got) == len(DURATION_BUCKETS_MS) + 1
-    assert all(n == 0 for _, n in got)
-
-
-def test_bucketize_rejects_mismatched_labels():
-    with pytest.raises(ValueError):
-        bucketize([1], edges=(1, 2), labels=("a", "b"))
 
 
 # ---------------------------------------------------------------- 日期归一

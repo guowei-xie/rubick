@@ -21,6 +21,7 @@ const ANTD_HEX: Record<string, string> = {
   purple: "#722ed1",
   gold: "#faad14",
   geekblue: "#2f54eb",
+  cyan: "#13c2c2",
   default: "#8c8c8c",
 };
 
@@ -32,11 +33,12 @@ export const STATUS_COLORS = {
   failed: hex(JOB_STATUS.failed.color),
 };
 
-/** 三种运行来源:与任务抽屉里的「正式/试跑/定时」Tag 同色。 */
+/** 四种运行来源:与任务抽屉里的「正式/试跑/定时/API」Tag 同色。 */
 export const SOURCE_COLORS = {
   run: hex(JOB_SOURCE.run.color),
   test: hex(JOB_SOURCE.test.color),
   subscribe: hex(JOB_SOURCE.subscribe.color),
+  api: hex(JOB_SOURCE.api.color),
 };
 
 /** 没有语义的序列(排行、分档)用品牌紫的梯度。 */

@@ -540,22 +540,17 @@ def test_allow_api_toggle_lands_in_update_audit(db, task_web, author):
 
 
 def test_analytics_api_block(db, admin, task_api, viewer, clean_jobs):
-    """**链路**:v1 真的跑出来的运行与下载,接得上运营分析的开放 API 板块。
+    """**链路**:v1 真的跑出来的运行,接得上运营分析采纳板的「API 调用」。
 
-    口径断言(固定 7 天、占比分母、Top 排序、团队收窄)在 tests/test_analytics_api.py ——
-    那边用 job_factory 直接落行,造得出历史分布。这里刻意走**真实的 enqueue / log_download**:
-    它钉的是「来源常量与通道标记确实被写进了库」,而那正是另一个文件假设成立、却验不到的一段。
-    哪天 enqueue 把 source 改了名,只有这条会红。
+    口径断言(固定 7 天、团队收窄)在 tests/test_analytics_api.py —— 那边用 job_factory
+    直接落行,造得出历史分布。这里刻意走**真实的 enqueue**:它钉的是「来源常量确实被写进了库」,
+    而那正是另一个文件假设成立、却验不到的一段。哪天 enqueue 把 source 改了名,只有这条会红。
     """
-    api_job = query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
-    audit_service.log_download(
-        db, user=viewer, job_id=api_job.id, filename="a.csv", row_count=1, ip=None, via="api"
-    )
+    query_service.enqueue(db, viewer, task_api.id, {"d": "2026-09-21"}, source="api")
 
     scope = analytics_service.resolve_scope(db, admin)
-    res = analytics_service.api_usage(db, scope, timewindow.resolve_window(days=7))
+    res = analytics_service.adoption(db, scope, timewindow.resolve_window(days=7))
     assert res["api_runs"]["value"] == 1
-    assert res["api_downloads"]["value"] == 1
 
 
 # ---- 先找现成结果:POST /tasks/{id}/runs/reusable ----

@@ -5,7 +5,7 @@
 「这里再严格一点」。所以它不是自己数一遍,而是复用 template_service 的同一对函数。
 
 其余几条钉的是几个会虚报的写法:只看 schedule.enabled 不看任务状态、把「从未跑过」
-混进「跑过但很久没跑」、以及把长尾算成 0 次而不是 ≤1 次。
+混进「跑过但很久没跑」。
 """
 from datetime import datetime, timedelta
 
@@ -154,21 +154,6 @@ def test_top_templates_carry_reuse_signal(db, a_admin, dev, biz, plat, ds, team_
     assert top[lonely.id]["distinct_users"] == 1
 
 
-def test_tail_counts_tasks_run_at_most_once(db, a_admin, dev, biz, ds, team_a, job_factory, template_factory):
-    """长尾口径是 ≤1 次,不是 0 次 —— 跑过一次就再没人碰的任务同样是长尾。"""
-    once = template_factory(dev, ds, team_a, "aas-只跑过一次")
-    never = template_factory(dev, ds, team_a, "aas-一次没跑")
-    busy = template_factory(dev, ds, team_a, "aas-常跑")
-    base = NOW - timedelta(days=1)
-    job_factory(user=biz, template=once, datasource=ds, source=SOURCE_RUN, created_at=base)
-    for _ in range(5):
-        job_factory(user=biz, template=busy, datasource=ds, source=SOURCE_RUN, created_at=base)
-
-    got = analytics_service.assets(db, _team(db, a_admin), WINDOW)
-    assert got["tail_count"]["value"] == 2
-    assert got["top10_share"]["value"] == 1.0  # 只有三张任务,Top10 就是全部
-
-
 # ---------------------------------------------------------------- 订阅
 
 
@@ -187,18 +172,7 @@ def test_schedule_count_requires_the_task_to_be_published(db, a_admin, dev, ds, 
 # ---------------------------------------------------------------- 存量 vs 流量
 
 
-def test_as_of_and_window_are_separated(db, a_admin, team_a):
-    """这两组数性质不同,必须分开下发 —— 否则用户切了时间范围看见任务总数不变会当成 bug。"""
-    got = analytics_assets(db=db, user=a_admin)
-    assert set(got["as_of"]) & set(got["window_changes"]) == set()
-    assert all(
-        m["windowed"] is True
-        for k, m in got["window_changes"].items()
-        if isinstance(m, dict) and "windowed" in m
-    )
-
-
-def test_publishes_is_platform_only(db, plat, a_admin, team_a):
-    """上线次数只能从审计里数,而团队管理员不读审计 —— 这一项因此仅平台视角有。"""
-    assert "publishes" in analytics_assets(db=db, user=plat)["window_changes"]
-    assert "publishes" not in analytics_assets(db=db, user=a_admin)["window_changes"]
+def test_as_of_is_all_snapshot(db, a_admin, team_a):
+    """as_of 里全是**此刻**的快照 —— 否则用户切了时间范围看见任务总数不变会当成 bug。"""
+    got = analytics_assets(db=db, user=a_admin)["as_of"]
+    assert all(m["windowed"] is False for m in got.values() if isinstance(m, dict))

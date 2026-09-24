@@ -606,25 +606,21 @@ export interface DailyPoint {
   run: number;
   test: number;
   subscribe: number;
+  api: number;
 }
 
 export interface AdoptionData extends AnalyticsEnvelope {
   run_jobs: Metric;
-  test_jobs: Metric;
   scheduled_jobs: Metric;
+  api_runs: Metric;
   active_users: Metric;
-  active_authors: Metric;
-  download_events: Metric;
   download_per_success: Metric;
   self_service_ratio: Metric;
-  reuse_multiple: Metric;
-  automation_ratio: Metric;
+  /** 此刻口径。团队视角按**团队成员**收窄,与运行的任务归属口径不同 */
+  tokens_issued: Metric;
+  /** 固定回看 7 天,**不吃上方的时间范围**(windowed=false) */
+  tokens_active_7d: Metric;
   daily_series: DailyPoint[];
-  /** 仅平台视角。团队视角下这两个键**不存在**(不是 null)—— 前端据此整块不渲染 */
-  new_users?: Metric;
-  retention_rate?: Metric;
-  /** 仅团队视角:窗口内首次跑过本团队任务的人 */
-  new_task_users?: Metric;
 }
 
 export interface SourceRate {
@@ -637,41 +633,20 @@ export interface SourceRate {
 
 export interface HealthData extends AnalyticsEnvelope {
   by_source: Record<"run" | "test" | "subscribe", SourceRate>;
-  /** 顶部那几张卡。**服务端已经包成信封** —— has_data 是全期口径,前端拿 by_source /
-   *  queue 里的裸数字自己拼,会把「从来没跑过」渲染成一个绿色的 0 */
+  /** 顶部那几张卡。**服务端已经包成信封** —— has_data 是全期口径,前端拿 by_source
+   *  里的裸数字自己拼,会把「从来没跑过」渲染成一个绿色的 0 */
   run_success_rate: Metric;
   run_failed: Metric;
-  queue_p50_ms: Metric;
   queue_over_60s: Metric;
   queued_now: Metric;
   daily_series: { date: string; success: number; failed: number }[];
-  duration_by_engine: Record<
-    string,
-    {
-      samples: number;
-      p50_ms: number | null;
-      p90_ms: number | null;
-      p95_ms: number | null;
-      buckets: { label: string; count: number }[];
-    }
-  >;
-  queue: {
-    samples: number;
-    /** 有排队记录的样本占比。偏低时页面要说明「排队数据自 X 起可用」 */
-    coverage: number | null;
-    stats_since: string | null;
-    p50_ms: number | null;
-    p90_ms: number | null;
-    p95_ms: number | null;
-    over_60s: number;
-  };
+  duration_by_engine: Record<string, { samples: number; p90_ms: number | null }>;
   zero_row_jobs: Metric;
   failure_buckets: { code: string; label: string; count: number }[];
   /** other 桶的去重样例 —— 让失败归因规则表能继续演进 */
   unbucketed_samples: string[];
-  failure_truncated: boolean;
   /** 「此刻」的快照,不吃时间范围 */
-  in_flight: { queued: number; running: number; oldest_queued_at: string | null };
+  in_flight: { queued: number; running: number };
   by_datasource: {
     datasource_id: number;
     name: string;
@@ -683,7 +658,7 @@ export interface HealthData extends AnalyticsEnvelope {
   }[];
 }
 
-/** 任务排行/明细里「这是哪张任务」的三列。三个板块的排行表共用同一份 ——
+/** 任务排行/明细里「这是哪张任务」的三列。两个板块的排行表共用同一份 ——
  *  任务被硬删后名字取不到、编号仍在,所以后两列可空。 */
 export interface TaskRankRow {
   template_id: number;
@@ -710,17 +685,8 @@ export interface AssetsData extends AnalyticsEnvelope {
     idle_threshold_days: number;
     never_run: Metric;
     schedules_enabled: Metric;
-    subscribers: Metric;
-    at_risk_subscriptions: Metric;
-  };
-  window_changes: {
-    new_templates: Metric;
-    new_versions: Metric;
-    publishes?: Metric; // 仅平台视角(上线次数只能从审计里数)
   };
   top_templates: TopTemplate[];
-  top10_share: Metric;
-  tail_count: Metric;
   idle_list: {
     template_id: number;
     name: string;
@@ -735,7 +701,6 @@ export interface GovernanceData extends AnalyticsEnvelope {
   as_of: {
     grants_total: Metric;
     dormant_grants: Metric;
-    dormant_ratio: Metric;
     stale_edit_grants: Metric;
     credentials: {
       configured: number;
@@ -756,31 +721,8 @@ export interface GovernanceData extends AnalyticsEnvelope {
     granted_at: string | null;
   }[];
   wide_access_tasks: (TaskRankRow & { granted_users: number })[];
-  downloads: {
-    total: Metric;
-    top_users: { user_id: number; user_name: string | null; downloads: number; max_rows: number | null }[];
-    concentration: Metric;
-  };
   /** 仅平台视角。团队视角下这个键**不存在** */
-  platform?: {
-    role_distribution: Record<string, number>;
-    teams_total: number;
-    teams_without_admin: Metric;
-    audit_actions: { action: string; label: string; count: number }[];
-  };
-}
-
-export interface ApiUsageData extends AnalyticsEnvelope {
-  /** 此刻口径。团队视角按**团队成员**收窄,与运行/下载的任务归属口径不同 */
-  tokens_issued: Metric;
-  /** 固定回看 7 天,**不吃上方的时间范围**(windowed=false) */
-  tokens_active_7d: Metric;
-  api_runs: Metric;
-  /** 分母为 0 时是 null(「没得算」),不是 0 */
-  api_run_share: Metric;
-  api_downloads: Metric;
-  /** 排行,最多 10 条。**不是 Metric**,没有三态 —— 空列表就是空列表 */
-  top_tasks: (TaskRankRow & { run_count: number })[];
+  platform?: { teams_without_admin: Metric };
 }
 
 /** 各板块共用的查询参数。team_id 省略时:平台管理员看全平台,团队管理员看自己的团队。 */
@@ -813,5 +755,3 @@ export const analyticsAssets = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/assets", analyticsParams(q, signal)).then((r) => r.data as AssetsData);
 export const analyticsGovernance = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/governance", analyticsParams(q, signal)).then((r) => r.data as GovernanceData);
-export const analyticsApi = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
-  http.get("/analytics/api", analyticsParams(q, signal)).then((r) => r.data as ApiUsageData);

@@ -21,9 +21,7 @@ from sqlalchemy.orm import Session
 from app.core import timewindow
 from app.core.config import settings
 from app.core.exceptions import PermissionDeniedError
-from app.models.audit import (
-    ACTION_LOGIN, ACTION_META, ACTION_TASK_PUBLISH, VIA_API, AuditLog, DownloadEvent,
-)
+from app.models.audit import DownloadEvent
 from app.models.datasource import DataSource
 from app.models.permission import (
     ACTION_EDIT, ACTION_RUN, RESOURCE_TEMPLATE, SUBJECT_USER, Permission,
@@ -32,15 +30,12 @@ from app.models.query_job import (
     JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SOURCES, JOB_SUCCESS,
     SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST, QueryJob,
 )
-from app.models.subscription import TaskSchedule, TaskSubscription
+from app.models.subscription import TaskSchedule
 from app.models.team import Team, TeamMember
 from app.models.template import (
-    STATUS_ARCHIVED, STATUS_DRAFT, STATUS_PUBLISHED, SqlTemplate, TemplateVersion,
+    STATUS_ARCHIVED, STATUS_DRAFT, STATUS_PUBLISHED, SqlTemplate,
 )
-from app.models.user import (
-    ROLE_ADMIN, ROLE_DEVELOPER, ROLE_USER, SYSTEM_SCHEDULER_OPEN_ID, User,
-    is_platform_admin,
-)
+from app.models.user import ROLE_USER, SYSTEM_SCHEDULER_OPEN_ID, User, is_platform_admin
 from app.services import (
     analytics_metrics as am, credential_service, permission_service, team_service,
     template_service,
@@ -263,12 +258,16 @@ def envelope(scope: AnalyticsScope, window, body: dict) -> dict:
 def in_window(column, window) -> list:
     """时间窗谓词:**半开区间** [start, end)。
 
-    相邻两个窗口因此首尾相接、不重不漏,环比与留存才算得对(见 core/timewindow)。
+    相邻两个窗口因此首尾相接、不重不漏,环比才算得对(见 core/timewindow)。
     """
     return [column >= window.start, column < window.end]
 
 
 # ---------------------------------------------------------------- 板块① 采纳与活跃
+
+# 「活跃 token」的固定回看窗口。刻意**不吃页面上的时间范围**:它回答的是「这些长期凭证
+# 最近还活没活着」(安全卫生问题),而不是「这段时间 API 用得怎样」(那是 api_runs)
+API_TOKEN_ACTIVE_DAYS = 7
 
 
 def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
@@ -277,7 +276,9 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
     全篇最要紧的一条口径:**活跃取数人只算 source='run' 的自然人,不含试跑**。
     试跑是「做任务的人在验证自己的产品」,把它计入采纳率等于允许开发者自己刷高这块板的
     核心数字 —— 而这块板存在的意义恰恰是回答「业务方真的在自助用吗」。
-    开发侧活跃(active_authors)并列单列,谁都不吃亏。
+
+    开放 API 是采纳的另一条腿(界面之外还有没有人在取数),只是运行来源中的一种,
+    所以不单立板块:API 调用与 token 活跃度并在这里。
     """
 
     jc = execution_conditions(scope)
@@ -285,20 +286,19 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
     # 排除定时运行的挂名人。不排的话「活跃取数人」会凭空多一个、而且永远活跃
     not_system = [QueryJob.user_id.notin_(sys_ids)] if sys_ids else []
 
-    # ① 窗口内按 source 的全部计数,**一次查完**:次数、去重人数、去重任务数、成功数。
-    #    后三者各自单查一次也能算,但那是对同一批行的三次重复扫描
-    rows = db.execute(
-        select(
-            QueryJob.source,
-            func.count(QueryJob.id),
-            func.count(distinct(QueryJob.user_id)),
-            func.count(distinct(QueryJob.template_id)),
-            func.sum(case((QueryJob.status == JOB_SUCCESS, 1), else_=0)),
-        )
-        .where(*jc, *in_window(QueryJob.created_at, window))
-        .group_by(QueryJob.source)
-    ).all()
-    counts = {src: (n, u, t, int(ok or 0)) for src, n, u, t, ok in rows}
+    # ① 窗口内按 source 的次数与成功数,**一次查完**
+    counts = {
+        src: (n, int(ok or 0))
+        for src, n, ok in db.execute(
+            select(
+                QueryJob.source,
+                func.count(QueryJob.id),
+                func.sum(case((QueryJob.status == JOB_SUCCESS, 1), else_=0)),
+            )
+            .where(*jc, *in_window(QueryJob.created_at, window))
+            .group_by(QueryJob.source)
+        ).all()
+    }
 
     # ② 全期:同样按 source,用来回答 has_data 与「最近一次在什么时候」
     ever = {
@@ -310,31 +310,29 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
         ).all()
     }
 
-    def _job_metric(src: str, *, users: bool = False):
-        """某个 source 的窗口内次数(users=True 则是去重人数)。
+    def _job_metric(src: str):
+        """某个 source 的窗口内次数。
 
         has_data 一律看**全期**有没有过 —— 窗口内为 0 要能说清是「这段时间没人跑」
         还是「从来没人跑过」,这两句话指向完全不同的下一步。
         """
-        n = counts.get(src, (0, 0, 0, 0))[1 if users else 0]
         ever_n, ever_last = ever.get(src, (0, None))
-        return metric(n, windowed=True, has_data=bool(ever_n), last_event_at=ever_last)
+        return metric(counts.get(src, (0, 0))[0], windowed=True, has_data=bool(ever_n),
+                      last_event_at=ever_last)
 
-    # ③ 上一个等长窗口的活跃人集合 —— 留存与环比都用它
-    def _active_user_ids(w) -> set[int]:
-        return set(
-            db.scalars(
-                select(distinct(QueryJob.user_id)).where(
-                    *jc, *not_system,
-                    QueryJob.source == SOURCE_RUN,
-                    *in_window(QueryJob.created_at, w),
-                )
-            )
-        )
-
-    cur_users = _active_user_ids(window)
+    # ③ 本窗口与上一个等长窗口的活跃人数(环比用)。两个窗口首尾相接,一趟扫描按时间分两桶去重
     prev_window = timewindow.previous(window)
-    prev_users = _active_user_ids(prev_window)
+    in_cur = QueryJob.created_at >= window.start
+    cur_users, prev_users = db.execute(
+        select(
+            func.count(distinct(case((in_cur, QueryJob.user_id)))),
+            func.count(distinct(case((~in_cur, QueryJob.user_id)))),
+        ).where(
+            *jc, *not_system,
+            QueryJob.source == SOURCE_RUN,
+            QueryJob.created_at >= prev_window.start, QueryJob.created_at < window.end,
+        )
+    ).one()
 
     # ④ 业务方(role=user)发起的正式取数次数 —— 自助率的分子
     biz_runs = db.scalar(
@@ -347,20 +345,14 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
         )
     ) or 0
 
-    # 复用倍数的分母(窗口内被正式跑过的去重任务数)与下载转化的分母(成功运行数),
-    # 都从 ① 里取,不再单查
-    distinct_templates = counts.get(SOURCE_RUN, (0, 0, 0, 0))[2]
-    success_jobs = sum(c[3] for c in counts.values())
-
-    # ⑤ 下载:那张从前只写不读的表第一次被读。按 job 收窄到本范围
-    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
+    # ⑤ 下载转化的分子;分母(成功运行数)从 ① 里取。
+    #    按 job 收窄但**不排除补推**:补推记录上的下载是真下载
     dl_n = db.scalar(
         select(func.count(DownloadEvent.id))
-        .where(*dl_scope, *in_window(DownloadEvent.created_at, window))
+        .where(*by_job(DownloadEvent.job_id, job_conditions(scope)),
+               *in_window(DownloadEvent.created_at, window))
     ) or 0
-    dl_ever = db.scalar(
-        select(func.count(DownloadEvent.id)).where(*dl_scope)
-    ) or 0
+    success_jobs = sum(ok for _n, ok in counts.values())
 
     # ⑥ 日趋势:按天 × source。func.date() 的返回形状两个库不同,统一过 am.to_date
     series_rows = db.execute(
@@ -380,81 +372,53 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
         point = by_day.setdefault(key, {"date": key, **{s: 0 for s in JOB_SOURCES}})
         point[src] = point.get(src, 0) + n
 
-    run_n = counts.get(SOURCE_RUN, (0, 0, 0, 0))[0]
-    sub_n = counts.get(SOURCE_SUBSCRIBE, (0, 0, 0, 0))[0]
+    # ⑦ token:发放数(此刻快照)与近 7 天活跃数,同一批行上的两个聚合一次查完。
+    #    token 属于**人**而不是任务,团队视角按「该团队的成员」收窄。
+    #    三列同生同灭(见 api_token_service),以 hash 非空为「有 token」的唯一判据
+    token_conds = [User.api_token_hash.isnot(None)]
+    if not scope.is_platform:
+        token_conds.append(
+            User.id.in_(select(TeamMember.user_id).where(TeamMember.team_id == scope.team_id))
+        )
+    active_since = datetime.now() - timedelta(days=API_TOKEN_ACTIVE_DAYS)
+    issued, active_7d = db.execute(
+        select(
+            func.count(User.id),
+            func.sum(case((User.api_token_last_used_at >= active_since, 1), else_=0)),
+        ).where(*token_conds)
+    ).one()
 
-    body = {
+    run_n = counts.get(SOURCE_RUN, (0, 0))[0]
+
+    return envelope(scope, window, {
         "run_jobs": _job_metric(SOURCE_RUN),
-        "test_jobs": _job_metric(SOURCE_TEST),
         "scheduled_jobs": _job_metric(SOURCE_SUBSCRIBE),
+        "api_runs": _job_metric(SOURCE_API),
         "active_users": metric(
-            len(cur_users), windowed=True,
+            cur_users, windowed=True,
             has_data=bool(ever.get(SOURCE_RUN, (0, None))[0]),
-            prev_value=len(prev_users),
+            prev_value=prev_users,
         ),
-        "active_authors": _job_metric(SOURCE_TEST, users=True),
-        "download_events": metric(dl_n, windowed=True, has_data=bool(dl_ever)),
         # 跑了不下载 = 结果没用上。最容易被忽略的一个信号
         "download_per_success": metric(ratio(dl_n, success_jobs), windowed=True,
                                        has_data=bool(success_jobs)),
-        # ---- 复用与自动化(刻意不做「节省 X 人天」:那需要一个拍脑袋的工时假设,
-        #      而一旦写进看板就会变成 KPI,反过来污染数据)
+        # 刻意不做「节省 X 人天」:那需要一个拍脑袋的工时假设,
+        # 而一旦写进看板就会变成 KPI,反过来污染数据
         "self_service_ratio": metric(ratio(biz_runs, run_n), windowed=True,
                                      has_data=bool(run_n)),
-        "reuse_multiple": metric(
-            round(run_n / distinct_templates, 2) if distinct_templates else None,
-            windowed=True, has_data=bool(distinct_templates),
-        ),
-        "automation_ratio": metric(ratio(sub_n, run_n + sub_n), windowed=True,
-                                   has_data=bool(run_n + sub_n)),
+        "tokens_issued": metric(issued, windowed=False),
+        "tokens_active_7d": metric(int(active_7d or 0), windowed=False, has_data=bool(issued)),
         "daily_series": [by_day[k] for k in sorted(by_day)],
-    }
-
-    if scope.is_platform:
-        # 平台视角限定:跨团队人头。团队管理员看不到这些 —— 键直接不存在,而不是给个 0
-        first_logins = (
-            select(AuditLog.user_id, func.min(AuditLog.created_at).label("first_at"))
-            .where(AuditLog.action == ACTION_LOGIN)
-            .group_by(AuditLog.user_id)
-            .subquery()
-        )
-        new_users = db.scalar(
-            select(func.count()).select_from(first_logins).where(
-                *in_window(first_logins.c.first_at, window)
-            )
-        ) or 0
-        body["new_users"] = metric(new_users, windowed=True)
-        body["retention_rate"] = metric(
-            ratio(len(cur_users & prev_users), len(prev_users)),
-            windowed=True, has_data=bool(prev_users),
-        )
-    else:
-        # 团队视角的替代品:窗口内**首次**跑过本团队任务的人。对团队有意义,且不泄漏全平台人头
-        first_run = (
-            select(QueryJob.user_id, func.min(QueryJob.created_at).label("first_at"))
-            .where(*jc, *not_system, QueryJob.source == SOURCE_RUN)
-            .group_by(QueryJob.user_id)
-            .subquery()
-        )
-        body["new_task_users"] = metric(
-            db.scalar(
-                select(func.count()).select_from(first_run).where(
-                    *in_window(first_run.c.first_at, window)
-                )
-            ) or 0,
-            windowed=True,
-        )
-
-    return envelope(scope, window, body)
+    })
 
 
 # ---------------------------------------------------------------- 板块② 运行健康
 
-# 拉明细的两处上限。超了就截断并在响应里说明(truncated),而不是静默算一个偏的数。
+# 失败归因最多分多少条(取最近的)。窗口内失败上千已是事故级,再多拉只是更慢,分布不会变
 FAILURE_SAMPLE_CAP = 5_000
-# other 桶回传多少条样例。这是失败归因规则表能演进的唯一机制 —— 没有它,other 会永远是
-# 最大的桶,且没人知道该往里加什么规则。
-UNBUCKETED_SAMPLE_LIMIT = 20
+# other 桶回传多少条样例(界面只摆这么多)。这是失败归因规则表能演进的唯一机制 —— 没有它,
+# other 会永远是最大的桶,且没人知道该往里加什么规则。
+UNBUCKETED_SAMPLE_LIMIT = 3
 UNBUCKETED_SAMPLE_CHARS = 200
 
 
@@ -530,51 +494,31 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
     by_engine: dict[str, list[int]] = {}
     for did, ms in dur_rows:
         by_engine.setdefault(engines.get(did) or "unknown", []).append(ms)
+    # 只给 P90:一个数就能回答「慢不慢」,P50/P95 并排摆着没人会去对比
     duration = {
-        engine: {
-            "samples": len(vals),
-            **{f"p{p}_ms": v for p, v in am.percentiles(vals).items()},
-            "buckets": [
-                {"label": lbl, "count": n} for lbl, n in am.bucketize(vals)
-            ],
-        }
+        engine: {"samples": len(vals), "p90_ms": am.percentiles(vals, ps=(90,))[90]}
         for engine, vals in by_engine.items()
     }
 
-    # ⑤ 排队:started_at - created_at。**排除试跑** —— 它同步执行不入队,
-    #    一堆 0 会把分位数拉平(见 QueryJob.started_at 的注释)
-    #    只拉**盖过章**的行:历史行 started_at 为空,拉回来也只会被下面丢掉,
-    #    白占 PERCENTILE_SAMPLE_CAP 的名额(早期历史占多数时会把真样本挤掉)
-    queue_rows = db.execute(
-        select(QueryJob.created_at, QueryJob.started_at)
-        .where(
-            *jc, *win, QueryJob.source != SOURCE_TEST,
-            QueryJob.status.in_(TERMINAL), QueryJob.started_at.isnot(None),
-        )
-        .limit(am.PERCENTILE_SAMPLE_CAP)
-    ).all()
+    # ⑤ 排队:started_at - created_at,只数「等过一分钟以上」的次数 —— 直指并发不足,
+    #    比分位数更好向人解释。**排除试跑**(它同步执行不入队)。
+    #    只拉**盖过章**的行:历史行 started_at 为空,不拿 0 充数 —— 那会把全部历史
+    #    算成「零排队」,而且看起来很健康。差值在 Python 里算:时间相减 MySQL 与 SQLite 写法不同
+    queue_stamped_ever = db.scalar(
+        select(QueryJob.id).where(*jc, QueryJob.started_at.isnot(None)).limit(1)
+    ) is not None
     waits = [
-        int((s - c).total_seconds() * 1000)
-        for c, s in queue_rows
-        if c is not None and s >= c
+        (started - created).total_seconds()
+        for created, started in db.execute(
+            select(QueryJob.created_at, QueryJob.started_at)
+            .where(
+                *jc, *win, QueryJob.source != SOURCE_TEST,
+                QueryJob.status.in_(TERMINAL), QueryJob.started_at.isnot(None),
+            )
+            .limit(am.PERCENTILE_SAMPLE_CAP)
+        ).all()
+        if created is not None and started >= created
     ]
-    # 有排队记录的样本占比。历史行没有 started_at,**不拿 0 充数** ——
-    # 那会把全部历史算成「零排队」,指标一上线就在说谎,而且看起来很健康
-    queue_stats_since = db.scalar(
-        select(func.min(QueryJob.created_at)).where(*jc, QueryJob.started_at.isnot(None))
-    )
-    # 分母是窗口内会排队的终态行(试跑同步执行、不入队,不进分母),它已经在 ① 里数过了
-    queue_eligible = sum(
-        v["total"] for k, v in by_source.items() if k != SOURCE_TEST
-    )
-    queue = {
-        "samples": len(waits),
-        "coverage": ratio(len(waits), queue_eligible),
-        "stats_since": queue_stats_since,
-        **{f"p{p}_ms": v for p, v in am.percentiles(waits).items()},
-        # 等过一分钟以上的次数 —— 直指并发不足,比分位数更好向人解释
-        "over_60s": sum(1 for w in waits if w >= 60_000),
-    }
 
     # ⑥ 失败归因:拉 error 文本在内存里分桶(规则要频繁迭代,且 LIKE 的大小写敏感性
     #    在 MySQL 与 SQLite 上不同 —— 放 SQL 里两边会算出不同的分类)。
@@ -584,10 +528,8 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
         select(QueryJob.error)
         .where(*jc, *win, QueryJob.status == JOB_FAILED)
         .order_by(QueryJob.id.desc())
-        .limit(FAILURE_SAMPLE_CAP + 1)
+        .limit(FAILURE_SAMPLE_CAP)
     ).all()
-    truncated = len(err_rows) > FAILURE_SAMPLE_CAP
-    err_rows = err_rows[:FAILURE_SAMPLE_CAP]
 
     bucket_counts: dict[str, int] = {}
     unbucketed: list[str] = []
@@ -630,48 +572,39 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
         row["fail_rate"] = ratio(row["failed"], row["total"])
     by_datasource = sorted(ds_acc.values(), key=lambda r: -r["total"])
 
-    # ⑧ 此刻的队列 —— **不吃时间窗**。切时间范围它不该变。
-    #    「排队中有几个」与「最早那个等了多久」是同一批行上的两个聚合,一次 GROUP BY 拿齐
-    in_flight: dict[str, int] = {}
-    oldest_queued = None
-    for st, n, oldest in db.execute(
-        select(QueryJob.status, func.count(QueryJob.id), func.min(QueryJob.created_at))
+    # ⑧ 此刻的队列 —— **不吃时间窗**。切时间范围它不该变
+    in_flight = dict(db.execute(
+        select(QueryJob.status, func.count(QueryJob.id))
         .where(*jc, QueryJob.status.in_((JOB_QUEUED, JOB_RUNNING)))
         .group_by(QueryJob.status)
-    ).all():
-        in_flight[st] = n
-        if st == JOB_QUEUED:
-            oldest_queued = oldest
+    ).all())
 
     # 刻意**不返回**一个合并的总成功率:它把「试跑失败」和「定时失败」加在一起,
     # 正是本板块开头那条口径要避免的读法
     run = by_source[SOURCE_RUN]
     return envelope(scope, window, {
         "by_source": by_source,
-        # 顶部那几张卡各自是一个完整的指标信封。**不要让前端拿 by_source / queue 里的裸数字
+        # 顶部那几张卡各自是一个完整的指标信封。**不要让前端拿 by_source 里的裸数字
         # 自己拼 {value, has_data, windowed}** —— has_data 的口径是「**全期**有没有过」,
         # 前端手拼时只看得见本区间,于是「从来没跑过」会被渲染成一个绿色的 0
         "run_success_rate": metric(
             run["success_rate"], windowed=True, has_data=bool(ever_terminal)),
         "run_failed": metric(run["failed"], windowed=True, has_data=bool(ever_terminal)),
-        "queue_p50_ms": metric(
-            queue["p50_ms"], windowed=True, has_data=bool(queue["stats_since"])),
         "queue_over_60s": metric(
-            queue["over_60s"] if waits else None,
-            windowed=True, has_data=bool(queue["stats_since"]),
+            sum(1 for w in waits if w >= 60) if waits else None,
+            # 「有没有过排队记录」看全期盖过章的行,不看终态数 —— 只有历史行的平台
+            # 该显示「还没有数据」,而不是一个有数据却为空的卡
+            windowed=True, has_data=queue_stamped_ever,
         ),
         "queued_now": metric(in_flight.get(JOB_QUEUED, 0), windowed=False, has_data=True),
         "daily_series": [daily[k] for k in sorted(daily)],
         "duration_by_engine": duration,
-        "queue": queue,
         "zero_row_jobs": metric(zero_rows, windowed=True, has_data=bool(ever_terminal)),
         "failure_buckets": failure_buckets,
         "unbucketed_samples": unbucketed,
-        "failure_truncated": truncated,
         "in_flight": {
             "queued": in_flight.get(JOB_QUEUED, 0),
             "running": in_flight.get(JOB_RUNNING, 0),
-            "oldest_queued_at": oldest_queued,
         },
         "by_datasource": by_datasource,
     })
@@ -689,28 +622,19 @@ PRESET_DAYS = [7, 30, 90]
 METRIC_NOTES: list[dict] = [
     {"key": "run_jobs", "label": "正式取数", "windowed": True,
      "note": "业务方填参跑的次数。不含作者试跑,也不含定时运行。"},
-    {"key": "test_jobs", "label": "作者试跑", "windowed": True,
-     "note": "开发者在编辑器里测的次数。失败率天然偏高，写 SQL 本就是试错。"},
     {"key": "scheduled_jobs", "label": "定时运行", "windowed": True,
      "note": "平台按订阅计划自动跑的次数，挂在系统账号名下。"},
     {"key": "active_users", "label": "活跃取数人", "windowed": True,
      "note": "发起过正式取数的不同的人。**不含试跑** —— 否则开发者调试很勤会被读成业务很活跃。"},
-    {"key": "active_authors", "label": "开发侧活跃", "windowed": True,
-     "note": "试跑过任务的不同的人，反映建任务这一侧的活跃度。"},
     {"key": "download_per_success", "label": "下载转化", "windowed": True,
      "note": "下载次数 ÷ 成功运行次数。偏低说明跑出来的结果没被真正用上。"},
     {"key": "self_service_ratio", "label": "业务自助率", "windowed": True,
      "note": "普通用户发起的正式取数占比。上升即意味着取数真的从数据同学手里转移出去了。"},
-    {"key": "reuse_multiple", "label": "复用倍数", "windowed": True,
-     "note": "正式取数次数 ÷ 被跑过的去重任务数。一次开发被复用了几次。"},
-    {"key": "automation_ratio", "label": "免人工率", "windowed": True,
-     "note": "定时运行 ÷（正式取数 + 定时运行）。定时推送全程不需要人在场。"},
     {"key": "success_rate", "label": "成功率", "windowed": True,
      "note": "成功 ÷（成功 + 失败）。排队中与运行中不进分母 —— 它们还没有结论。"},
-    {"key": "duration", "label": "执行耗时", "windowed": True,
-     "note": "只算真正执行的那一段，**不含排队**。按引擎分开看：Hive 与 MySQL 的超时上限差一个量级。"},
-    {"key": "queue", "label": "排队等待", "windowed": True,
-     "note": "入队到开始执行之间的时长。试跑不入队，不计入。早于该功能上线的历史运行没有记录。"},
+    {"key": "queue", "label": "等待超过 1 分钟", "windowed": True,
+     "note": "入队后等了一分钟以上才开始执行的次数，偏多说明并发不够。试跑不入队，不计入；"
+             "早于该功能上线的历史运行没有记录，也不当成零等待。"},
     {"key": "zero_row_jobs", "label": "成功但 0 行", "windowed": True,
      "note": "跑通了却没有数据，多半是参数填错或那天确实没数。"},
     {"key": "in_flight", "label": "此刻队列", "windowed": False,
@@ -721,8 +645,6 @@ METRIC_NOTES: list[dict] = [
      "note": "已上线、但一次都没跑过——「做了没人用」最硬的信号。"},
     {"key": "schedules_enabled", "label": "定时计划", "windowed": False,
      "note": "计划开着且任务已上线。下线即暂停，所以下线的不计入。"},
-    {"key": "at_risk_subscriptions", "label": "濒临清退的订阅", "windowed": False,
-     "note": "连续多期没看结果的订阅。到阈值平台会自动清退并通知本人。"},
     {"key": "dormant_grants", "label": "授权后从没跑过", "windowed": False,
      "note": "授了权却一次都没用过的（人 × 任务）。这是**全期**口径，不随上方时间范围变化"
              "——授权是存量事实，套时间窗会把三个月前用过的人误报成僵尸。"},
@@ -730,22 +652,14 @@ METRIC_NOTES: list[dict] = [
      "note": "授过编辑权、人却已不在该任务所属团队里。权限实际已经失效，但这行还留着，该撤掉。"},
     {"key": "credential_not_ready", "label": "缺账号的已上线任务", "windowed": False,
      "note": "这些任务现在就跑不动——业务同学点运行会直接失败。"},
-    {"key": "download_concentration", "label": "下载集中度", "windowed": True,
-     "note": "下载最多的那个人占了多少。偏高通常意味着一个人在替全组取数——不是问题，但值得知道。"},
     {"key": "teams_without_admin", "label": "没有团队管理员", "windowed": False,
      "note": "没人能给它配取数账号、加成员、授编辑权——治理黑洞。"},
-    {"key": "tokens_issued", "label": "已发放 Token", "windowed": False,
-     "note": "此刻持有开放 API 凭证的人数，每人至多一枚，吊销后立即不计入。"
-             "团队视角按**团队成员**收窄，不是按任务归属——token 属于人，不属于任务。"},
-    {"key": "tokens_active_7d", "label": "近 7 天用过", "windowed": False,
-     "note": "最近 7 天调用过开放 API 的 Token 数。**固定看 7 天**，不随上方时间范围变化"
-             "——它问的是「这些长期凭证还活着吗」，不是「这段时间 API 用得多不多」。"},
+    {"key": "tokens_active_7d", "label": "近 7 天用过的 Token", "windowed": False,
+     "note": "最近 7 天调用过开放 API 的 Token 数 / 此刻已发放的 Token 数（每人至多一枚，吊销即不计入）。"
+             "**固定看 7 天**，不随上方时间范围变化——它问的是「这些长期凭证还活着吗」。"
+             "团队视角按**团队成员**收窄——token 属于人，不属于任务。"},
     {"key": "api_runs", "label": "API 调用", "windowed": True,
      "note": "来源是开放 API 的运行次数。同一张任务在界面上被跑的次数不计入。"},
-    {"key": "api_run_share", "label": "API 占比", "windowed": True,
-     "note": "API 调用 ÷ 本区间**全部**运行（含试跑与定时）。一次运行都没有时是「没得算」，不是 0%。"},
-    {"key": "api_downloads", "label": "API 下载", "windowed": True,
-     "note": "经开放 API 直出 CSV 的次数。界面里点导出记的是另一条通道，不计入。"},
 ]
 
 
@@ -822,8 +736,8 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
             })
     idle_rows.sort(key=lambda r: -r["idle_days"])
 
-    # ③ 窗口内的运行排行:次数 / 去重使用人数 / 成功率,一次 GROUP BY 拿齐
-    run_stats = db.execute(
+    # ③ 窗口内的运行排行:次数 / 去重使用人数 / 成功率,一次 GROUP BY 拿齐、在库里截到前 N
+    ranked = db.execute(
         select(
             QueryJob.template_id,
             func.count(QueryJob.id),
@@ -833,9 +747,9 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
         )
         .where(*jc, *win, QueryJob.source == SOURCE_RUN)
         .group_by(QueryJob.template_id)
+        .order_by(func.count(QueryJob.id).desc())
+        .limit(TOP_N)
     ).all()
-    total_runs = sum(r[1] for r in run_stats)
-    ranked = sorted(run_stats, key=lambda r: -r[1])[:TOP_N]
     # 名字批量补:先 GROUP BY 拿 id,再一次 IN 查询 —— 绝不在循环里 db.get
     name_map = {
         t.id: t
@@ -857,45 +771,7 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
             "success_rate": ratio(int(ok or 0), int(ok or 0) + int(bad or 0)),
         })
 
-    # 窗口内跑过 ≤1 次的已上线任务 = 长尾
-    ran_counts = {r[0]: r[1] for r in run_stats}
-    tail = sum(1 for tid in published_ids if ran_counts.get(tid, 0) <= 1)
-
-    # ④ 窗口内的变动
-    new_templates = db.scalar(
-        select(func.count(SqlTemplate.id)).where(
-            *tc, *in_window(SqlTemplate.created_at, window)
-        )
-    ) or 0
-    ver_scope = by_template(TemplateVersion.template_id, tc)
-    new_versions = db.scalar(
-        select(func.count(TemplateVersion.id)).where(
-            *ver_scope, *in_window(TemplateVersion.created_at, window)
-        )
-    ) or 0
-    # 上线**次数**只能从审计里数:published_version_id 只反映当前态,答不了「这个窗口上线了几次」。
-    # 团队视角不读审计(见 governance 的说明),所以这一项仅平台视角提供
-    publishes = None
-    if scope.is_platform:
-        publishes = db.scalar(
-            select(func.count(AuditLog.id)).where(
-                AuditLog.action == ACTION_TASK_PUBLISH,
-                *in_window(AuditLog.created_at, window),
-            )
-        ) or 0
-
-    # ⑤ 订阅健康
-    sub_scope = by_template(TaskSubscription.template_id, tc)
-    subscribers = db.scalar(
-        select(func.count(TaskSubscription.id)).where(*sub_scope)
-    ) or 0
-    at_risk = db.scalar(
-        select(func.count(TaskSubscription.id)).where(
-            *sub_scope,
-            TaskSubscription.miss_streak >= max(1, settings.SUBSCRIPTION_MISS_LIMIT // 2),
-        )
-    ) or 0
-    # 计划开着**且任务已上线**才算真的在跑 —— 下线即暂停(TaskSchedule 刻意没有 paused 列),
+    # ④ 计划开着**且任务已上线**才算真的在跑 —— 下线即暂停(TaskSchedule 刻意没有 paused 列),
     # 只看 enabled 会虚报
     schedules_on = db.scalar(
         select(func.count(TaskSchedule.id))
@@ -904,7 +780,7 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
         .where(*tc, TaskSchedule.enabled.is_(True), SqlTemplate.status == STATUS_PUBLISHED)
     ) or 0
 
-    body = {
+    return envelope(scope, window, {
         "as_of": {
             "total": metric(sum(by_status.values()), windowed=False),
             "published": metric(by_status.get(STATUS_PUBLISHED, 0), windowed=False),
@@ -917,32 +793,17 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
             "idle_threshold_days": settings.TASK_IDLE_DAYS,
             "never_run": metric(never_run, windowed=False, has_data=bool(published_ids)),
             "schedules_enabled": metric(schedules_on, windowed=False),
-            "subscribers": metric(subscribers, windowed=False),
-            "at_risk_subscriptions": metric(at_risk, windowed=False,
-                                            has_data=bool(subscribers)),
-        },
-        "window_changes": {
-            "new_templates": metric(new_templates, windowed=True),
-            "new_versions": metric(new_versions, windowed=True),
         },
         "top_templates": top_templates,
-        "top10_share": metric(
-            ratio(sum(r["run_count"] for r in top_templates), total_runs),
-            windowed=True, has_data=bool(total_runs),
-        ),
-        "tail_count": metric(tail, windowed=True, has_data=bool(published_ids)),
         "idle_list": idle_rows[:TOP_N],
-    }
-    if publishes is not None:
-        body["window_changes"]["publishes"] = metric(publishes, windowed=True)
-    return envelope(scope, window, body)
+    })
 
 
 # ---------------------------------------------------------------- 板块④ 权限与配置治理
 
 
 def governance(db: Session, scope: AnalyticsScope, window) -> dict:
-    """「有没有治理漏洞」—— 权限膨胀、配置缺口、以及谁在大量下载。
+    """「有没有治理漏洞」—— 权限膨胀与配置缺口。
 
     **团队视角不提供任何 audit_logs 派生指标。** 审计接口本身是 admin-only,运营板不该开一条
     绕过它的侧门;而且 audit_logs.resource_id 是 VARCHAR、难安全收窄,detail 里还可能带别队
@@ -1082,173 +943,34 @@ def governance(db: Session, scope: AnalyticsScope, window) -> dict:
             ratio(configured, required), windowed=False, has_data=bool(required)),
     }
 
-    # ⑥ 下载:集中度不是指控,是发现「一个人在给全组取数」这种反模式
-    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
-    dl_rows = db.execute(
-        select(DownloadEvent.user_id, func.count(DownloadEvent.id),
-               func.max(DownloadEvent.row_count))
-        .where(*dl_scope, *in_window(DownloadEvent.created_at, window))
-        .group_by(DownloadEvent.user_id)
-    ).all()
-    dl_total = sum(r[1] for r in dl_rows)
-    dl_top = sorted(dl_rows, key=lambda r: -r[1])[:TOP_N]
-    dl_names = {
-        u.id: u.name for u in db.scalars(select(User).where(User.id.in_([r[0] for r in dl_top])))
-    } if dl_top else {}
-
     body = {
         "as_of": {
             "grants_total": metric(len(run_pairs), windowed=False),
             "dormant_grants": metric(len(dormant), windowed=False,
                                      has_data=bool(run_pairs)),
-            "dormant_ratio": metric(ratio(len(dormant), len(run_pairs)), windowed=False,
-                                    has_data=bool(run_pairs)),
             "stale_edit_grants": metric(stale_edit, windowed=False),
             "credentials": credential_block,
         },
         "dormant_detail": dormant_detail,
         "wide_access_tasks": wide_access,
-        "downloads": {
-            "total": metric(dl_total, windowed=True),
-            "top_users": [
-                {"user_id": uid, "user_name": dl_names.get(uid), "downloads": n,
-                 "max_rows": mx}
-                for uid, n, mx in dl_top
-            ],
-            "concentration": metric(
-                ratio(dl_top[0][1], dl_total) if dl_top else None,
-                windowed=True, has_data=bool(dl_total),
-            ),
-        },
     }
 
     if scope.is_platform:
         # ---- 平台视角限定。团队管理员这里**一个键都没有**,前端整块不渲染
-        role_rows = dict(db.execute(
-            select(User.role, func.count(User.id))
-            .where(User.last_login_at.isnot(None), User.is_active.is_(True))
-            .group_by(User.role)
-        ).all())
-        teams = list(db.scalars(select(Team)))
-        admin_team_ids = set(db.scalars(
-            select(TeamMember.team_id).where(TeamMember.is_team_admin.is_(True))
-        ))
+        # 没有团队管理员的团队 = 治理黑洞:没人能配账号、加成员、授编辑权。
+        # 两个计数同一趟拿齐:has_data 看的是「有没有团队」,不是「有没有黑洞」
+        teams_total, without_admin = db.execute(
+            select(
+                func.count(Team.id),
+                func.sum(case((Team.id.notin_(
+                    select(TeamMember.team_id).where(TeamMember.is_team_admin.is_(True))
+                ), 1), else_=0)),
+            )
+        ).one()
         body["platform"] = {
-            "role_distribution": {
-                ROLE_ADMIN: role_rows.get(ROLE_ADMIN, 0),
-                ROLE_DEVELOPER: role_rows.get(ROLE_DEVELOPER, 0),
-                ROLE_USER: role_rows.get(ROLE_USER, 0),
-            },
-            "teams_total": len(teams),
-            # 没有团队管理员的团队 = 治理黑洞:没人能配账号、加成员、授编辑权
             "teams_without_admin": metric(
-                sum(1 for t in teams if t.id not in admin_team_ids), windowed=False,
-                has_data=bool(teams),
+                int(without_admin or 0), windowed=False, has_data=bool(teams_total),
             ),
-            "audit_actions": [
-                {"action": act, "label": ACTION_META.get(act, (act, ""))[0], "count": n}
-                for act, n in db.execute(
-                    select(AuditLog.action, func.count(AuditLog.id))
-                    .where(*in_window(AuditLog.created_at, window))
-                    .group_by(AuditLog.action)
-                    .order_by(func.count(AuditLog.id).desc())
-                ).all()
-            ],
         }
 
     return envelope(scope, window, body)
-
-
-# ---------------------------------------------------------------- 板块⑤ 开放 API
-
-# 「活跃 token」的固定回看窗口。刻意**不吃页面上的时间范围**:它回答的是「这些长期凭证
-# 最近还活没活着」(安全卫生问题),而不是「这段时间 API 用得怎样」(那是 api_runs)
-API_TOKEN_ACTIVE_DAYS = 7
-
-
-def api_usage(db: Session, scope: AnalyticsScope, window) -> dict:
-    """「开放 API 有没有被用起来」—— token 发放与活跃、API 来源的运行与下载、Top 任务。
-
-    token 属于**人**而不是任务,团队视角按「该团队的成员」收窄(成员身份天然可收窄,
-    同 scope_template_ids 的取舍);运行与下载照旧走 job_conditions / by_job,
-    不另立收窄口径。
-    """
-    jc = execution_conditions(scope)
-    win = in_window(QueryJob.created_at, window)
-
-    # ① token:发放数(此刻快照)与近 7 天活跃数。三列同生同灭(见 api_token_service),
-    #    以 hash 非空为「有 token」的唯一判据
-    token_conds = [User.api_token_hash.isnot(None)]
-    if not scope.is_platform:
-        token_conds.append(
-            User.id.in_(select(TeamMember.user_id).where(TeamMember.team_id == scope.team_id))
-        )
-    active_since = datetime.now() - timedelta(days=API_TOKEN_ACTIVE_DAYS)
-    # 发放数与近 7 天活跃数是同一批行上的两个聚合,一次查完 ——
-    # 各查一次是对同一批行的重复扫描(本模块 ①② 板块的既有约定)
-    issued, active_7d = db.execute(
-        select(
-            func.count(User.id),
-            func.sum(case((User.api_token_last_used_at >= active_since, 1), else_=0)),
-        ).where(*token_conds)
-    ).one()
-    active_7d = int(active_7d or 0)
-
-    # ② API 来源的运行:窗口内次数与占比(分母 = 窗口内全部运行)。has_data 看全期,
-    #    与其它窗口指标同一约定(「这段时间没人用」与「从来没人用过」指向不同的下一步)
-    # 窗口内 API 运行数与其分母(全部运行)谓词完全一致(*jc, *win),
-    # 是同一批行上的两个聚合,一次查完;各查一次是对同一批行的重复扫描
-    total_runs, api_runs = db.execute(
-        select(
-            func.count(QueryJob.id),
-            func.sum(case((QueryJob.source == SOURCE_API, 1), else_=0)),
-        ).where(*jc, *win)
-    ).one()
-    api_runs = int(api_runs or 0)
-    api_runs_ever = db.scalar(
-        select(func.count(QueryJob.id)).where(*jc, QueryJob.source == SOURCE_API)
-    ) or 0
-
-    # ③ API 下载(DownloadEvent.via;web 下载不进这个数)
-    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
-    api_downloads = db.scalar(
-        select(func.count(DownloadEvent.id)).where(
-            *dl_scope, *in_window(DownloadEvent.created_at, window),
-            DownloadEvent.via == VIA_API,
-        )
-    ) or 0
-
-    # ④ API 调用 Top 任务:先 GROUP BY 拿 id,再一次 IN 补名字 —— 不在循环里 db.get
-    top_rows = db.execute(
-        select(QueryJob.template_id, func.count(QueryJob.id))
-        .where(*jc, *win, QueryJob.source == SOURCE_API)
-        .group_by(QueryJob.template_id)
-        .order_by(func.count(QueryJob.id).desc())
-        .limit(TOP_N)
-    ).all()
-    name_map = {
-        t.id: t
-        for t in db.scalars(
-            select(SqlTemplate).where(SqlTemplate.id.in_([tid for tid, _ in top_rows]))
-        )
-    } if top_rows else {}
-    top_tasks = []
-    for tid, n in top_rows:
-        t = name_map.get(tid)
-        top_tasks.append({
-            "template_id": tid,
-            "name": t.name if t else None,
-            "team_name": t.team_name if t else None,
-            "run_count": n,
-        })
-
-    return envelope(scope, window, {
-        "tokens_issued": metric(issued, windowed=False),
-        "tokens_active_7d": metric(active_7d, windowed=False, has_data=bool(issued)),
-        "api_runs": metric(api_runs, windowed=True, has_data=bool(api_runs_ever)),
-        # 分母为 0 时是 None(「没得算」),不是 0 —— 同 ratio 的既有口径
-        "api_run_share": metric(ratio(api_runs, total_runs), windowed=True,
-                                has_data=bool(total_runs)),
-        "api_downloads": metric(api_downloads, windowed=True, has_data=bool(api_runs_ever)),
-        "top_tasks": top_tasks,
-    })

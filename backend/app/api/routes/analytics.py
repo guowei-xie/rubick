@@ -60,7 +60,10 @@ def analytics_adoption(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """板块①:平台有没有人用、用得深不深。"""
+    """板块①:平台有没有人用、用得深不深,含开放 API 的调用与 token 活跃度。
+
+    注意 `tokens_*` 两项是**此刻**的快照(且活跃窗口固定 7 天),不吃时间范围。
+    """
     scope, window = _scoped(db, user, team_id, start, end, days)
     return analytics_service.adoption(db, scope, window)
 
@@ -90,9 +93,8 @@ def analytics_assets(
 ):
     """板块③:任务资产在被复用还是在腐烂。
 
-    注意响应里 `as_of` 与 `window_changes` 是两组不同性质的数:前者是**此刻**的快照
-    (任务总数、闲置数),切时间范围纹丝不动;后者才吃时间窗。不在数据上分开,
-    用户第一次切范围就会当成 bug。
+    注意响应里 `as_of` 是**此刻**的快照(任务总数、闲置数),切时间范围纹丝不动;
+    只有排行吃时间窗。不在数据上分开,用户第一次切范围就会当成 bug。
     """
     scope, window = _scoped(db, user, team_id, start, end, days)
     return analytics_service.assets(db, scope, window)
@@ -107,28 +109,11 @@ def analytics_governance(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """板块④:权限膨胀、配置缺口、下载集中度。
+    """板块④:权限膨胀与配置缺口。
 
     「授权了但从没跑过」是**全期**口径,不吃时间窗 —— 授权是存量事实,套时间窗会把
-    三个月前用过的人误报成僵尸。响应里的 `dormant_is_all_time` 就是给前端标这句话用的。
+    三个月前用过的人误报成僵尸。
     """
     scope, window = _scoped(db, user, team_id, start, end, days)
     return analytics_service.governance(db, scope, window)
 
-
-@router.get("/api")
-def analytics_api(
-    team_id: int | None = None,
-    start: datetime | None = None,
-    end: datetime | None = None,
-    days: int | None = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    """板块⑤:开放 API 用得怎么样 —— token 发放与活跃、API 来源的运行与下载、Top 任务。
-
-    同为只读聚合,不记审计(理由见模块 docstring)。
-    注意 `tokens_*` 两项是**此刻**的快照(且活跃窗口固定 7 天),不吃时间范围。
-    """
-    scope, window = _scoped(db, user, team_id, start, end, days)
-    return analytics_service.api_usage(db, scope, window)
