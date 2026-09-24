@@ -165,6 +165,7 @@ export default function TaskEditor({
           sql_text: v?.sql_text,
           params,
           allow_api: !!d.allow_api,
+          allow_result_reuse: d.allow_result_reuse !== false,
           ...subFormFields(d.subscription),
         });
         setOriginalTeamId(d.team_id ?? null);
@@ -182,6 +183,8 @@ export default function TaskEditor({
         // 与后端 TemplateCreateIn.allow_api 同默认(开):开关只是运行闸、不放权,
         // 不想被 API 触发的任务由作者在这里显式关掉
         allow_api: true,
+        // 与后端同默认(开):同任务同版本同参数的结果与谁跑无关,复用不放权
+        allow_result_reuse: true,
         ...subFormFields(),
       });
       setActiveKeys([]);
@@ -278,6 +281,7 @@ export default function TaskEditor({
     return {
       ...rest,
       allow_api: !!v.allow_api,
+      allow_result_reuse: !!v.allow_result_reuse,
       subscription,
       enum_samples,
       // 落库参数:kind 由 SQL 判定;list 才带 enum_sql / allow_bulk_input;测试值兼作业务示例
@@ -772,6 +776,22 @@ export default function TaskEditor({
           <span>
             允许 API 调用 —— 开启后,持有 API Token 的用户可通过开放 API 触发本任务运行
           </span>
+        </Space>
+
+        <Divider orientation="left">结果复用</Divider>
+        <Space direction="vertical" size={4}>
+          <Space align="center" size={10}>
+            <Form.Item name="allow_result_reuse" valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+            <span>
+              结果可复用 —— 当天有人以相同参数跑过,再运行时直接复用那份结果,不重复执行
+            </span>
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            MySQL 任务只复用最近一段时间内(默认 30 分钟)的结果;依赖实时数据、或 SQL 里用了当前时间(如 now())的任务请关掉。
+            用户随时可以点「仍要重新运行」拿最新数据
+          </Typography.Text>
         </Space>
       </Form>
 

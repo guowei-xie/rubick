@@ -138,14 +138,26 @@ def job_conditions(scope: AnalyticsScope) -> list:
 
 
 def execution_conditions(scope: AnalyticsScope) -> list:
-    """「一次执行」的条件 = 作用域收窄 + **排除补推记录**。运行次数 / 成功率 / 耗时这类
-    按执行统计的板块都用它,而不是直接用 job_conditions。
+    """「一次取数」的条件 = 作用域收窄 + **排除补推记录**。按次数统计「有没有人在用」的板块
+    (采纳、闲置、僵尸授权)都用它;成功率 / 耗时 / 队列这类要**真正执行过**的,
+    用 executed_conditions(再排除结果复用记录)。
 
     补推(pushed_from_job_id 非空)是把一次已有的运行结果再交付给订阅者,不是一次执行 ——
     算进来的话每补推一次就多一条「定时运行成功」,失败的那一期会被报成 50% 成功率。
     下载事件照旧挂 job_conditions:补推记录上的下载是真下载。
     """
     return [*job_conditions(scope), QueryJob.pushed_from_job_id.is_(None)]
+
+
+def executed_conditions(scope: AnalyticsScope) -> list:
+    """**真正执行过**的运行 = execution_conditions + 排除结果复用记录。只给运行健康板用。
+
+    复用记录(reused_from_job_id 非空,见 query_service.submit_run)是一次真实的取数需求 ——
+    有人要了这份数、拿到了 —— 所以采纳、闲置、僵尸授权这些「有没有人在用」的板块照常计入
+    (execution_conditions);但它没有执行,算进成功率会把成功率虚高,算进耗时会是一串空值,
+    算进「此刻队列」则根本不可能。
+    """
+    return [*execution_conditions(scope), QueryJob.reused_from_job_id.is_(None)]
 
 
 def by_template(column, tc: list) -> list:
@@ -429,7 +441,7 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
     定时失败才是事故。合并成一个数会让平台看起来一团糟,然后所有人学会忽略这个数字。
     """
 
-    jc = execution_conditions(scope)
+    jc = executed_conditions(scope)
     win = in_window(QueryJob.created_at, window)
     TERMINAL = (JOB_SUCCESS, JOB_FAILED)
 
@@ -579,6 +591,13 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
         .group_by(QueryJob.status)
     ).all())
 
+    # ⑨ 结果复用命中:窗口内有多少次提交直接复用了现成结果、没有执行 —— 即省下的执行次数
+    reuse_hits = db.scalar(
+        select(func.count(QueryJob.id)).where(
+            *execution_conditions(scope), *win, QueryJob.reused_from_job_id.isnot(None)
+        )
+    ) or 0
+
     # 刻意**不返回**一个合并的总成功率:它把「试跑失败」和「定时失败」加在一起,
     # 正是本板块开头那条口径要避免的读法
     run = by_source[SOURCE_RUN]
@@ -597,6 +616,7 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
             windowed=True, has_data=queue_stamped_ever,
         ),
         "queued_now": metric(in_flight.get(JOB_QUEUED, 0), windowed=False, has_data=True),
+        "reuse_hits": metric(reuse_hits, windowed=True, has_data=True),
         "daily_series": [daily[k] for k in sorted(daily)],
         "duration_by_engine": duration,
         "zero_row_jobs": metric(zero_rows, windowed=True, has_data=bool(ever_terminal)),
@@ -635,6 +655,9 @@ METRIC_NOTES: list[dict] = [
     {"key": "queue", "label": "等待超过 1 分钟", "windowed": True,
      "note": "入队后等了一分钟以上才开始执行的次数，偏多说明并发不够。试跑不入队，不计入；"
              "早于该功能上线的历史运行没有记录，也不当成零等待。"},
+    {"key": "reuse_hits", "label": "复用命中", "windowed": True,
+     "note": "提交运行时直接复用了当天同参数的现成结果、没有再执行的次数，即省下的执行"
+             "（MySQL 任务只复用最近若干分钟内的结果）。不计入成功率、耗时与队列。"},
     {"key": "zero_row_jobs", "label": "成功但 0 行", "windowed": True,
      "note": "跑通了却没有数据，多半是参数填错或那天确实没数。"},
     {"key": "in_flight", "label": "此刻队列", "windowed": False,

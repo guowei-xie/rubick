@@ -29,6 +29,8 @@ ACTION_API_TOKEN_REVOKE = "api_token_revoke"
 # 的失败里 —— 入队根本没发生,没有 job 可挂;而「谁在试图用 API 跑没开放的任务」
 # 是排查 Agent 接入问题时第一个要问的
 ACTION_API_RUN_DENIED = "api_run_denied"
+# 发起人取消一条还在排队的运行(开放 API 的 DELETE /runs/{id})。挂在任务上、detail 带 job_id
+ACTION_QUERY_CANCEL = "query_cancel"
 
 # 新增动作码统一 <域>_<动词>
 # 任务生命周期(「任务」= SqlTemplate;回收站 = status archived)
@@ -118,7 +120,8 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_SUBMIT_QUERY: ("提交取数", GROUP_QUERY),
     ACTION_RUN_QUERY: ("运行取数", GROUP_QUERY),
     ACTION_RUN_QUERY_FAILED: ("取数失败", GROUP_QUERY),
-    ACTION_API_RUN_DENIED: ("API 调用被运行闸拒绝", GROUP_QUERY),
+    ACTION_API_RUN_DENIED: ("API 调用被拒绝(运行闸 / 在途上限)", GROUP_QUERY),
+    ACTION_QUERY_CANCEL: ("取消排队中的取数", GROUP_QUERY),
     ACTION_DOWNLOAD: ("下载结果", GROUP_QUERY),
     ACTION_TASK_CREATE: ("新建任务", GROUP_TASK),
     ACTION_TASK_UPDATE: ("编辑任务", GROUP_TASK),

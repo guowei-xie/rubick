@@ -83,16 +83,17 @@ class JobPool:
 
 
 def _claim_next_job_id() -> int | None:
-    """原子地把最早的一个 queued 任务标记为 running 并返回其 id;没有则 None。
+    """原子地把排在最前的一个 queued 任务标记为 running 并返回其 id;没有则 None。
 
-    用 UPDATE ... WHERE id=(子查询) 保证多 worker/重复轮询下不会重复认领。
+    「最前」= query_service.claim_order(非 API 来源优先,同档按 id),与 queue_ahead 同一顺序。
+    用 UPDATE ... WHERE id=? AND status=queued 保证多 worker/重复轮询下不会重复认领。
     """
     db = SessionLocal()
     try:
         job = (
             db.query(QueryJob)
             .filter(QueryJob.status == JOB_QUEUED)
-            .order_by(QueryJob.id.asc())
+            .order_by(*query_service.claim_order())
             .first()
         )
         if job is None:

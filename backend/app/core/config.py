@@ -129,6 +129,20 @@ class Settings(BaseSettings):
     # Agent 轮询运行状态建议每 5s 一次(12 次/分),默认 120 余量充足;
     # 超限返回 429。0 或负数 = 关闭限流(不推荐)。
     API_RATE_LIMIT_PER_MINUTE: int = 120
+    # 每用户同时在途(排队 + 执行中)的 API 运行上限,超出返回 429。限流管的是「调用多频繁」,
+    # 这个管的是「一个人同时占几个队列位」—— 后者才是把队列挤满的那个量:worker 全局只有
+    # WORKER_CONCURRENCY 个位子,一枚 token 塞进几十条就让所有人排在它后面。
+    # 同参数的重复提交不占名额(直接接上在途那条,见 query_service.submit_run)。0 或负数 = 不限。
+    API_MAX_INFLIGHT_PER_USER: int = 3
+
+    # ---- 结果复用(query_service.submit_run)----
+    # 同任务、同上线版本、同参数、时效内已有成功结果时直接复用、不再执行(跨用户:取数身份
+    # 跟着任务走,谁跑结果都一样)。调用方随时可以 fresh=true 强制重跑;任务级另有
+    # 「结果可复用」开关(SqlTemplate.allow_result_reuse)。false = 全平台关掉复用。
+    RESULT_REUSE_ENABLED: bool = True
+    # 时效:Hive 等 T+1 数仓以「当天」为界;MySQL 是实时库,只复用最近这么多分钟内的结果
+    # (且不跨天)。0 = MySQL 任务一律不复用。
+    RESULT_REUSE_MYSQL_MINUTES: int = 30
 
     # ---- 访问地址 / 端口(可配置)----
     # 后端监听地址与端口(部署脚本据此启动 uvicorn)

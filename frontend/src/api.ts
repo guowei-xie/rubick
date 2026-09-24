@@ -255,17 +255,25 @@ export const removeTaskSubscriber = (id: number, userId: number) =>
 export const previewJob = (id: number) => http.get(`/jobs/${id}/preview`).then((r) => r.data);
 
 // ---- query ----
-/** 一次运行的状态。queue_ahead 仅在 status=queued 时有值:排在前面还有几个。 */
+/** 一次运行的状态。queue_ahead 仅在 status=queued 时有值:排在前面还有几个。
+ *  cancelled = 排队中被发起人取消(开放 API 才有取消入口,界面上只会在运行记录里看到)。 */
 export interface Job {
   id: number;
-  status: "queued" | "running" | "success" | "failed";
+  status: "queued" | "running" | "success" | "failed" | "cancelled";
   queue_ahead?: number | null;
   row_count?: number | null;
   error?: string | null;
   executed_sql?: string | null;
+  /** 这次提交怎么被满足的:"result" = 复用了当天同参的现成结果(没有执行);
+   *  "inflight" = 接上了自己一条同参、还没跑完的运行;null = 新建并执行。见 query_service.submit_run */
+  reuse_kind?: "result" | "inflight" | null;
+  reused_from_job_id?: number | null;
+  /** 被复用的那份数据是什么时候取的 */
+  reused_from_at?: string | null;
 }
-export const runQuery = (template_id: number, values: any) =>
-  http.post("/run", { template_id, values }).then((r) => r.data as Job);
+/** fresh=true:不复用、一定真跑一次(「仍要重新运行」)。默认优先复用同参结果 */
+export const runQuery = (template_id: number, values: any, fresh = false) =>
+  http.post("/run", { template_id, values, fresh }).then((r) => r.data as Job);
 export const getJob = (jobId: number) => http.get(`/jobs/${jobId}`).then((r) => r.data as Job);
 export const downloadJob = (jobId: number) =>
   http.get(`/jobs/${jobId}/download`).then((r) => r.data);
@@ -639,6 +647,8 @@ export interface HealthData extends AnalyticsEnvelope {
   run_failed: Metric;
   queue_over_60s: Metric;
   queued_now: Metric;
+  /** 提交时直接复用了现成结果、没有执行的次数(省下的执行);不计入成功率、耗时与队列 */
+  reuse_hits: Metric;
   daily_series: { date: string; success: number; failed: number }[];
   duration_by_engine: Record<string, { samples: number; p90_ms: number | null }>;
   zero_row_jobs: Metric;

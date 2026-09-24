@@ -17,6 +17,9 @@ class V1RunIn(BaseModel):
     """触发运行的入参。template_id 在路径里,这里只带参数值(键 = 变量名)。"""
 
     values: dict[str, Any] = {}
+    #: true = 不复用、一定真跑一次(用户明确要「重新跑 / 刷新」时)。默认 false:平台优先
+    #: 复用时效内的同参结果、或接上正在跑的同参运行,见 docs/open-api.md 3.3
+    fresh: bool = False
 
 
 class V1ParamOut(BaseModel):
@@ -80,6 +83,12 @@ class V1JobOut(BaseModel):
     #: 结果是否已过保留期。文档 4.1 之外多给的一项:没有它,调用方从 /runs 里挑一条
     #: 历史运行去下载,只能先吃一个 404 才知道结果已经被清理了。
     result_expired: bool = False
+    #: 这次提交是怎么被满足的:"result" = 复用了时效内的同参结果(没有执行,立即 success);
+    #: "inflight" = 接上了一条同参、还在排队/执行的运行(返回的就是那条,照常轮询);
+    #: null = 新建了一条运行。
+    reuse_kind: Literal["result", "inflight"] | None = None
+    #: 复用时:那份数据是什么时候取的。调用方应把它告诉用户
+    reused_from_at: datetime | None = None
 
     class Config:
         from_attributes = True

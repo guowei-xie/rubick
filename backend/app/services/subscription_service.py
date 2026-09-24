@@ -875,21 +875,11 @@ def push_job_to_subscribers(
     if block is not None:
         raise block
 
-    job = QueryJob(
+    job = QueryJob.sharing_result_of(
+        source,
         user_id=scheduler_user(db).id,
-        template_id=tmpl.id,
-        template_version_id=source.template_version_id,
-        datasource_id=source.datasource_id,
         params={},
-        status=JOB_SUCCESS,
         source=SOURCE_SUBSCRIBE,
-        row_count=source.row_count,
-        executed_sql=source.executed_sql,
-        run_as_team_id=source.run_as_team_id,
-        run_as_username=source.run_as_username,
-        result_object_key=source.result_object_key,
-        result_filename=source.result_filename,
-        # started_at / duration_ms 留空:这条记录没有执行过
         pushed_by_id=operator.id,
         pushed_from_job_id=source.id,
         replaces_job_id=(

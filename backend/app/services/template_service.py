@@ -117,6 +117,7 @@ def create_template(db: Session, author: User, data) -> SqlTemplate:
         author_id=author.id,
         timeout_seconds=data.timeout_seconds,
         allow_api=data.allow_api,
+        allow_result_reuse=data.allow_result_reuse,
     )
     db.add(tmpl)
     db.flush()
@@ -166,6 +167,8 @@ def add_version(db: Session, author: User, tmpl: SqlTemplate, data) -> TemplateV
     # 「允许 API 调用」开关:None = 本次未动(与 name 等字段同一约定),显式 true/false 才改
     if data.allow_api is not None:
         tmpl.allow_api = data.allow_api
+    if data.allow_result_reuse is not None:
+        tmpl.allow_result_reuse = data.allow_result_reuse
     # 方言始终跟随数据源引擎
     ds = db.get(DataSource, tmpl.datasource_id)
     tmpl.dialect = ds.engine if ds else tmpl.dialect

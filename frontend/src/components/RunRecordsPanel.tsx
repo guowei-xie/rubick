@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, message, Modal, Space, Table, TableColumnType, Tooltip } from "antd";
+import { Button, message, Modal, Space, Table, TableColumnType, Tag, Tooltip } from "antd";
 import {
   downloadJob,
   errMsg,
@@ -8,7 +8,7 @@ import {
   taskRunRecords,
   withBase,
 } from "../api";
-import StatusTag, { JOB_SOURCE, JOB_STATUS, jobSourceKey } from "./StatusTag";
+import StatusTag, { JOB_REUSED, JOB_SOURCE, JOB_STATUS, jobSourceKey } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import { fmtDayTime, fmtDuration, fmtTime } from "../format";
@@ -141,11 +141,21 @@ export default function RunRecordsPanel({
       width: w.source,
       render: (_: string, r: any) => {
         const tag = <StatusTag map={JOB_SOURCE} value={jobSourceKey(r)} />;
-        return r.pushed_from_job_id ? (
-          <Tooltip title={`从运行记录 #${r.pushed_from_job_id} 补推`}>{tag}</Tooltip>
-        ) : (
-          tag
-        );
+        if (r.pushed_from_job_id)
+          return <Tooltip title={`从运行记录 #${r.pushed_from_job_id} 补推`}>{tag}</Tooltip>;
+        // 复用记录没有执行过(耗时、排队都是空的),不标出来会被读成「这条跑得出奇地快」
+        if (r.reused_from_job_id)
+          return (
+            <Tooltip
+              title={`复用了${r.reused_from_at ? ` ${fmtTime(r.reused_from_at, false)} ` : ""}相同参数的结果(运行记录 #${r.reused_from_job_id}),没有重新执行`}
+            >
+              <Space size={2}>
+                {tag}
+                <Tag color={JOB_REUSED.color}>{JOB_REUSED.label}</Tag>
+              </Space>
+            </Tooltip>
+          );
+        return tag;
       },
     },
     {

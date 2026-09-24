@@ -16,7 +16,7 @@ from app.services import permission_service, query_service, result_service, subs
 router = APIRouter(tags=["query"])
 
 
-def job_out(db: Session, job: QueryJob) -> JobOut:
+def job_out(db: Session, job: QueryJob, reuse_kind: str | None = None) -> JobOut:
     """运行记录的单条响应。排队中的额外算一次「前面还有几个」。
 
     只在 queued 时算:已经在跑的还报位次会让人以为还在排队。一次按 status 索引的 COUNT,
@@ -24,8 +24,13 @@ def job_out(db: Session, job: QueryJob) -> JobOut:
     「在等别人的活跑完」。位次怎么算住在 query_service.queue_ahead(与 worker 的认领顺序
     同一模块),这里只留「什么时候展示」这个决定。
     公开供 routes/v1 复用:开放 API 的轮询响应与界面轮询是同一份形状。
+
+    reuse_kind 只由提交入口传:「接上在途」是这次提交的结果,不是那条运行的属性,
+    所以落不进模型;「复用结果」则是这行自己的属性(QueryJob.reuse_kind),不传也有。
     """
     out = JobOut.model_validate(job)
+    if reuse_kind is not None:
+        out.reuse_kind = reuse_kind
     if job.status == JOB_QUEUED:
         out.queue_ahead = query_service.queue_ahead(db, job)
     return out
@@ -54,9 +59,12 @@ def csv_file_response(job: QueryJob) -> FileResponse:
 
 @router.post("/run", response_model=JobOut)
 def run_query(data: RunIn, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """业务用户填参运行:入队异步执行,立即返回运行记录(前端轮询 /jobs/{id} 或看通知)。"""
-    job = query_service.enqueue(db, user, data.template_id, data.values, ip=client_ip(request))
-    return job_out(db, job)
+    """业务用户填参运行:优先复用同参结果 / 接上本人同参在途运行,否则入队异步执行;
+    立即返回运行记录(前端轮询 /jobs/{id} 或看通知)。fresh=true 强制重跑。"""
+    job, reuse_kind = query_service.submit_run(
+        db, user, data.template_id, data.values, ip=client_ip(request), fresh=data.fresh
+    )
+    return job_out(db, job, reuse_kind)
 
 
 # 运行记录列表的条数上限。界面与开放 API 同一个数

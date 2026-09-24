@@ -13,6 +13,10 @@ JOB_QUEUED = "queued"
 JOB_RUNNING = "running"
 JOB_SUCCESS = "success"
 JOB_FAILED = "failed"
+# 排队中被发起人取消(开放 API 的 DELETE /runs/{id})。只能从 queued 进入:worker 认领与
+# execute_job 都只认 queued/running,取消后它就再也不会被执行。**不进终态统计**:
+# 运营分析的成功率/失败数按 (success, failed) 过滤,取消既不算成也不算败
+JOB_CANCELLED = "cancelled"
 
 # 运行来源:业务正式取数 / 作者在编辑器里的试跑 / 订阅计划定时自动运行 / 开放 API 触发
 SOURCE_RUN = "run"
@@ -131,6 +135,16 @@ class QueryJob(Base, TimestampMixin):
     # 「替换本期」时指向**本期最早**那条成功订阅记录(见 period_first_id)
     replaces_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
+    # 结果复用(query_service.submit_run):同任务、同上线版本、同参数、时效内已有成功结果时
+    # 不再执行,而是另建一条 success 记录指向来源、共用同一份结果文件 —— 与补推同一做法。
+    # 发起人填这次的调用者,于是运行记录列表、下载授权、审计全部按调用者本人算。
+    # 刻意不做外键(理由同 run_as_team_id),也**不做唯一**:同一份结果可以被很多人复用
+    reused_from_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # 被复用的那份数据是什么时候取的(来源运行开始执行的时刻,缺了退到入队时刻)。**存成列**
+    # 而不是沿 reused_from_job_id 现查:来源行不会再变,而运行记录列表一页上百行,
+    # 每行现查一次就是上百条带 join 的 SELECT
+    reused_from_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # 关联模板/发起人,便于运行记录展示名称
     template = relationship("SqlTemplate", lazy="joined")
     user = relationship("User", lazy="joined")
@@ -139,6 +153,34 @@ class QueryJob(Base, TimestampMixin):
         "User", primaryjoin="foreign(QueryJob.pushed_by_id) == User.id",
         lazy="select", viewonly=True,
     )
+
+    @classmethod
+    def sharing_result_of(cls, src: "QueryJob", **overrides) -> "QueryJob":
+        """一条与 src **共用结果文件**、没有执行过的 success 记录(补推与结果复用两处都用)。
+
+        「哪些列随结果一起走」只在这里列一次:结果文件、行数、最终 SQL、取数身份、版本与数据源。
+        started_at / duration_ms 刻意留空 —— 这条记录没有执行过。其余(发起人、来源、参数、
+        指回来源的那一列)由调用方给。
+        """
+        return cls(
+            template_id=src.template_id,
+            template_version_id=src.template_version_id,
+            datasource_id=src.datasource_id,
+            status=JOB_SUCCESS,
+            row_count=src.row_count,
+            executed_sql=src.executed_sql,
+            run_as_team_id=src.run_as_team_id,
+            run_as_username=src.run_as_username,
+            result_object_key=src.result_object_key,
+            result_filename=src.result_filename,
+            **overrides,
+        )
+
+    @property
+    def reuse_kind(self) -> Optional[str]:
+        """这条记录本身是不是复用出来的("result")。「接上在途运行」不建新行,
+        那个标记由路由按本次提交的结果现给(见 routes.query.job_out)。"""
+        return "result" if self.reused_from_job_id else None
 
     @property
     def template_name(self) -> Optional[str]:

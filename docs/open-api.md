@@ -63,10 +63,26 @@ Authorization: Bearer rk_...
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|:--:|---|
 | `values` | object | 是 | `{参数名: 值}`。`kind=list` 的参数传**数组**（即使只有一个值）；`value_type=number` 的传数字 |
+| `fresh` | bool | 否 | 默认 `false`。`true` = 不复用、不接上在途运行，**一定新跑一次**。只在用户明确要「重跑 / 最新数据」时传 |
 
 - **所有参数必填、没有默认值**，缺参返回 400。
 - 任务 `allow_api=false`，或你没有该任务的运行权限 → **403**。
-- 成功返回 job 对象（见 [4.1](#41-job-对象)），初始 `status` 通常为 `queued`——**提交成功不代表有结果**。
+- 成功返回 job 对象（见 [4.1](#41-job-对象)）。**提交成功不代表有结果**，先看 `reuse_kind`：
+
+**复用优先，重跑始终可用。** 权限与参数校验全部通过之后，`fresh=false` 时平台依次尝试：
+
+| `reuse_kind` | 条件 | 返回 |
+|---|---|---|
+| `"result"` | 时效内已有**相同参数**跑成的结果（判据见 [3.3](#33-post-apiv1tasksidrunsreusable--只查有没有现成结果)） | 一条**新的**运行记录，挂在你名下、`status=success`，与来源共用同一份结果文件；**没有执行**，`started_at` / `duration_ms` 为 null，`reused_from_at` 是那份数据的取数时刻 |
+| `"inflight"` | 相同参数的运行正在排队或执行（你看得见的，含同事触发的） | **那一条**运行本身，照常轮询即可 |
+| `null` | 以上都没有，或 `fresh=true` | 新建的运行，初始 `status` 通常为 `queued` |
+
+复用只看结果、不放宽权限：下载复用记录照旧要你本人有「下载」权限（4.5）。任务作者可以在编辑器里关掉该任务的「结果可复用」。
+
+**在途上限**：每个 token 同时在排队或执行的 API 运行最多 **3** 条（平台配置 `API_MAX_INFLIGHT_PER_USER`），超出返回 **429**，
+报错写明「已有 N 条 API 运行在排队或执行」。它与每分钟限流（第 6 节）是两回事：**退避重试没用**，
+要等手上的运行结束，或用 [4.6](#46-delete-apiv1runsjob_id--取消排队中的运行) 取消不再需要的那条。
+接上在途运行（`inflight`）不占名额；`fresh=true` 照样受这个上限约束。
 
 ```bash
 curl -X POST {BASE}/api/v1/tasks/128/runs \
@@ -75,9 +91,11 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
   -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
 ```
 
-### 3.3 `POST /api/v1/tasks/{id}/runs/reusable` —— 触发前先找今天的现成结果
+### 3.3 `POST /api/v1/tasks/{id}/runs/reusable` —— 只查有没有现成结果
 
-请求体与 [3.2](#32-post-apiv1tasksidruns--触发一次运行) 完全相同（`{"values": {...}}`）。返回：
+3.2 自己就会优先复用，日常直接提交即可；这个端点给「只想问有没有、不想触发」的场景，也作为兼容保留。
+
+请求体与 [3.2](#32-post-apiv1tasksidruns--触发一次运行) 相同（`{"values": {...}}`，`fresh` 在这里没有意义）。返回：
 
 ```json
 { "job": { ...job 对象... } }   // 命中：直接拿 job.id 去 preview / result
@@ -86,11 +104,13 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 
 命中条件（全部满足，取最新一条）：
 
-- 你**看得见**这条运行（口径同 [4.2](#42-get-apiv1runs--我的运行记录列表)，所以同事、订阅定时跑出来的也算）；
-- **今天**提交的（平台所在时区的自然日）；
+- 你**看得见这个任务**（同任务、同版本、同参数的结果与谁跑无关，所以同事、订阅定时跑出来的都算）；
+- 在**复用时效**内：Hive 等 T+1 数仓为**当天**（平台所在时区的自然日）；MySQL 是实时库，只认**最近 30 分钟**
+  （平台配置 `RESULT_REUSE_MYSQL_MINUTES`）且不跨天。按开始执行的时刻算；
+- 任务开着「结果可复用」（编辑器里的开关，默认开）；
 - 跑的是任务**当前上线的版本**——任务改过 SQL 重新上线后，旧版本的结果不算；
 - **参数相同**：按参数定义归一后比较，值列表参数不看顺序；
-- `status=success`、不是作者的试跑，且结果还在（没过保留期、文件没丢）。
+- `status=success`、不是作者的试跑，本身不是复用或补推出来的记录，且结果还在（没过保留期、文件没丢）。
 
 说明：
 
@@ -109,7 +129,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 |---|---|---|
 | `id` | int | 运行编号（结果文件名 `<任务名>_<运行编号>.csv` 里的流水号） |
 | `template_id` | int | 所属任务编号 |
-| `status` | string | `queued` 排队 / `running` 运行中 / `success` 成功 / `failed` 失败 |
+| `status` | string | `queued` 排队 / `running` 运行中 / `success` 成功 / `failed` 失败 / `cancelled` 排队中被取消（见 4.6） |
 | `row_count` | int \| null | 成功时的结果行数 |
 | `duration_ms` | int \| null | 查询执行到结果落盘的耗时，**不含排队等待**；仅成功时有值 |
 | `error` | string \| null | 失败原因（面向使用者的报错，库账号名已脱敏） |
@@ -118,6 +138,8 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 | `created_at` | string | 提交时间（ISO 8601） |
 | `started_at` | string \| null | 开始执行时间；还没开跑时为 null |
 | `result_expired` | bool | 结果是否已过保留期。从 `GET /runs` 里挑历史运行下载前先看它，省一次注定 404 的请求；它只回答保留期，文件因其它原因不在时仍可能 404 |
+| `reuse_kind` | string \| null | `result` = 这条记录复用了现成结果、没有执行（列表里也有）；`inflight` = 这次提交接上了在途运行（**只出现在 3.2 的响应里**）；null = 正常执行。见 3.2 |
+| `reused_from_at` | string \| null | 复用时：那份数据是什么时候取的（来源运行开始执行的时刻）。应告诉用户 |
 
 ### 4.2 `GET /api/v1/runs` —— 我的运行记录列表
 
@@ -127,7 +149,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 
 ### 4.3 `GET /api/v1/runs/{job_id}` —— 查询运行状态
 
-轮询直到 `status` 为 `success` / `failed`。**建议指数退避：5 秒起步、每次翻倍、上限 60 秒**，不要打满限流频率。`status=queued` 时可用 `queue_ahead` 向用户报告位次。
+轮询直到 `status` 为 `success` / `failed` / `cancelled`。**建议指数退避：5 秒起步、每次翻倍、上限 60 秒**，不要打满限流频率。`status=queued` 时可用 `queue_ahead` 向用户报告位次。
 
 **轮询是唯一的完成信号。** API 触发的运行**不推送任何通知**——没有飞书消息，平台站内的通知铃里也不会多出一条，成功失败都一样：失败原因在这里的 `error` 字段里。（网页上点「运行」照旧有通知，静音只看触发来源。）
 
@@ -148,6 +170,12 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
   **重试无意义**。订阅推送给你的那几期结果除外——订阅本身就带着取走它的资格。
 - **结果文件保留 7 天**，过期返回 404，需重新运行。`preview` 同样受保留期约束。
 
+### 4.6 `DELETE /api/v1/runs/{job_id}` —— 取消排队中的运行
+
+- 只能取消**你自己**提交的、**还在排队**（`status=queued`）的运行；成功返回 job 对象，`status=cancelled`，它不会再被执行。
+- 已经开始执行或已经结束 → **409**（执行中的查询不支持取消）；别人的运行或不存在 → **404**。
+- 用途：用户已经不要这份数了，或要腾出在途名额（3.2）。
+
 ## 5. 错误码
 
 | 状态码 | 场景 |
@@ -156,11 +184,18 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 | 401 | 未带 token、token 无效或已吊销 |
 | 403 | 任务 `allow_api=false`；或没有该任务的运行 / 下载权限 |
 | 404 | 任务 / 运行不存在、对你不可见，或结果已过保留期被清理（重跑即可，别改参数重发） |
-| 429 | 超过限流（见下）。请指数退避重试，不要立刻重发 |
+| 409 | 取消一条已经开始执行或已经结束的运行（4.6） |
+| 429 | 超过每分钟限流（第 6 节，退避重试）；或提交运行时超过在途上限（3.2，**重试无用**，等运行结束或取消一条） |
 
 ## 6. 限流
 
 **120 请求/分钟/token**，超限返回 429。轮询状态请按退避节奏（5 秒起步、上限 60 秒）而不是打满频率——一个正常轮询的调用方远达不到这个上限。
+
+另有两道**针对队列**的约束（都是平台配置，见 `config.example.ini`）：
+
+- **在途上限**：每 token 同时在排队或执行的 API 运行最多 3 条（`API_MAX_INFLIGHT_PER_USER`，见 3.2）；
+- **认领顺序**：worker 先执行网页取数与订阅定时运行，再执行 API 运行（同一档内先到先得）。
+  所以 API 运行的 `queue_ahead` 会把排在它前面的网页运行也算进去，后来的网页运行也可能插到它前面。
 
 ## 7. 与 Web 界面权限的关系
 
@@ -179,12 +214,8 @@ H="Authorization: Bearer $TOKEN"
 # ① 列出任务，读取参数定义与 allow_api / can_run
 curl -s "$BASE/api/v1/tasks" -H "$H"
 
-# ①½ 先找今天同参的现成结果；{"job": {...}} 就跳到 ④，{"job": null} 再 ②
-curl -s -X POST "$BASE/api/v1/tasks/128/runs/reusable" \
-  -H "$H" -H "Content-Type: application/json" \
-  -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
-
-# ② 触发运行，记下返回的 job.id
+# ② 提交运行，记下返回的 job.id；reuse_kind=result 说明已复用现成结果（已是 success，直接 ④），
+#    inflight 说明接上了在跑的那条。用户要最新数据时在 body 里加 "fresh": true
 curl -s -X POST "$BASE/api/v1/tasks/128/runs" \
   -H "$H" -H "Content-Type: application/json" \
   -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'

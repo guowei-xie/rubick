@@ -524,6 +524,13 @@ def main() -> None:
     # 改了就被动对外开放。新行也不吃库里的默认值(ORM default=True 每次 INSERT 都显式带上)。
     _ensure_column(tbl("sql_templates"), "allow_api", "BOOLEAN NOT NULL DEFAULT 0")
 
+    # 增量列:「结果可复用」开关。与 allow_api 相反,存量回填 1:它不放宽任何权限,只决定
+    # 「同参结果优先复用」,而复用本身有按引擎的时效兜着(见 query_service._reuse_since)
+    _ensure_column(tbl("sql_templates"), "allow_result_reuse", "BOOLEAN NOT NULL DEFAULT 1")
+    # 增量列:复用出来的运行记录指向来源(见 QueryJob.reused_from_job_id)
+    _ensure_column(tbl("query_jobs"), "reused_from_job_id", "BIGINT")
+    _ensure_column(tbl("query_jobs"), "reused_from_at", "DATETIME")
+
     # 增量列:下载通道(web/api)。存量回填 web —— 彼时 API 尚不存在,这是事实
     _ensure_column(tbl("download_events"), "via", "VARCHAR(16) NOT NULL DEFAULT 'web'")
 

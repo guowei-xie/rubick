@@ -1,6 +1,6 @@
 ---
 name: rubick-skill
-version: 2026.09.23.2
+version: 2026.09.24.1
 description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取结果——当用户要用 Rubick 查数、跑任务、查看运行状态或下载结果 CSV 时使用。
 ---
 
@@ -11,7 +11,7 @@ description: 通过 Rubick 取数平台的开放 API 运行取数任务并获取
 
 ## 用途
 
-Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，业务填参数即可取数。本 skill 教你调用它的开放 API，代替用户在网页上的手工操作：**找到任务 → 先找今天的现成结果 → 没有才填参触发、轮询等待 → 预览 / 下载结果**。
+Rubick 是内部 SQL 自助取数平台：开发者把 SQL 做成「任务」，业务填参数即可取数。本 skill 教你调用它的开放 API，代替用户在网页上的手工操作：**找到任务 → 填参提交（平台优先复用现成结果）→ 轮询等待 → 预览 / 下载结果**。
 
 ## 前置：两样东西
 
@@ -71,21 +71,7 @@ curl -fsS --max-time 10 "$RUBICK_BASE_URL/rubick-skill.md" -o /tmp/rubick-skill.
 - `can_run=false` → token 主人没有被授权运行该任务，**不要重试**，告诉用户去找任务作者授权「运行」；
 - `allow_api=false` → 该任务未开放 API 触发（POST 会 403），告诉用户请任务作者打开该开关。
 
-### ①½ 触发之前：先找今天的现成结果
-
-参数定下来之后、触发之前，先问平台今天有没有同参跑好的结果：
-
-`POST {BASE_URL}/api/v1/tasks/{id}/runs/reusable`，body 与 ② 完全相同（`{ "values": {...} }`）→ `{ "job": {...} | null }`。
-
-- **命中**（`job` 非 null）→ 跳过 ②③，直接拿 `job.id` 走 ④ 取结果，并告诉用户一句：
-  「复用了今天 HH:MM 已跑好的结果（运行 #N），要最新数据可以让我重跑」（HH:MM 取 `job.created_at`）。
-- `job: null` → 今天没有能用的，照常走 ②。
-- 用户明确说了「重跑 / 刷新 / 要最新的」→ **跳过这一步**，直接 ②。
-
-「能不能直接用」由平台判定（同事、订阅定时跑出来的也算），**别自己去 `GET /runs` 里按时间挑一条**——
-那里不带参数，挑到的很可能是别的参数跑的。参数不合法这里就会报 400（与 ② 同文案），照 ② 的规则处理。
-
-### ② 填参触发运行
+### ② 填参提交运行（平台优先复用）
 
 `POST {BASE_URL}/api/v1/tasks/{id}/runs`，body：
 
@@ -97,7 +83,20 @@ curl -fsS --max-time 10 "$RUBICK_BASE_URL/rubick-skill.md" -o /tmp/rubick-skill.
 - `kind=list` 的参数**必须传数组**，即使只有一个值。
 - `value_type=number` 的参数传数字，不带引号、不带单位。
 
-提交立即返回 job 对象（不会等结果），记下 `job.id`。
+提交立即返回 job 对象（不会等结果），记下 `job.id`。**先看 `reuse_kind`**——平台会替你复用，不必自己先查：
+
+| `reuse_kind` | 含义 | 你该做的 |
+|---|---|---|
+| `"result"` | 当天（MySQL 任务为最近几十分钟）已有人用同样参数跑成，直接复用了那份结果，**没有重新执行**；`status` 已是 `success` | 跳过 ③ 直接 ④，并告诉用户一句：「复用了 HH:MM 已跑好的结果，要最新数据可以让我重跑」（HH:MM 取 `reused_from_at`） |
+| `"inflight"` | 同样参数的运行正在排队或执行，返回的就是那一条 | 照常 ③ 轮询它，**不要再提交一次** |
+| `null` | 新建了一条运行 | 照常 ③ |
+
+- 用户明确说了「重跑 / 刷新 / 要最新的」→ body 里加 `"fresh": true`，平台一定新跑一次，不复用、不接上在途的：
+  `{ "values": {...}, "fresh": true }`。**只在用户要求时才加**，否则只是白占队列。
+- 「能不能复用」由平台判定（同事、订阅定时跑出来的都算；任务作者也可能关掉了复用），
+  **别自己去 `GET /runs` 里按时间挑一条**——那里不带参数，挑到的很可能是别的参数跑的。
+- `POST /api/v1/tasks/{id}/runs/reusable`（同 body，返回 `{ "job": {...} | null }`）仍可用于「只问有没有、不想触发」，
+  但日常直接提交即可。
 
 ### ③ 轮询状态，指数退避
 
@@ -107,6 +106,12 @@ curl -fsS --max-time 10 "$RUBICK_BASE_URL/rubick-skill.md" -o /tmp/rubick-skill.
 - `status=queued` 时用 `queue_ahead` 向用户报告位次：「排队中，前面还有 N 个」。
 - `status=running` 时可报告已运行时长；`duration_ms` 只含执行时间，**不含排队**。
 - 收到 `429`（限流，120 请求/分钟/token）时加大间隔重试，不要立刻重发。
+- `status=cancelled`：这条运行在排队时被撤掉了（见下方「在途上限」），需要的话重新提交。
+
+**在途上限**：每个 token 同时在排队 / 执行的 API 运行最多 3 条（平台可调）。提交时收到 `429` 且报错说「已有 N 条 API 运行在排队或执行」，
+**重试多少次都一样**——等手上的运行跑完再提交；或者用户已经不要某一条了，
+用 `DELETE {BASE_URL}/api/v1/runs/{job_id}` 撤掉它（只能撤自己的、还在排队的；已开跑的返回 409）。
+要取多组参数时**一批最多提交 3 条，跑完一条再补一条**，不要一口气全塞进队列。
 
 ### ④ 成功后取结果
 
@@ -131,17 +136,20 @@ H="Authorization: Bearer $TOKEN"
 # ① 列出我可见的任务（含参数定义）
 curl -s "$BASE/api/v1/tasks" -H "$H"
 
-# ①½ 先找今天同参的现成结果：{"job": {...}} 命中就直接 ④；{"job": null} 再 ②
-curl -s -X POST "$BASE/api/v1/tasks/128/runs/reusable" \
-  -H "$H" -H "Content-Type: application/json" \
-  -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
-
-# ② 触发一次运行（list 参数传数组）
+# ② 提交运行（list 参数传数组）；看返回的 reuse_kind：result=已复用现成结果，inflight=接上在跑的那条
 curl -s -X POST "$BASE/api/v1/tasks/128/runs" \
   -H "$H" -H "Content-Type: application/json" \
   -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}}'
 
-# ③ 轮询运行状态（queued/running/success/failed）
+# 用户要求重跑 / 要最新数据时才加 fresh
+curl -s -X POST "$BASE/api/v1/tasks/128/runs" \
+  -H "$H" -H "Content-Type: application/json" \
+  -d '{"values": {"dt": "2026-09-20", "regions": ["华东", "华南"]}, "fresh": true}'
+
+# 撤掉一条自己还在排队、已经不要的运行
+curl -s -X DELETE "$BASE/api/v1/runs/12345" -H "$H"
+
+# ③ 轮询运行状态（queued/running/success/failed/cancelled）
 curl -s "$BASE/api/v1/runs/12345" -H "$H"
 
 # ④ 下载完整 CSV，或先看前 50 行
@@ -164,22 +172,24 @@ task = next(t for t in tasks if t["name"] == "大区日报")
 assert task["can_run"] and task["allow_api"], "未授权运行或未开放 API"
 
 values = {"dt": "2026-09-20", "regions": ["华东"]}
+fresh = False  # 用户明确要求「重跑 / 要最新的」时才置 True
 
-# ①½ 先找今天同参的现成结果
-job = requests.post(
-    f"{BASE}/api/v1/tasks/{task['id']}/runs/reusable", headers=H, json={"values": values},
-).json()["job"]
-if job:
-    print(f"复用了今天 {job['created_at'][11:16]} 已跑好的结果（运行 #{job['id']}）")
-else:
-    # ② 触发运行
-    job = requests.post(
-        f"{BASE}/api/v1/tasks/{task['id']}/runs", headers=H, json={"values": values},
-    ).json()
+# ② 提交运行：平台优先复用同参结果、或接上在跑的那条
+r = requests.post(
+    f"{BASE}/api/v1/tasks/{task['id']}/runs", headers=H,
+    json={"values": values, "fresh": fresh},
+)
+if r.status_code == 429:  # 限流或在途上限：看 detail，在途上限要等手上的跑完，别循环重试
+    raise SystemExit(r.json().get("detail"))
+job = r.json()
+if job.get("reuse_kind") == "result":
+    print(f"复用了 {job['reused_from_at'][11:16]} 已跑好的结果（运行 #{job['id']}），要最新数据可以重跑")
+elif job.get("reuse_kind") == "inflight":
+    print(f"同样参数的运行 #{job['id']} 正在进行，接着等它")
 
-# ③ 轮询：指数退避 5s → 60s（命中现成结果时 status 已是 success，直接跳过）
+# ③ 轮询：指数退避 5s → 60s（复用了现成结果时 status 已是 success，直接跳过）
 delay = 5
-while job["status"] not in ("success", "failed"):
+while job["status"] not in ("success", "failed", "cancelled"):
     time.sleep(delay)
     r = requests.get(f"{BASE}/api/v1/runs/{job['id']}", headers=H)
     if r.status_code == 429:          # 限流，退避重试
@@ -205,7 +215,8 @@ else:
   400 才是「参数不对」。job 对象上的 `result_expired` 可以让你在下载前就知道这一点。
 - **限流 120 请求/分钟/token**，超限返回 429。轮询务必按退避节奏，不要打满频率。
 - `allow_api=false` 的任务无法通过 API 触发（403）；`can_run=false` 说明没被授权。这两类 403 **重试无意义**，直接报告用户。
-- **先复用、再触发**（见 ①½）：今天已有同参结果时重跑只是白占队列、多等几十分钟。
+- **复用是默认行为**（见 ②）：没有用户明确要求就别加 `fresh`，今天已有同参结果时重跑只是白占队列、多等几十分钟。
+- **同一组参数只提交一次**：拿到 job 后轮询它，不要因为「等太久」再提交一遍——那只会接上同一条（`inflight`），或在 `fresh` 下排出第二条。
 - 运行是**异步**的：提交返回不代表有结果，必须轮询到 `success` / `failed` 为止。
 - **长任务不要在单轮对话里死等**：Hive 类任务可能跑几十分钟。先告知用户预计时长（可参考该任务历史运行的 `duration_ms`）与当前位次，然后结束本轮、让用户稍后回来问结果，而不是空转轮询占住对话。
 - `queue_ahead` 仅在 `status=queued` 时有值；`started_at` 在还没开跑时为 null。

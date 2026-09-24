@@ -10,6 +10,8 @@ export const JOB_STATUS: TagMap = {
   running: { color: "blue", label: "运行中" },
   success: { color: "green", label: "成功" },
   failed: { color: "red", label: "失败" },
+  // 排队中被发起人取消(开放 API 的 DELETE /runs/{id}),不是故障 —— 用中性灰
+  cancelled: { color: "default", label: "已取消" },
 };
 
 // 运行来源(QueryJob.source):正式取数 / 编辑器试跑 / 订阅定时运行 / 开放 API 触发
@@ -22,6 +24,10 @@ export const JOB_SOURCE: TagMap = {
   // 展示时由 jobSourceKey 按 pushed_from_job_id 认出来
   pushed: { color: "purple", label: "补推" },
 };
+
+/** 「复用」角标:这条运行记录直接复用了现成结果、没有执行(QueryJob.reused_from_job_id)。
+ *  它不是一种来源 —— 复用记录的来源照旧是 run / api,角标叠在来源标签旁边 */
+export const JOB_REUSED: TagMeta = { color: "geekblue", label: "复用" };
 
 /** 一条运行记录在界面上按哪种来源展示。补推记录单独认出来,其余就是库里的 source。 */
 export const jobSourceKey = (r: { source?: string; pushed_from_job_id?: number | null }) =>

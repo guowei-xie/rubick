@@ -115,6 +115,10 @@ export default function HealthSection({
                 }
               />
             </Col>
+            <Col {...CARD_COL}>
+              <MetricCard label="复用命中" metric={data.reuse_hits}
+                          note={notes["reuse_hits"]?.note} />
+            </Col>
           </Row>
 
           {/* 正式取数的成功率已在顶部那张卡上,这里只摆另外两路 */}

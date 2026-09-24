@@ -403,6 +403,7 @@ def test_v1_job_out_is_a_projection_of_the_internal_shape(db, task_api, viewer, 
     expected = {
         "id", "template_id", "status", "row_count", "duration_ms", "error",
         "queue_ahead", "source", "created_at", "started_at", "result_expired",
+        "reuse_kind", "reused_from_at",
     }
     assert set(V1JobOut.model_fields) == expected
     assert set(V1JobOut.model_fields) <= set(JobOut.model_fields)
@@ -580,7 +581,8 @@ def test_reusable_list_params_ignore_order(db, task_enum, viewer, spy_connector)
 def test_reusable_skips_unusable_runs(db, task_api, viewer, spy_connector, spoil):
     job = _succeed_a_run(db, spy_connector, task_api, viewer)
     if spoil == "yesterday":
-        job.created_at = datetime.now() - timedelta(days=1)
+        # 时效按「开始执行」判(数据新鲜度取决于它),入队时刻只是它缺失时的退路
+        job.created_at = job.started_at = datetime.now() - timedelta(days=1)
     elif spoil == "failed":
         job.status = JOB_FAILED
     elif spoil == "test":
@@ -601,9 +603,10 @@ def test_reusable_ignores_runs_of_an_older_version(db, task_api, author, viewer,
 def test_reusable_respects_visibility_and_validates_params(
     db, task_api, author, viewer, outsider, spy_connector
 ):
-    # 团队外的使用者看不见作者跑的那条(运行记录列表同口径),就不能拿来复用
-    _succeed_a_run(db, spy_connector, task_api, author)
-    assert _reusable(db, viewer, task_api, {"d": "2026-09-21"}) is None
+    # 团队外的授权使用者**也能**复用作者跑的那条:同任务同版本同参的结果与谁跑无关,
+    # 而看得见任务就打得开它下面的任意一条运行(can_access_job)—— 不再按运行记录列表的口径收窄
+    job = _succeed_a_run(db, spy_connector, task_api, author)
+    assert _reusable(db, viewer, task_api, {"d": "2026-09-21"}).id == job.id
     with pytest.raises(NotFoundError):
         _reusable(db, outsider, task_api, {"d": "2026-09-21"})
     # 缺参与 POST runs 同样报错,而不是答「没有」让调用方去跑一次注定失败的

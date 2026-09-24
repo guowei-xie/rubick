@@ -47,7 +47,7 @@ class SqlTemplate(Base, TimestampMixin):
     timeout_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # 「允许 API 调用」开关 —— 仅作**运行闸**:API 触发运行要求它为 True
-    # (见 query_service.enqueue);可见性与结果下载不受它影响,仍走权限模型。
+    # (见 query_service._admit);可见性与结果下载不受它影响,仍走权限模型。
     # **默认开**:这个开关不放宽任何权限(能跑的人仍只是被授权「运行」的那些),
     # 所以让每个新任务为了能被 Agent 调用先手动开一次,只是白走一道手续;
     # 不想被 API 触发的任务,由编辑者显式关掉。
@@ -55,6 +55,13 @@ class SqlTemplate(Base, TimestampMixin):
     # (存量任务不因默认值改了就被动对外开放,见 migrate.py),而新行的值一律由
     # 这里的 ORM default 显式带进 INSERT,不靠库里的默认值。
     allow_api: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="1"
+    )
+    # 「结果可复用」:当天(MySQL 为最近 N 分钟,见 RESULT_REUSE_MYSQL_MINUTES)有人以相同参数
+    # 跑成过,就直接复用那份结果、不再执行(query_service.submit_run)。**默认开**:同任务同版本
+    # 同参数的结果与谁跑无关(取数身份跟着任务走),复用不放宽任何权限;依赖实时数据或 SQL 里
+    # 写了 now() 的任务由编辑者关掉。调用方仍可随时 fresh=true 强制重跑,这个开关只管「优先复用」
+    allow_result_reuse: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="1"
     )
 

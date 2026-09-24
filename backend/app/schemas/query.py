@@ -8,6 +8,8 @@ from pydantic import BaseModel
 class RunIn(BaseModel):
     template_id: int
     values: dict[str, Any] = {}
+    # true = 不复用、一定真跑一次(界面上的「仍要重新运行」)。见 query_service.submit_run
+    fresh: bool = False
 
 
 class JobOut(BaseModel):
@@ -41,6 +43,14 @@ class JobOut(BaseModel):
     pushed_by_name: str | None = None
     pushed_from_job_id: int | None = None
     replaces_job_id: int | None = None
+    # ---- 复用(见 query_service.submit_run)----
+    # "result" = 这条记录复用了时效内的同参结果、没有执行过(列表里也有值,它是这行自己的属性);
+    # "inflight" = 本次提交接上了一条同参在途运行(只在 POST 的响应里出现 —— 那是这次提交的结果,
+    # 不是那条运行的属性);None = 新建并执行
+    reuse_kind: str | None = None
+    reused_from_job_id: int | None = None
+    # 被复用的数据是什么时候取的(来源运行开始执行的时刻)
+    reused_from_at: datetime | None = None
     # 「推送给订阅者」按钮。**只有任务运行记录列表(GET /tasks/{id}/jobs)会算**,且只对
     # 有编辑权的人:push_candidate = 给按钮;can_push = 可点,否则 push_hint 是原因;
     # 可点时再带上确认框要说的推给几人、会不会替换本期。其余接口恒为默认值

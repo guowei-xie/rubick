@@ -38,14 +38,14 @@ from app.services import (
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-def v1_job_out(db: Session, job) -> V1JobOut:
+def v1_job_out(db: Session, job, reuse_kind: str | None = None) -> V1JobOut:
     """对外的运行记录 = 界面那份(routes.query.job_out)的投影。
 
     刻意**穿过** job_out 而不是直接吃 ORM 行:「queue_ahead 只在 queued 时算」这个决定
     住在那里,绕过去就会有第二份。投影本身靠 from_attributes 读属性,内部多出来的字段
     (executed_sql / params / user_name…)在这一层被丢掉,理由见 schemas.v1.V1JobOut。
     """
-    return V1JobOut.model_validate(job_out(db, job))
+    return V1JobOut.model_validate(job_out(db, job, reuse_kind))
 
 
 def api_user(user: User = Depends(get_api_user)) -> User:
@@ -115,13 +115,17 @@ def run_task(
     user: User = Depends(api_user),
     ip: str | None = Depends(client_ip),
 ):
-    """触发一次运行:入队即返回运行记录(含 job_id 与 queue_ahead),用 /runs/{id} 轮询。
+    """触发一次运行:返回运行记录(含 job_id 与 queue_ahead),用 /runs/{id} 轮询。
 
-    除 can_run 外还要求任务开启了「允许 API 调用」(运行闸在 query_service.enqueue,
-    fail-closed)。
+    复用优先(query_service.submit_run):时效内有同参成功结果就直接给(reuse_kind=result,
+    立即 success),有同参在途运行就接上它(reuse_kind=inflight);fresh=true 一定新跑。
+    除 can_run 外还要求任务开启了「允许 API 调用」(运行闸,fail-closed),
+    且每用户同时在途的 API 运行受 API_MAX_INFLIGHT_PER_USER 约束(超出 429)。
     """
-    job = query_service.enqueue(db, user, template_id, data.values, ip=ip, source=SOURCE_API)
-    return v1_job_out(db, job)
+    job, reuse_kind = query_service.submit_run(
+        db, user, template_id, data.values, ip=ip, source=SOURCE_API, fresh=data.fresh
+    )
+    return v1_job_out(db, job, reuse_kind)
 
 
 @router.post("/tasks/{template_id}/runs/reusable", response_model=V1ReusableOut)
@@ -131,8 +135,9 @@ def find_reusable_run(
     db: Session = Depends(get_db),
     user: User = Depends(api_user),
 ):
-    """触发之前先问一句:今天有没有同参、结果还在的现成运行。判据见
+    """触发之前先问一句:时效内有没有同参、结果还在的现成运行。判据见
     query_service.find_reusable_job。用 POST 是因为 values 可能是上千个值的列表。
+    POST /runs 如今自己就会优先复用,这个端点保留作兼容。
     """
     job = query_service.find_reusable_job(db, user, template_id, data.values)
     return V1ReusableOut(job=v1_job_out(db, job) if job else None)
@@ -154,6 +159,18 @@ def list_runs(db: Session = Depends(get_db), user: User = Depends(api_user)):
 def get_run(job_id: int, db: Session = Depends(get_db), user: User = Depends(api_user)):
     """轮询一次运行的状态:status / row_count / duration_ms / error / queue_ahead。"""
     return v1_job_out(db, query_routes.load_job(db, user, job_id))
+
+
+@router.delete("/runs/{job_id}", response_model=V1JobOut)
+def cancel_run(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(api_user),
+    ip: str | None = Depends(client_ip),
+):
+    """取消一条**本人**发起、还在排队的运行(status → cancelled)。已开始执行或已结束 409,
+    别人的 404。用于腾出在途名额、或用户已经不要这份数了。"""
+    return v1_job_out(db, query_service.cancel_job(db, user, job_id, ip=ip))
 
 
 @router.get("/runs/{job_id}/preview")

@@ -483,6 +483,9 @@
 2. 跑完抽屉变宽，出现「结果预览」：**只给前 50 行**，标题旁写着「前 N 行 / 共 M 行，下载为完整结果」。
 3. **查看执行SQL** 能看到参数已代入的最终语句——业务截这张图给你，排错最快。
 4. **确认下载** 才真正下载完整 CSV（UTF-8 BOM，Excel 直接打开不乱码），文件名是 `<任务名>_<运行编号>.csv`；**重新运行** 则回到表单换参数。
+5. **复用优先**：同任务、同上线版本、同参数在时效内（Hive 当天，MySQL 最近 `RESULT_REUSE_MYSQL_MINUTES` 分钟）已有成功结果时，
+   不再执行，而是另建一条挂在本人名下、与来源共用结果文件的 success 记录（`reused_from_job_id`），预览上方写明复用了几点的数据，
+   并给 **仍要重新运行**（`fresh=true`，一定真跑）。本人同参的运行还没跑完时，再点运行会接上那一次。任务编辑器的「结果可复用」可按任务关掉。
 
 页面最多等 20 分钟，超时会提示「查询仍在执行，完成后会在「运行记录」和通知里」——此时结果不会丢，跑完照样能领。
 
@@ -651,10 +654,11 @@ skill 正文要求 Agent 每个会话第一次调 API 前拉一次 `/rubick-skil
 | 端点 | 干什么 |
 |---|---|
 | `GET /api/v1/tasks` | 我可见的任务数组，含参数定义 `params`（带共享候选值 `enum`）与 `can_run` / `can_download` / `allow_api` |
-| `POST /api/v1/tasks/{id}/runs` | 填参触发一次运行，立即返回 job |
-| `POST /api/v1/tasks/{id}/runs/reusable` | 触发前先问：今天有没有同参、同上线版本、结果还在的现成运行（`{job}` 或 `{job: null}`）；参数比对在服务端做，因为对外 job 不带 `params`（见 `query_service.find_reusable_job`） |
+| `POST /api/v1/tasks/{id}/runs` | 填参提交，立即返回 job。**复用优先**（`query_service.submit_run`）：时效内有同参成功结果就复用（`reuse_kind=result`，不执行），有同参在途运行就接上（`inflight`）；`fresh=true` 一定新跑。每 token 在途 API 运行超过 `API_MAX_INFLIGHT_PER_USER`（默认 3）返回 429 |
+| `POST /api/v1/tasks/{id}/runs/reusable` | 只问不跑：时效内有没有同参、同上线版本、结果还在的现成运行（`{job}` 或 `{job: null}`），判据与上一行的复用同一份；参数比对在服务端做，因为对外 job 不带 `params` |
+| `DELETE /api/v1/runs/{job_id}` | 取消本人还在排队的运行（→ `cancelled`）；已开跑或已结束 409 |
 | `GET /api/v1/runs` | 我看得见的运行记录列表（口径同网页，不只有本人发起的） |
-| `GET /api/v1/runs/{job_id}` | 单个 job：`status`（`queued/running/success/failed`）、`queue_ahead` 排队位次等 |
+| `GET /api/v1/runs/{job_id}` | 单个 job：`status`（`queued/running/success/failed/cancelled`）、`queue_ahead` 排队位次等 |
 | `GET /api/v1/runs/{job_id}/preview` | 表头 + 前 50 行 |
 | `GET /api/v1/runs/{job_id}/result` | 下载完整 CSV（`text/csv`） |
 
@@ -662,6 +666,8 @@ skill 正文要求 Agent 每个会话第一次调 API 前拉一次 `/rubick-skil
   排队时 `queue_ahead` 给出前面还有几个（口径与 [JobOut](../backend/app/schemas/query.py) 一致：
   仅 `queued` 时有值）。
 - **限流 120 请求/分钟/token**（`rate_limit` 按 token 计数），超限 429，调用方应退避重试。
+- **认领顺序非 API 优先**（`query_service.claim_order`）：worker 先跑网页取数与订阅定时运行，再跑 API 运行，同档按 id；
+  `queue_ahead` 与之同序，两处必须一起改。
 - 结果文件**保留 7 天**，与网页同一口径，过期后 `result` / `preview` 返回 **404**（`ResultExpiredError`），需重跑。
 
 ### 11.3 对任务作者的两条口径
