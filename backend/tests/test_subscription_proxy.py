@@ -1,4 +1,4 @@
-"""代订阅:把任务订阅给业务方(含自动补 view 授权)、从名单里移除订阅者。
+"""代订阅:把任务订阅给业务方(含自动补齐 view/run/download 授权)、从名单里移除订阅者。
 
 与仓库既有测试同风格:直接调路由函数,不起 TestClient。
 """
@@ -14,7 +14,15 @@ from app.api.routes.subscriptions import (
 )
 from app.core.exceptions import BatchRejectedError, PermissionDeniedError, RubicError
 from app.models import audit as A
-from app.models.permission import ACTION_VIEW, RESOURCE_TEMPLATE, SUBJECT_USER, Permission
+from app.models.permission import (
+    ACTION_DOWNLOAD,
+    ACTION_RUN,
+    ACTION_VIEW,
+    BUSINESS_ACTIONS,
+    RESOURCE_TEMPLATE,
+    SUBJECT_USER,
+    Permission,
+)
 from app.models.subscription import (
     SUB_EVENT_ADDED,
     SUB_EVENT_REMOVED,
@@ -89,7 +97,7 @@ def _add(db, tmpl, *users, by):
 
 
 def _perm_rows(db, tmpl, user, action=None) -> int:
-    """这个人在这个任务上有几条授权行;action=None 时不限动作(用来断言「只补了 view」)。"""
+    """这个人在这个任务上有几条授权行;action=None 时不限动作(用来断言没有多补别的)。"""
     clauses = [
         Permission.subject_type == SUBJECT_USER,
         Permission.subject_id == str(user.id),
@@ -115,16 +123,16 @@ def _events(db, tmpl, action) -> list[TaskSubscriptionEvent]:
 # ---------------------------------------------------------------- 代订阅主路径
 
 
-def test_proxy_subscribe_grants_view_and_creates_row(db, author, biz, tmpl):
-    """零权限的业务方被代订阅:订阅行 + 恰好一条 view 授权 + 一条留痕。"""
+def test_proxy_subscribe_grants_business_actions_and_creates_row(db, author, biz, tmpl):
+    """零权限的业务方被代订阅:订阅行 + view/run/download 各一条授权 + 一条留痕。"""
     floor = note_floor(db)
 
     out = _add(db, tmpl, biz, by=author)
 
-    assert out.created == [biz.id] and out.skipped == [] and out.granted_view == [biz.id]
-    # 只补 view,不顺手给 run/download
-    assert _perm_rows(db, tmpl, biz, ACTION_VIEW) == 1
-    assert _perm_rows(db, tmpl, biz) == 1
+    assert out.created == [biz.id] and out.skipped == [] and out.granted == [biz.id]
+    for action in BUSINESS_ACTIONS:
+        assert _perm_rows(db, tmpl, biz, action) == 1
+    assert _perm_rows(db, tmpl, biz) == len(BUSINESS_ACTIONS)
     sub = db.scalar(
         select(TaskSubscription).where(
             TaskSubscription.template_id == tmpl.id, TaskSubscription.user_id == biz.id
@@ -134,20 +142,58 @@ def test_proxy_subscribe_grants_view_and_creates_row(db, author, biz, tmpl):
     ev = _events(db, tmpl, SUB_EVENT_ADDED)
     assert len(ev) == 1
     assert ev[0].user_id == biz.id and ev[0].operator_id == author.id
-    assert ev[0].detail == {"granted_view": True}
-    # 补了权就订得上 —— can_subscribe 此刻对他成立
-    assert permission_service.can_subscribe(permission_service.team_scope(db, biz), tmpl)
+    assert ev[0].detail == {"granted_actions": list(BUSINESS_ACTIONS)}
+    # 补了权就订得上、跑得了、取得走
+    scope = permission_service.team_scope(db, biz)
+    assert permission_service.can_subscribe(scope, tmpl)
+    assert permission_service.can_run(scope, tmpl)
+    assert permission_service.can_download(scope, tmpl)
     # 本人收到一条「已为你订阅」
     notes = [n for n in new_notifications(db, floor) if n.user_id == biz.id]
     assert len(notes) == 1 and "订阅" in notes[0].title
 
 
 def test_proxy_subscribe_insider_does_not_grant_redundant_view(db, author, member, tmpl):
-    """同团队成员本就 can_view,不该给他塞一条冗余授权行。"""
+    """同团队成员本就能看能跑能下,不该给他塞冗余授权行。"""
     out = _add(db, tmpl, member, by=author)
 
-    assert out.created == [member.id] and out.granted_view == []
+    assert out.created == [member.id] and out.granted == []
     assert _perm_rows(db, tmpl, member) == 0
+    assert _events(db, tmpl, SUB_EVENT_ADDED)[0].detail == {"granted_actions": []}
+
+
+def test_proxy_subscribe_fills_gaps_for_view_only_grantee(db, author, biz, tmpl):
+    """已被手工授了 view 的业务方:只补缺的 run/download,view 不重复建,审计记实际新建的。"""
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, subject_id=str(biz.id),
+        resource_type=RESOURCE_TEMPLATE, resource_id=str(tmpl.id),
+        actions=[ACTION_VIEW], granted_by=author.id,
+    )
+    floor = max_audit_id(db)
+
+    out = _add(db, tmpl, biz, by=author)
+
+    assert out.granted == [biz.id]
+    assert _perm_rows(db, tmpl, biz) == len(BUSINESS_ACTIONS) and _perm_rows(db, tmpl, biz, ACTION_VIEW) == 1
+    grant = [r for r in new_audit_rows(db, floor) if r.action == A.ACTION_PERMISSION_GRANT]
+    assert len(grant) == 1
+    assert grant[0].detail["actions_created"] == [ACTION_RUN, ACTION_DOWNLOAD]
+
+
+def test_proxy_subscribe_fully_authorized_grantee_gets_nothing_new(db, author, biz, tmpl):
+    """三项早已齐全的人:不新建授权行,也不记一条空的授权审计。"""
+    permission_service.grant(
+        db, subject_type=SUBJECT_USER, subject_id=str(biz.id),
+        resource_type=RESOURCE_TEMPLATE, resource_id=str(tmpl.id),
+        actions=list(BUSINESS_ACTIONS), granted_by=author.id,
+    )
+    floor = max_audit_id(db)
+
+    out = _add(db, tmpl, biz, by=author)
+
+    assert out.created == [biz.id] and out.granted == []
+    assert _perm_rows(db, tmpl, biz) == len(BUSINESS_ACTIONS)
+    assert not [r for r in new_audit_rows(db, floor) if r.action == A.ACTION_PERMISSION_GRANT]
 
 
 def test_proxy_subscribe_skips_existing_subscriber(db, author, biz, tmpl):
@@ -172,7 +218,7 @@ def test_proxy_subscribe_multiple_shares_batch_id(db, author, biz, other_biz, tm
     assert len(rows) == 2
     assert len({r.detail["batch_id"] for r in rows}) == 1
     assert {r.detail["batch_size"] for r in rows} == {2}
-    # 补的 view 各记一条普通授权,来源在 detail 里标着
+    # 补的授权各记一条普通授权,来源在 detail 里标着
     grants = [r for r in new_audit_rows(db, floor) if r.action == A.ACTION_PERMISSION_GRANT]
     assert len(grants) == 2 and {g.detail["via"] for g in grants} == {"subscribe_for"}
 
@@ -180,8 +226,10 @@ def test_proxy_subscribe_multiple_shares_batch_id(db, author, biz, other_biz, tm
 def test_subscribers_listing_shows_proxy_origin(db, author, biz, other_biz, tmpl):
     """名单上直接读得出「自助订阅」还是「由谁代订」。"""
     _add(db, tmpl, biz, by=author)
-    permission_service.grant_view(db, template_id=tmpl.id, user_id=other_biz.id, granted_by=None)
-    db.commit()  # grant_view 不提交,跟随调用方事务
+    permission_service.grant_business(
+        db, template_id=tmpl.id, user_id=other_biz.id, actions=[ACTION_VIEW], granted_by=None
+    )
+    db.commit()  # grant_business 不提交,跟随调用方事务
     subscribe_task(tmpl.id, db=db, user=other_biz, ip=None)
 
     rows = {i.user_id: i for i in task_subscribers(tmpl.id, db=db, user=author).items}
@@ -199,7 +247,7 @@ def test_proxy_subscribe_requires_edit_rights(db, author, member, biz, tmpl):
 
 
 def test_proxy_subscribe_rejects_draft_task(db, author, biz, ds, team, subscribed_task_factory):
-    """草稿任务:补了 view 也照样 can_view=False(published 是它的前提),必须前置拦下,
+    """草稿任务:补了授权也照样 can_view=False(published 是它的前提),必须前置拦下,
     否则会造出一批「有权限却永远收不到推送」的僵尸订阅行。"""
     tmpl = subscribed_task_factory(author, ds, team, name="sfor-草稿", publish=False)
     with pytest.raises(RubicError, match="尚未上线"):

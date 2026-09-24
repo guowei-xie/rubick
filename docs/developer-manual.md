@@ -677,7 +677,9 @@ skill 正文要求 Agent 每个会话第一次调 API 前拉一次 `/rubick-skil
    所以撤权不会作废已签发的链接），没有授权就是 403 ——
    它刻意**不认「这条运行是我自己跑的」**，否则任何有运行权限的人跑一次就绕过去了。
    例外只有一个：订阅推送给某人的那几期结果，他不必再被授权「下载」（订阅就是「定期送你
-   这份结果」的承诺，代订阅只补 view 是刻意的，见 `permission_service.grant_view`）。
+   这份结果」的承诺）。代订阅如今会顺带补齐「查看、运行、下载」（`permission_service.grant_business`），
+   这条例外主要兜住早先只拿到「查看」的代订阅者和事后被撤了「下载」的人；存量代订阅者可用
+   `python -m app.backfill_subscriber_grants`（默认 dry-run）补齐。
 2. **API 触发的运行记 `source='api'`**，与网页正式取数（`run`）、试跑（`test`）、
    订阅定时（`subscribe`）区分开；审计里对应记录带 `via=api` 标记。业务说「我没跑过这个」时，
    先看这条运行是不是从 API 进来的。

@@ -90,7 +90,7 @@ class SubscribeForOut(BaseModel):
 
     created: list[int] = []        # 本次真新建的订阅
     skipped: list[int] = []        # 本来就在名单里,原样不动(幂等,不算失败)
-    granted_view: list[int] = []   # 本次顺带补了查看权的人
+    granted: list[int] = []        # 本次顺带补了业务授权(查看/运行/下载)的人
 
 
 class SubscriptionEventOut(BaseModel):

@@ -294,7 +294,7 @@ def can_download(scope: TeamScope, tmpl) -> bool:
 def is_subscribable(tmpl) -> bool:
     """订阅资格里**与人无关**的那一半:任务得已上线。
 
-    具名出来是因为代订阅要单独问它 —— 那条路径会先给对方补一条 view 授权,所以「人侧」
+    具名出来是因为代订阅要单独问它 —— 那条路径会先给对方补齐业务授权,所以「人侧」
     那一半由它自己制造,只剩任务侧要判。路由层再抄一次 `status == PUBLISHED` 就会让
     这条判据有两个真相源:哪天它变成「已上线且未归档」,抄的那份会静默留在旧口径。
     """
@@ -310,44 +310,54 @@ def can_subscribe(scope: TeamScope, tmpl) -> bool:
     return is_subscribable(tmpl) and can_view(scope, tmpl)
 
 
-def viewers_among(db: Session, user_ids: list[int], tmpl) -> set[int]:
-    """这批人里,**此刻已经看得见这一个任务**的是哪些。固定 2 次查询,与人数无关。
+def business_gaps_among(db: Session, users: list[User], tmpl) -> dict[int, list[str]]:
+    """这批人在这一个任务上**还缺哪几项业务权限**(view/run/download),只列有缺口的人。
+    固定 2 次查询,与人数无关;调用方手里本就是 User 对象,不再按 id 重查一遍。
 
-    它是 can_view 的批量反问:can_view 问「这个人能看见哪些任务」(为此要 TeamScope,
-    一个人的全景视角,固定 2 次查询),这里问「这 50 个人里谁看得见这一个任务」——
-    拿前者回答后者就是 2N 次往返,正是 TeamScope 那段注释在禁的 N+1。
-    形状仿 authorized_run_users:先批量取授权行,再在内存里配对,不对 String 列做 cast join。
+    平台管理员与任务所属团队成员没有缺口:他们的可见/可运行/可下载来自身份(is_insider),
+    给他们补授权行只会在授权列表里造出一排冗余记录。其余人按显式授权行逐项配对。
+
+    它是代订阅「顺带补授权」的判据(subscription_service.subscribe_for_plan),也是存量
+    补授脚本(app.backfill_subscriber_grants)的判据 —— 两处用同一把尺。
+    形状仿 authorized_run_users:先批量取授权行,再在内存里配对,不对 String 列做 cast join;
+    逐人建 TeamScope 就是 2N 次往返(见 TeamScope 那段注释)。
     """
-    if not user_ids:
-        return set()
-    users = list(db.scalars(select(User).where(User.id.in_(user_ids))))
-    seen = {u.id for u in users}
+    if not users:
+        return {}
+    user_ids = [u.id for u in users]
     # ① 平台管理员全通
-    ok = {u.id for u in users if is_platform_admin(u)}
+    covered = {u.id for u in users if is_platform_admin(u)}
     # ② 内部人:任务所属团队的成员(无主任务 fail-closed,同 is_insider)
     if tmpl.team_id is not None:
-        ok |= set(
+        covered |= set(
             db.scalars(
                 select(TeamMember.user_id).where(
                     TeamMember.team_id == tmpl.team_id, TeamMember.user_id.in_(user_ids)
                 )
             )
         )
-    # ③ 被显式授予该任务 view 的人 —— 仅当任务已上线(同 can_view 对被授权人的叠加条件)
-    if is_subscribable(tmpl):
-        for sid in db.scalars(
-            select(Permission.subject_id).where(
-                Permission.subject_type == SUBJECT_USER,
-                Permission.resource_type == RESOURCE_TEMPLATE,
-                Permission.resource_id == str(tmpl.id),
-                Permission.action == ACTION_VIEW,
-                Permission.subject_id.in_([str(i) for i in user_ids]),
-            )
-        ):
-            uid = parse_subject_id(sid)
-            if uid is not None:
-                ok.add(uid)
-    return ok & seen
+    # ③ 其余人:已有哪些业务授权行
+    held: dict[int, set[str]] = {}
+    for sid, action in db.execute(
+        select(Permission.subject_id, Permission.action).where(
+            Permission.subject_type == SUBJECT_USER,
+            Permission.resource_type == RESOURCE_TEMPLATE,
+            Permission.resource_id == str(tmpl.id),
+            Permission.action.in_(BUSINESS_ACTIONS),
+            Permission.subject_id.in_([str(i) for i in user_ids]),
+        )
+    ):
+        uid = parse_subject_id(sid)
+        if uid is not None:
+            held.setdefault(uid, set()).add(action)
+    gaps: dict[int, list[str]] = {}
+    for u in users:
+        if u.id in covered:
+            continue
+        missing = [a for a in BUSINESS_ACTIONS if a not in held.get(u.id, set())]
+        if missing:
+            gaps[u.id] = missing
+    return gaps
 
 
 # ---------------------------------------------------------------- 列表收窄(SQL 谓词)
@@ -502,9 +512,9 @@ def can_download_job(db: Session, user: User, job, *, scope: TeamScope | None = 
     给发起人开短路等于把这道闸架空 —— 任何有 run 权限的人自己跑一次就绕过去了。
     平台管理员与任务所属团队成员由 can_download 的 is_insider 放行,这里不重复一遍。
 
-    订阅推送的那一期结果对在册订阅者放行:代订阅只补 view(见 subscription_service
-    .subscribe_for),而订阅本身就是「把这份结果定期送给你」的承诺 —— 看得见却取不走
-    是半截承诺(可见那半在 job_visibility_condition 里)。放行只限订阅跑出来的那些期,
+    订阅推送的那一期结果对在册订阅者放行:代订阅如今会补齐 download,但早先代订阅的人
+    只拿到了 view,而下载授权也可能事后被单独撤掉 —— 订阅本身就是「把这份结果定期送给你」
+    的承诺,看得见却取不走是半截承诺(可见那半在 job_visibility_condition 里)。放行只限订阅跑出来的那些期,
     同任务下**他人手动跑**的结果仍要 download 授权。
     **判据是「此刻在册」,不是「这一期当初推给过他」**:今天订阅的人也取得走上个月那几期。
     两者的差别要紧到需要区分时,得按 TaskSubscription.created_at 与 job.created_at 比 ——
@@ -726,28 +736,49 @@ def _add_rows(
     return created
 
 
-def grant_view(db: Session, *, template_id: int, user_id: int, granted_by: int | None) -> bool:
-    """幂等补一条该任务的 view 业务授权行,返回是否新建。**不提交,跟随调用方事务。**
+def grant_business(
+    db: Session, *, template_id: int, user_id: int, actions: list[str], granted_by: int | None
+) -> list[str]:
+    """幂等写入该任务的业务授权行,返回本次**新建**的动作(已有的跳过)。
+    **不提交,跟随调用方事务。** actions 通常就是 business_gaps_among 算出的缺口,
+    只查缺的那几项,不再把三项逐个重问一遍。
 
-    与 grant() 的区别只有事务约定:代订阅要把「补 view 授权 + 建订阅行 + 写留痕」放进同一个
+    与 grant() 的区别只有事务约定:代订阅要把「补授权 + 建订阅行 + 写留痕」放进同一个
     事务(见 subscription_service.subscribe_for),而 grant() 末尾自带 commit。
     同 grant_edit(提交)/ discard_edit_grant(不提交)的分工 —— 一件事两种事务约定各给一个
     具名函数,别让调用方去猜。
 
-    只开放 view 这一个动作:run / download 是「自己填参跑一次、把任意一期取走」才需要的,
-    代订阅不该顺手给。订阅者取走推送给他那一期的资格另有出口,见 can_download_job。
+    三项一起给:被订上的人收到推送后,下一步就是自己改参数跑一次、把结果取走。
+    早先代订阅只补 view,结果授权列表里出现一排「只有查看」的人,授权人以为自己点漏了
+    (2026-09 管理员反馈),业务方也只能看不能跑 —— 口径已改为默认给齐。
     """
-    return bool(
-        _add_rows(
+    return [
+        p.action
+        for p in _add_rows(
             db,
             subject_type=SUBJECT_USER,
             subject_id=str(user_id),
             resource_type=RESOURCE_TEMPLATE,
             resource_id=str(template_id),
-            actions=[ACTION_VIEW],
+            actions=actions,
             granted_by=granted_by,
         )
-    )
+    ]
+
+
+def grant_audit_detail(
+    *, subject_id: str | None, subject_name: str | None, actions: list[str],
+    actions_created: list[str], **extra,
+) -> dict:
+    """permission_grant 审计的 detail。手工授权、代订阅顺带补授、存量补授三处共用 ——
+    「这个人的权限从哪来」靠这些行拼成一条时间线,键名一漂就拼不上。"""
+    return {
+        "subject_type": SUBJECT_USER, "subject_id": subject_id,
+        "subject_name": subject_name, "actions": actions,
+        # grant 幂等:已存在的动作会被跳过。两者不等即说明部分/全部是重复授权
+        "actions_created": actions_created,
+        **extra,
+    }
 
 
 # ---- 指定任务的编辑权(团队内,只由 /api/tasks/{id}/editors 进出)

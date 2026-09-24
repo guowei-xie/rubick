@@ -820,12 +820,16 @@ export default function TasksPage() {
         open={!!records}
         onClose={() => setRecords(null)}
       />
-      <GrantModal
-        templateId={grantTarget?.id ?? null}
-        templateName={grantTarget?.name}
-        open={!!grantTarget}
-        onClose={() => setGrantTarget(null)}
-      />
+      {/* 每次打开都是新实例:弹窗内的选人、勾选等状态不会从上一个任务带过来 */}
+      {grantTarget && (
+        <GrantModal
+          key={grantTarget.id}
+          templateId={grantTarget.id}
+          templateName={grantTarget.name}
+          open
+          onClose={() => setGrantTarget(null)}
+        />
+      )}
       <SubscribersModal
         task={subscribersTarget}
         open={!!subscribersTarget}

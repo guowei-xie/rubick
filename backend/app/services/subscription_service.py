@@ -337,10 +337,11 @@ class SubscriberRejection:
 
 @dataclass
 class SubscriberAddition:
-    """要新建的一条代订阅。needs_view = 这个人还不满足 can_view,写入时顺带补一条 view 授权。"""
+    """要新建的一条代订阅。missing = 这个人还缺的业务授权(view/run/download),
+    写入时顺带补齐(见 permission_service.grant_business);空 = 不必补。"""
 
     user: User
-    needs_view: bool
+    missing: list[str]
 
 
 def _resolve_targets(db: Session, subjects) -> tuple[list[User], list[SubscriberRejection]]:
@@ -422,9 +423,9 @@ def subscribe_for_plan(
             select(TaskSubscription.user_id).where(TaskSubscription.template_id == tmpl.id)
         )
     )
-    # 「这批人里谁已经看得见这个任务」一次问清(2 次查询),不逐人建 TeamScope —— 那是
-    # 一个人的全景视角,拿它回答批量问题就是 2N 次往返(见 permission_service.viewers_among)
-    viewers = permission_service.viewers_among(db, [u.id for u in targets], tmpl)
+    # 「这批人里谁还缺业务授权」一次问清(固定 3 次查询),不逐人建 TeamScope —— 那是
+    # 一个人的全景视角,拿它回答批量问题就是 2N 次往返(见 permission_service.business_gaps_among)
+    gaps = permission_service.business_gaps_among(db, targets, tmpl)
 
     items: list[SubscriberAddition] = []
     skipped: list[int] = []
@@ -447,34 +448,36 @@ def subscribe_for_plan(
         elif user.id in existing:
             skipped.append(user.id)
         else:
-            items.append(SubscriberAddition(user=user, needs_view=user.id not in viewers))
+            items.append(SubscriberAddition(user=user, missing=gaps.get(user.id, [])))
     return items, skipped, rejections
 
 
 def subscribe_for(
     db: Session, tmpl: SqlTemplate, items: list[SubscriberAddition], *, operator: User
-) -> tuple[list[int], list[int]]:
-    """代订阅的写入相位:补 view 授权 + 建订阅行 + 写留痕,**一个事务**。
-    返回 (created_ids, granted_view_ids)。
+) -> tuple[list[int], dict[int, list[str]]]:
+    """代订阅的写入相位:补齐业务授权 + 建订阅行 + 写留痕,**一个事务**。
+    返回 (created_ids, {user_id: 本次新建的授权动作})—— 后者只含真的补了授权的人。
 
-    这里是这条链路上**唯一的 commit 点** —— permission_service.grant_view 与
+    这里是这条链路上**唯一的 commit 点** —— permission_service.grant_business 与
     _add_subscription 都不提交;审计与通知由调用方在 commit 之后发(audit_service.log 与
     _push 都自带 commit,夹在中间会把还没写完的一批提前提交,同 template_service.add_version)。
     """
     from app.services import permission_service
 
     created: list[int] = []
-    granted: list[int] = []
+    granted: dict[int, list[str]] = {}
     for item in items:
-        did_grant = item.needs_view and permission_service.grant_view(
-            db, template_id=tmpl.id, user_id=item.user.id, granted_by=operator.id
+        actions = item.missing and permission_service.grant_business(
+            db, template_id=tmpl.id, user_id=item.user.id,
+            actions=item.missing, granted_by=operator.id,
         )
-        if did_grant:
-            granted.append(item.user.id)
+        if actions:
+            granted[item.user.id] = actions
+        # 早先的事件行记的是 {"granted_view": bool},不回写 —— 读的人按键名分辨新旧口径
         _add_subscription(
             db, template_id=tmpl.id, user_id=item.user.id,
             action=SUB_EVENT_ADDED, operator_id=operator.id, added_by=operator.id,
-            detail={"granted_view": did_grant},
+            detail={"granted_actions": actions},
         )
         created.append(item.user.id)
     db.commit()

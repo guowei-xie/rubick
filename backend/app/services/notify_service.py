@@ -486,7 +486,7 @@ def notify_subscribed_by_operator(
     都会有推送落到他手上 —— 不告诉他这是怎么回事、怎么退,就是替人做主。
     操作者不另发:他刚点完按钮,界面已经给了回执(同 permissions.grant 不通知授权人)。
 
-    文案只有一处随人而异(顺带补了查看权的多一句),故按这一位切成两批发,
+    文案只有一处随人而异(顺带补了授权的多一句),故按这一位切成两批发,
     而不是自己写一个 _push 循环 —— 同 notify_subscription_run_failed 的两批写法。
     """
     body = (
@@ -496,7 +496,7 @@ def notify_subscribed_by_operator(
     )
     live = [uid for uid in user_ids if _is_notifiable(db, uid)]
     for ids, extra in (
-        ([u for u in live if u in granted_ids], "你现在也能在任务列表里看到这个任务了。"),
+        ([u for u in live if u in granted_ids], "你现在也能在任务列表里看到这个任务,并自己运行、下载结果了。"),
         ([u for u in live if u not in granted_ids], ""),
     ):
         _push_each(

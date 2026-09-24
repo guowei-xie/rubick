@@ -97,7 +97,7 @@ export default function SubscribersModal({
     try {
       const r = await subscribeTaskFor(task.id, subjects);
       const parts = [`已为 ${r.created.length} 人订阅`];
-      if (r.granted_view.length) parts.push(`其中 ${r.granted_view.length} 人同时获得查看权限`);
+      if (r.granted.length) parts.push(`其中 ${r.granted.length} 人同时获得查看、运行、下载权限`);
       if (r.skipped.length) parts.push(`${r.skipped.length} 人已在名单中`);
       message.success(parts.join("，"));
       setPicked([]);
@@ -248,7 +248,7 @@ export default function SubscribersModal({
                   />
                 )}
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  没有查看权限的人会在同一次操作里补上「查看」；有一个人不能订则整批不生效。
+                  还没有权限的人会在同一次操作里补上「查看、运行、下载」；有一个人不能订则整批不生效。
                   连续 {threshold} 个成功运行期未查看数据(下载或预览)的订阅者，平台会自动取消其订阅并通知本人。
                 </Typography.Text>
                 <Table

@@ -30,7 +30,7 @@ from app.models.audit import (
     ACTION_TASK_UNSUBSCRIBE,
     ACTION_TASK_UNSUBSCRIBE_FOR,
 )
-from app.models.permission import ACTION_VIEW, RESOURCE_TEMPLATE, SUBJECT_USER
+from app.models.permission import BUSINESS_ACTIONS, RESOURCE_TEMPLATE
 from app.models.subscription import SUB_EVENT_META
 from app.models.template import STATUS_PUBLISHED, SqlTemplate
 from app.models.user import User
@@ -200,9 +200,9 @@ def subscribe_task_for(
     通讯录搜出来的人要先落库才拿得到 user_id(resolve_subscriber_targets 会 flush),
     所以整批被拒时必须**显式 db.rollback()** —— 那边「连回滚都不需要」的说法在这里不成立。
 
-    没有 view 权的人在同一事务里补一条 view 授权:订阅的产出是运行结果,而结果的可见性
-    判据就是 can_view(permission_service.can_access_job)。为什么只补 view,
-    见 permission_service.grant_view。
+    还缺业务授权的人在同一事务里补齐 view/run/download:订阅的产出是运行结果,结果的可见性
+    判据就是 can_view(permission_service.can_access_job),而收到推送的人下一步就是自己跑、
+    自己取。为什么三项一起给,见 permission_service.grant_business。
     """
     tmpl = _managed(db, user, template_id)
     if not data.subjects:
@@ -236,7 +236,6 @@ def subscribe_task_for(
     schedule_desc = subscription_service.describe_schedule(sched)
 
     created, granted = subscription_service.subscribe_for(db, tmpl, items, operator=user)
-    granted_set = set(granted)
 
     # 审计在业务 commit 之后写,理由见 subscription_service.subscribe_for。
     # batch_id 让 N 条行重新聚成「同一次操作」,同批量交接。
@@ -247,31 +246,30 @@ def subscribe_task_for(
             resource_type=RESOURCE_TEMPLATE, resource_id=tmpl_id, resource_name=tmpl_name,
             detail={
                 "target_user_id": uid, "target_user_name": names.get(uid),
-                "granted_view": uid in granted_set, "schedule": schedule_desc,
+                "granted_actions": granted.get(uid, []), "schedule": schedule_desc,
                 "batch_id": batch_id, "batch_size": len(created),
             },
             ip=ip,
         )
-        if uid in granted_set:
-            # 顺带补的 view 记成一条**普通的授权**,不另起新码:这样「这个人对这个任务的
-            # 查看权从哪来」在审计里是一条连续的时间线,手工授的与代订阅带的躺在同一次筛选里。
+        if uid in granted:
+            # 顺带补的授权记成一条**普通的授权**,不另起新码:这样「这个人对这个任务的
+            # 权限从哪来」在审计里是一条连续的时间线,手工授的与代订阅带的躺在同一次筛选里。
             audit_service.log(
                 db, user=user, action=ACTION_PERMISSION_GRANT,
                 resource_type=RESOURCE_TEMPLATE, resource_id=tmpl_id, resource_name=tmpl_name,
-                detail={
-                    "subject_type": SUBJECT_USER, "subject_id": str(uid),
-                    "subject_name": names.get(uid), "actions": [ACTION_VIEW],
-                    "actions_created": [ACTION_VIEW],
-                    "via": "subscribe_for", "batch_id": batch_id,
-                },
+                detail=permission_service.grant_audit_detail(
+                    subject_id=str(uid), subject_name=names.get(uid),
+                    actions=list(BUSINESS_ACTIONS), actions_created=granted[uid],
+                    via="subscribe_for", batch_id=batch_id,
+                ),
                 ip=ip,
             )
     if created:
         notify_service.notify_subscribed_by_operator(
             db, tmpl, created, operator_name=user.name or "任务负责人",
-            schedule_desc=schedule_desc, granted_ids=granted_set,
+            schedule_desc=schedule_desc, granted_ids=set(granted),
         )
-    return SubscribeForOut(created=created, skipped=skipped, granted_view=granted)
+    return SubscribeForOut(created=created, skipped=skipped, granted=list(granted))
 
 
 @router.delete("/{template_id}/subscribers/{user_id}")

@@ -43,12 +43,10 @@ export default function GrantModal({
     if (open) loadGrants();
   }, [open, templateId]);
 
-  // 打开时重置所选对象并刷新候选列表
+  // 打开时刷新候选列表。所选对象与勾选动作不必手动重置:调用方每次打开都挂一个新实例
+  // (TasksPage 按任务 key 条件渲染),状态天然从初始值开始。
   useEffect(() => {
-    if (open) {
-      setSubjectId(undefined);
-      fetchNow("");
-    }
+    if (open) fetchNow("");
   }, [open]);
 
   const add = async () => {

@@ -111,17 +111,15 @@ def grant(
         db, user=user, action=ACTION_PERMISSION_GRANT,
         resource_type=data.resource_type, resource_id=data.resource_id,
         resource_name=_name_of(db, SqlTemplate, data.resource_id),
-        detail={
-            "subject_type": data.subject_type,
-            "subject_id": subject_id,
-            "subject_open_id": data.subject_open_id,
+        detail=permission_service.grant_audit_detail(
+            subject_id=subject_id,
             # 请求里带了姓名就直接用,省一次查库
-            "subject_name": data.subject_name or _name_of(db, User, subject_id),
-            "actions": data.actions,
-            # grant 幂等:已存在的动作会被跳过。两者不等即说明部分/全部是重复授权
-            "actions_created": [p.action for p in created],
-            "permission_ids": [p.id for p in created],
-        },
+            subject_name=data.subject_name or _name_of(db, User, subject_id),
+            actions=data.actions,
+            actions_created=[p.action for p in created],
+            subject_open_id=data.subject_open_id,
+            permission_ids=[p.id for p in created],
+        ),
         ip=ip,
     )
     return created
