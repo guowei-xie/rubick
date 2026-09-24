@@ -48,6 +48,11 @@ export function fmtPercent(v?: number | null, digits = 1): string {
   return `${(v * 100).toFixed(digits)}%`;
 }
 
+/** 一个运行参数的值:列表参数用顿号连起来,空值给空串。运行记录与运营分析的详情共用。 */
+export function fmtParamValue(v: unknown): string {
+  return Array.isArray(v) ? v.join("、") : v == null ? "" : String(v);
+}
+
 /** 表格里的空值占位:null/undefined/"" 都显示 "-"。 */
 export function dash(v: unknown): string {
   return v === null || v === undefined || v === "" ? "-" : String(v);

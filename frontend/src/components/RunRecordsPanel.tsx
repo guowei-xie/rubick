@@ -8,14 +8,13 @@ import {
   taskRunRecords,
   withBase,
 } from "../api";
-import StatusTag, { JOB_REUSED, JOB_SOURCE, JOB_STATUS, jobSourceKey } from "./StatusTag";
+import StatusTag, { EMPTY_CELL, JOB_STATUS, JobSourceTag } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
-import { fmtDayTime, fmtDuration, fmtTime } from "../format";
+import { fmtDayTime, fmtDuration, fmtParamValue, fmtTime } from "../format";
 import { MODAL } from "../widths";
 
-/** 表格里的空值占位,与「参数/执行SQL 没有内容」用同一个灰破折号,免得同一行里三种写法。 */
-const EMPTY = <span style={{ color: "#ccc" }}>—</span>;
+const EMPTY = EMPTY_CELL;
 
 /** 两种形态的列宽预算列在一处 —— 要判断这几列塞不塞得进某个宽度,得把它们加起来看
  *  (compact 现为 510,full 约 830),散在各列的三元里加不动。 */
@@ -139,24 +138,7 @@ export default function RunRecordsPanel({
       title: "类型",
       dataIndex: "source",
       width: w.source,
-      render: (_: string, r: any) => {
-        const tag = <StatusTag map={JOB_SOURCE} value={jobSourceKey(r)} />;
-        if (r.pushed_from_job_id)
-          return <Tooltip title={`从运行记录 #${r.pushed_from_job_id} 补推`}>{tag}</Tooltip>;
-        // 复用记录没有执行过(耗时、排队都是空的),不标出来会被读成「这条跑得出奇地快」
-        if (r.reused_from_job_id)
-          return (
-            <Tooltip
-              title={`复用了${r.reused_from_at ? ` ${fmtTime(r.reused_from_at, false)} ` : ""}相同参数的结果(运行记录 #${r.reused_from_job_id}),没有重新执行`}
-            >
-              <Space size={2}>
-                {tag}
-                <Tag color={JOB_REUSED.color}>{JOB_REUSED.label}</Tag>
-              </Space>
-            </Tooltip>
-          );
-        return tag;
-      },
+      render: (_: string, r: any) => <JobSourceTag r={r} />,
     },
     {
       title: "运行人",
@@ -314,7 +296,7 @@ export default function RunRecordsPanel({
             ]}
             dataSource={Object.entries(paramsData).map(([k, v]) => ({
               k,
-              v: Array.isArray(v) ? v.join("、") : v == null ? "" : String(v),
+              v: fmtParamValue(v),
             }))}
           />
         )}

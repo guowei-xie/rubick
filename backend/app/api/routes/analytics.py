@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -94,6 +94,63 @@ def analytics_live(
     """
     scope = analytics_service.resolve_scope(db, user)
     return analytics_service.live(db, scope)
+
+
+def run_filters(
+    status: list[str] = Query(default=[]),
+    source: list[str] = Query(default=[]),
+    datasource_id: int | None = None,
+    template_id: int | None = None,
+    template_kw: str | None = None,
+    user_kw: str | None = None,
+    min_duration_s: int | None = None,
+    min_queue_s: int | None = None,
+    error_kw: str | None = None,
+    bucket: str | None = None,
+    executed_only: bool = False,
+) -> analytics_service.RunFilters:
+    """运行明细的筛选参数。status / source 可多选(`?status=failed&status=queued`)。
+    做成依赖只为让每个筛选项只列一次;它不是守卫,守卫仍在路由函数体里(见 _scoped)。"""
+    return analytics_service.RunFilters(
+        status=tuple(status), source=tuple(source), datasource_id=datasource_id,
+        template_id=template_id, template_kw=template_kw, user_kw=user_kw,
+        min_duration_s=min_duration_s, min_queue_s=min_queue_s, error_kw=error_kw,
+        bucket=bucket, executed_only=executed_only,
+    )
+
+
+@router.get("/runs")
+def analytics_runs(
+    team_id: int | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    days: int | None = None,
+    filters: analytics_service.RunFilters = Depends(run_filters),
+    sort: str = "created",
+    page: int = 1,
+    page_size: int = analytics_service.RUNS_PAGE_DEFAULT,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """运行明细:时间窗内每一次运行的流水,可筛选、分页,带错误摘要。
+
+    排序:created(默认,新的在前)/ duration(耗时最长在前)/ queue(排队最久在前)。
+    """
+    scope, window = _scoped(db, user, team_id, start, end, days)
+    return analytics_service.runs(db, scope, window, filters,
+                                  sort=sort, page=page, page_size=page_size)
+
+
+@router.get("/runs/{job_id}")
+def analytics_run_detail(
+    job_id: int,
+    team_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """一次运行的完整错误、执行 SQL 与参数。范围外的 id 一律 404。"""
+    scope = analytics_service.resolve_scope(db, user, team_id)
+    return analytics_service.run_detail(db, scope, job_id)
 
 
 @router.get("/assets")

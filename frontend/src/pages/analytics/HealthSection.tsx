@@ -9,6 +9,7 @@ import {
 } from "../../components/analytics/chartTheme";
 import { JOB_SOURCE_LONG } from "../../components/StatusTag";
 import { fmtDuration, fmtPercent } from "../../format";
+import type { RunsFilterState } from "./RunsSection";
 import { useSectionData } from "./useAnalyticsQuery";
 
 export default function HealthSection({
@@ -16,6 +17,7 @@ export default function HealthSection({
   scopeLabel,
   notes,
   showInFlight = true,
+  onDrill,
 }: {
   query: AnalyticsQuery;
   scopeLabel: string;
@@ -23,6 +25,9 @@ export default function HealthSection({
   /** 全平台视角下顶部有实时负载板,「此刻排队」在那边有明细且会自动刷新 —— 这里再摆一张
    *  只取一次的同名卡,两个数一刷新就对不上。团队视角没有实时板,仍由这张卡兜底 */
   showInFlight?: boolean;
+  /** 跳到运行明细并带上筛选。本板口径是「真正执行过的」,下钻时同样带上 executed_only,
+   *  否则点「超时 12 次」过去看到的条数对不上 */
+  onDrill?: (f: RunsFilterState) => void;
 }) {
   const { ref, data, loading, error, reload } = useSectionData<HealthData>(
     (signal) => analyticsHealth(query, signal),
@@ -74,6 +79,8 @@ export default function HealthSection({
   }, [data]);
 
   const pts = data?.daily_series ?? [];
+  // 本板只算真正执行过的,下钻过去也按这个口径,否则「超时 12 次」点过去对不上
+  const drill = onDrill && ((f: RunsFilterState) => onDrill({ ...f, executed_only: true }));
 
   return (
     <SectionCard
@@ -168,6 +175,17 @@ export default function HealthSection({
             empty={data.failure_buckets.length === 0}
             emptyText="这段时间没有失败的取数"
           />
+          {drill && data.failure_buckets.length > 0 && (
+            <div className="rk-ana-caption">
+              看明细：
+              {data.failure_buckets.map((b) => (
+                <Tag key={b.code} style={{ cursor: "pointer", marginInlineStart: 6 }}
+                     onClick={() => drill({ status: ["failed"], bucket: b.code, bucket_label: b.label })}>
+                  {b.label} {b.count}
+                </Tag>
+              ))}
+            </div>
+          )}
           {data.unbucketed_samples.length > 0 && (
             <div className="rk-ana-caption">
               未归类样例（用于完善归因规则）：
@@ -204,7 +222,13 @@ export default function HealthSection({
               { title: "引擎", dataIndex: "engine",
                 render: (v: string) => <Tag>{v.toUpperCase()}</Tag> },
               { title: "运行", dataIndex: "total" },
-              { title: "失败", dataIndex: "failed" },
+              {
+                title: "失败", dataIndex: "failed",
+                render: (v: number, r) => drill && v ? (
+                  <a onClick={() => drill({ status: ["failed"], datasource_id: r.datasource_id,
+                                            datasource_label: r.name })}>{v}</a>
+                ) : v,
+              },
               {
                 title: "失败率", dataIndex: "fail_rate",
                 render: (v: number | null) => (

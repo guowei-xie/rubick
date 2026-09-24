@@ -10,6 +10,7 @@ export const SECTIONS = [
   { id: "live", label: "实时负载" }, // 仅全平台视角渲染,锚点随之过滤
   { id: "adoption", label: "采纳与活跃" },
   { id: "health", label: "运行健康" },
+  { id: "runs", label: "运行明细" },
   { id: "assets", label: "任务资产" },
   { id: "governance", label: "权限与配置" },
 ];

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Button, Result, Spin } from "antd";
 import { useNavigate } from "react-router-dom";
 import dayjs from "dayjs";
@@ -10,6 +10,7 @@ import AssetsSection from "./AssetsSection";
 import GovernanceSection from "./GovernanceSection";
 import HealthSection from "./HealthSection";
 import LiveSection from "./LiveSection";
+import RunsSection, { RunsFilterState } from "./RunsSection";
 import { useAnalyticsQuery } from "./useAnalyticsQuery";
 import { useAnalyticsScope } from "./useAnalyticsScope";
 import "./analytics.css";
@@ -33,6 +34,13 @@ export default function AnalyticsPage() {
     useAnalyticsQuery<AnalyticsMeta>((signal) => analyticsMeta(signal), []);
 
   const scope = useAnalyticsScope(user, meta);
+
+  // 运行明细的筛选提到页面这一层:运行健康、实时负载可以带着条件跳过去(下钻)
+  const [runsFilter, setRunsFilter] = useState<RunsFilterState>({});
+  const drillRuns = useCallback((f: RunsFilterState) => {
+    setRunsFilter(f);
+    document.getElementById("runs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
 
   /** 口径说明按 key 索引,给各板块的 tooltip 用。服务端下发,前端不自己写一份。 */
   const notes = useMemo<Record<string, MetricNote>>(
@@ -120,9 +128,10 @@ export default function AnalyticsPage() {
       />
 
       {/* 实时负载只在全平台视角:槽位与 worker 是全平台共用的,团队视角下没有可行动的读法 */}
-      {showLive && <LiveSection notes={notes} />}
+      {showLive && <LiveSection notes={notes} onDrill={drillRuns} />}
       <AdoptionSection {...shared} isTeamView={isTeamView} />
-      <HealthSection {...shared} showInFlight={!showLive} />
+      <HealthSection {...shared} showInFlight={!showLive} onDrill={drillRuns} />
+      <RunsSection {...shared} teamId={scope.teamId} filter={runsFilter} onFilter={setRunsFilter} />
       <AssetsSection {...shared} teamId={scope.teamId} />
       <GovernanceSection {...shared} platform={platform} teamId={scope.teamId} />
     </div>

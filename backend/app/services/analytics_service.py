@@ -15,19 +15,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, distinct, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import case, distinct, func, literal_column, or_, select
+from sqlalchemy.orm import Session, defer
 
 from app.core import timewindow
 from app.core.config import settings
-from app.core.exceptions import PermissionDeniedError
+from app.core.exceptions import NotFoundError, PermissionDeniedError, RubicError
 from app.models.audit import DownloadEvent
 from app.models.datasource import DataSource
 from app.models.permission import (
     ACTION_EDIT, ACTION_RUN, RESOURCE_TEMPLATE, SUBJECT_USER, Permission,
 )
 from app.models.query_job import (
-    JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SOURCES, JOB_SUCCESS,
+    JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SOURCES, JOB_STATUSES, JOB_SUCCESS,
     SOURCE_API, SOURCE_RUN, SOURCE_SUBSCRIBE, SOURCE_TEST, QueryJob,
 )
 from app.models.subscription import TaskSchedule
@@ -38,7 +38,7 @@ from app.models.template import (
 from app.models.user import ROLE_USER, SYSTEM_SCHEDULER_OPEN_ID, User, is_platform_admin
 from app.services import (
     analytics_metrics as am, credential_service, permission_service, query_service,
-    subscription_service, team_service, template_service,
+    subscription_service, team_service, template_service, user_service,
 )
 
 LEVEL_PLATFORM = "platform"
@@ -536,12 +536,7 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
     #    在 MySQL 与 SQLite 上不同 —— 放 SQL 里两边会算出不同的分类)。
     #    读 job.error 而不是审计 detail:前者已过 credential_service.redact 脱敏,
     #    后者是原文,团队视角下会漏库账号名
-    err_rows = db.scalars(
-        select(QueryJob.error)
-        .where(*jc, *win, QueryJob.status == JOB_FAILED)
-        .order_by(QueryJob.id.desc())
-        .limit(FAILURE_SAMPLE_CAP)
-    ).all()
+    err_rows = [text for _id, text in _recent_failures(db, [*jc, *win])]
 
     bucket_counts: dict[str, int] = {}
     unbucketed: list[str] = []
@@ -839,6 +834,252 @@ def live(db: Session, scope: AnalyticsScope) -> dict:
     }
 
 
+# ---------------------------------------------------------------- 运行明细
+
+# 每页最多多少条。运维要的是「翻到那几条」,不是把整段历史拉下来 —— 那是导出的事
+RUNS_PAGE_MAX = 100
+RUNS_PAGE_DEFAULT = 20
+# 列表里的错误只给摘要,完整原文走 run_detail:一页 100 条、每条几 KB 的驱动栈没人读
+RUNS_ERROR_CHARS = 200
+RUNS_SORTS = ("created", "duration", "queue")
+
+
+@dataclass(frozen=True)
+class RunFilters:
+    """运行明细的筛选条件。全部可选,空 = 不限。"""
+
+    status: tuple[str, ...] = ()
+    source: tuple[str, ...] = ()
+    datasource_id: int | None = None
+    template_id: int | None = None
+    template_kw: str | None = None
+    user_kw: str | None = None
+    min_duration_s: int | None = None
+    min_queue_s: int | None = None
+    error_kw: str | None = None
+    # 失败归因的桶(analytics_metrics.FAILURE_RULES 的 code),与运行健康板的「失败归因」同一把尺
+    bucket: str | None = None
+    # 只看真正执行过的:排除补推与结果复用(= 运行健康板的口径)
+    executed_only: bool = False
+
+
+def _seconds_between(db: Session, earlier, later):
+    """两列时间相减得秒数。**只在要下推到 SQL 排序 / 过滤时用** —— 两个库写法不同,
+    能在 Python 里减的地方(如 queue_ms)照旧在 Python 里减。"""
+    if db.get_bind().dialect.name == "mysql":
+        return func.timestampdiff(literal_column("SECOND"), earlier, later)
+    return (func.julianday(later) - func.julianday(earlier)) * 86400
+
+
+def _duration_expr(db: Session):
+    """「这次跑了多久」(毫秒)。成功行有 duration_ms;失败分支不写它,用 updated_at - started_at
+    近似(与实时负载算峰值并发同一个近似)。超时失败恰恰是最长的那批,不补的话按耗时排序
+    时它们全沉到底 —— 运维最该先看到的反而看不到。列表与详情都从这里取,近似只写这一处。"""
+    return case(
+        (QueryJob.duration_ms.isnot(None), QueryJob.duration_ms),
+        (
+            (QueryJob.status == JOB_FAILED) & QueryJob.started_at.isnot(None),
+            _seconds_between(db, QueryJob.started_at, QueryJob.updated_at) * 1000,
+        ),
+        else_=None,
+    )
+
+
+def _recent_failures(db: Session, conds: list):
+    """窗口内最近的失败 (id, error),最多 FAILURE_SAMPLE_CAP 条。运行健康的失败归因与运行明细的
+    「按归因筛」共用这一句 —— 上限与顺序不一致的话,点「超时 12 次」下钻过去看到的条数就对不上。"""
+    return db.execute(
+        select(QueryJob.id, QueryJob.error)
+        .where(*conds, QueryJob.status == JOB_FAILED)
+        .order_by(QueryJob.id.desc())
+        .limit(FAILURE_SAMPLE_CAP)
+    ).all()
+
+
+def _keyword(kw: str | None) -> str | None:
+    """关键字筛选的 LIKE 模式;空白视为不筛。一律 lower 再比:MySQL 默认排序规则不分大小写、
+    SQLite 的 LIKE 只对 ASCII 不分,不统一的话同一个关键字两边筛出不同的行。"""
+    kw = (kw or "").strip().lower()
+    return f"%{kw}%" if kw else None
+
+
+def _require(values, allowed, what: str) -> None:
+    for v in values:
+        if v not in allowed:
+            raise RubicError(f"未知的{what}:{v}")
+
+
+def _run_select(db: Session, *where):
+    """运行明细的列表与详情共用的一句:运行本身 + 任务名、团队、运行人、数据源(外连,
+    任务被硬删后行仍在)+ 近似耗时。**不取 executed_sql / params**:列表一页 100 行用不到它们,
+    详情再单独取。"""
+    return (
+        select(QueryJob, SqlTemplate.name, Team.name, User.name, DataSource.name,
+               DataSource.engine, _duration_expr(db))
+        .options(defer(QueryJob.executed_sql), defer(QueryJob.params))
+        .join(SqlTemplate, SqlTemplate.id == QueryJob.template_id, isouter=True)
+        .join(Team, Team.id == SqlTemplate.team_id, isouter=True)
+        .join(User, User.id == QueryJob.user_id, isouter=True)
+        .join(DataSource, DataSource.id == QueryJob.datasource_id, isouter=True)
+        .where(*where)
+    )
+
+
+def _run_row(job: QueryJob, tname, team_name, who, ds_name, engine, dur_ms) -> dict:
+    """列表行与详情共有的字段。归因只算一次。"""
+    bucket = am.classify_error(job.error) if job.status == JOB_FAILED else None
+    return {
+        "job_id": job.id,
+        "template_id": job.template_id,
+        "template_name": tname or f"任务#{job.template_id}",
+        "team_name": team_name,
+        "user_name": who,
+        "source": job.source,
+        "status": job.status,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "queue_ms": job.queue_ms,
+        "duration_ms": None if dur_ms is None else int(dur_ms),
+        # 失败行的耗时是 updated_at - started_at 的近似,界面上要标出来
+        "duration_approx": job.duration_ms is None and dur_ms is not None,
+        "row_count": job.row_count,
+        "datasource": ds_name,
+        "engine": engine,
+        "error_bucket": bucket,
+        "error_label": am.FAILURE_LABELS.get(bucket) if bucket else None,
+        "pushed_from_job_id": job.pushed_from_job_id,
+        "reused_from_job_id": job.reused_from_job_id,
+        "reused_from_at": job.reused_from_at,
+    }
+
+
+def runs(
+    db: Session,
+    scope: AnalyticsScope,
+    window,
+    filters: RunFilters = RunFilters(),
+    *,
+    sort: str = "created",
+    page: int = 1,
+    page_size: int = RUNS_PAGE_DEFAULT,
+) -> dict:
+    """「具体是哪几次」:时间窗内的运行记录流水,可筛选、可分页、带错误摘要。
+
+    实时负载与运行健康回答「多不多、好不好」,这块回答「是哪几次、卡在哪」。
+    收窄与其余板块同一套(job_conditions),所以团队管理员只看得到本团队任务的运行。
+
+    **默认含补推与复用记录**(它们也是一次交付,运维查「那人说没收到数」时要看得见),
+    在行上打标;`executed_only` 切到运行健康的口径。
+    """
+    _require(filters.status, JOB_STATUSES, "运行状态")
+    _require(filters.source, JOB_SOURCES, "运行来源")
+    _require((sort,), RUNS_SORTS, "排序方式")
+    if filters.bucket is not None:
+        _require((filters.bucket,), am.FAILURE_LABELS, "失败归因")
+    page = max(1, page)
+    page_size = min(max(1, page_size), RUNS_PAGE_MAX)
+
+    dur = _duration_expr(db)
+    queue_s = _seconds_between(db, QueryJob.created_at, QueryJob.started_at)
+
+    # 除「状态」外的全部条件 —— 状态芯片上的计数要回答「换成别的状态有几条」,
+    # 所以计数时不能带着状态筛选本身
+    conds = [
+        *(executed_conditions(scope) if filters.executed_only else job_conditions(scope)),
+        *in_window(QueryJob.created_at, window),
+    ]
+    if filters.source:
+        conds.append(QueryJob.source.in_(filters.source))
+    if filters.datasource_id is not None:
+        conds.append(QueryJob.datasource_id == filters.datasource_id)
+    if filters.template_id is not None:
+        conds.append(QueryJob.template_id == filters.template_id)
+    if like := _keyword(filters.template_kw):
+        conds.append(QueryJob.template_id.in_(
+            select(SqlTemplate.id).where(func.lower(SqlTemplate.name).like(like))
+        ))
+    if (who := user_service.name_or_email_like(filters.user_kw)) is not None:
+        conds.append(QueryJob.user_id.in_(select(User.id).where(who)))
+    if filters.min_duration_s:
+        conds.append(dur >= filters.min_duration_s * 1000)
+    if filters.min_queue_s:
+        conds += [QueryJob.started_at.isnot(None), queue_s >= filters.min_queue_s]
+    if like := _keyword(filters.error_kw):
+        conds.append(func.lower(QueryJob.error).like(like))
+
+    bucket_capped = False
+    if filters.bucket is not None:
+        # 归因规则是 Python 纯函数(理由见 analytics_metrics),下推不了 SQL:
+        # 在内存里分桶,与运行健康板同一个上限、同一个顺序
+        err_rows = _recent_failures(db, conds)
+        bucket_capped = len(err_rows) >= FAILURE_SAMPLE_CAP
+        ids = [jid for jid, text in err_rows if am.classify_error(text) == filters.bucket]
+        conds += [QueryJob.status == JOB_FAILED, QueryJob.id.in_(ids)]
+
+    status_counts = {st: 0 for st in JOB_STATUSES}
+    for st, n in db.execute(
+        select(QueryJob.status, func.count(QueryJob.id)).where(*conds).group_by(QueryJob.status)
+    ).all():
+        status_counts[st] = n
+    total = sum(status_counts[st] for st in (filters.status or JOB_STATUSES))
+    if filters.status:
+        conds.append(QueryJob.status.in_(filters.status))
+
+    order = {
+        "created": (QueryJob.created_at.desc(), QueryJob.id.desc()),
+        # 两个库在 DESC 下都把 NULL 排在最后:没跑完 / 没有排队记录的沉底,正是想要的
+        "duration": (dur.desc(), QueryJob.id.desc()),
+        "queue": (queue_s.desc(), QueryJob.id.desc()),
+    }[sort]
+    # 库时钟随页一起取(在跑的行要算「已跑多久」,理由同 live()),不单独多打一句
+    rows = db.execute(
+        _run_select(db, *conds).add_columns(func.now())
+        .order_by(*order)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all() if total else []
+
+    items = []
+    for job, *names, now in rows:
+        items.append({
+            **_run_row(job, *names),
+            "elapsed_s": _seconds(now, job.started_at or job.updated_at)
+            if job.status == JOB_RUNNING else None,
+            "error_excerpt": (job.error or "")[:RUNS_ERROR_CHARS] or None,
+        })
+
+    return envelope(scope, window, {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "sort": sort,
+        "status_counts": status_counts,
+        # 按归因筛时,只在最近 FAILURE_SAMPLE_CAP 条失败里找 —— 超了要让界面说出来
+        "bucket_capped": bucket_capped,
+    })
+
+
+def run_detail(db: Session, scope: AnalyticsScope, job_id: int) -> dict:
+    """一次运行的全部细节:完整错误、实际执行的 SQL、参数。
+
+    收窄用同一个 job_conditions:范围外的 id 一律 404,不区分「不存在」与「看不见」——
+    否则拿 id 挨个试就能数出别队跑了多少次。
+    """
+    row = db.execute(_run_select(db, QueryJob.id == job_id, *job_conditions(scope))).first()
+    if row is None:
+        raise NotFoundError("运行记录不存在或不在当前范围内")
+    job = row[0]
+    return {
+        **_run_row(*row),
+        "updated_at": job.updated_at,
+        "params": job.params or {},
+        "executed_sql": job.executed_sql,
+        # job.error 已过 credential_service.redact 脱敏(见 health 的失败归因),可以原样给
+        "error": job.error,
+    }
+
+
 # ---------------------------------------------------------------- meta
 
 # 时间范围预设(天)。前端的快捷档与这里同源,改这里前端跟着变。
@@ -909,6 +1150,10 @@ METRIC_NOTES: list[dict] = [
     {"key": "live_schedule", "label": "未来 24 小时定时", "windowed": False,
      "note": "按计划会自动入队的定时运行，按整点分组。只算计划开着、任务已上线、且有订阅者的"
              "（没人订的那一期不会执行）。某小时超过槽位的 2 倍即标为扎堆，建议把部分任务错开几分钟。"},
+    {"key": "runs", "label": "运行明细", "windowed": True,
+     "note": "时间范围内提交的每一次运行，按提交时间落窗。排队 = 提交到开始执行的等待；"
+             "耗时只算执行、不含排队，失败的那次没有精确耗时，用「开始到失败」近似并标「≈」。"
+             "默认含补推与复用记录（它们没有执行，无排队与耗时），勾「只看真正执行的」即与运行健康同口径。"},
     {"key": "api_runs", "label": "API 调用", "windowed": True,
      "note": "来源是开放 API 的运行次数。同一张任务在界面上被跑的次数不计入。"},
 ]

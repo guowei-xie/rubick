@@ -11,6 +11,7 @@ import {
 } from "../../components/analytics/chartTheme";
 import StatusTag, { JOB_SOURCE } from "../../components/StatusTag";
 import { fmtDuration } from "../../format";
+import type { RunsFilterState } from "./RunsSection";
 import { useAnalyticsQuery } from "./useAnalyticsQuery";
 
 /** 轮询间隔。worker 每 2 秒认领一次、定时每 30 秒扫一次,15 秒足够看出「在不在动」,
@@ -36,7 +37,11 @@ const secs = (s: number | null | undefined) => (s == null ? "—" : fmtDuration(
  * 与其余四块不同:不吃时间范围、进页就取(它就是首屏最该看的东西)、页面可见时每 15 秒刷新。
  * 切到别的标签页就停,切回来立刻补一次 —— 看板开一整天没人看,不该一直在打库。
  */
-export default function LiveSection({ notes }: { notes: Record<string, MetricNote> }) {
+export default function LiveSection({ notes, onDrill }: {
+  notes: Record<string, MetricNote>;
+  /** 跳到运行明细并带上筛选:这里只看得到此刻,要翻历史去那边 */
+  onDrill?: (f: RunsFilterState) => void;
+}) {
   const { data, loading, error, reload } = useAnalyticsQuery<LiveData>(
     (signal) => analyticsLive(signal),
     []
@@ -174,7 +179,10 @@ export default function LiveSection({ notes }: { notes: Record<string, MetricNot
 
           {data.running_list.length > 0 && (
             <>
-              <div className="rk-ana-subtitle">在跑</div>
+              <div className="rk-ana-subtitle">
+                在跑
+                {onDrill && <a className="rk-ana-subtitle-note" onClick={() => onDrill({})}>翻看历史运行 →</a>}
+              </div>
               <Table
                 size="small" pagination={false} rowKey="job_id" scroll={{ x: "max-content" }}
                 dataSource={data.running_list}
@@ -212,6 +220,9 @@ export default function LiveSection({ notes }: { notes: Record<string, MetricNot
                   按 worker 的认领顺序{data.queued > data.queued_list.length
                     ? `，只列前 ${data.queued_list.length} 条（共 ${data.queued} 条）` : ""}
                 </span>
+                {onDrill && data.queued > data.queued_list.length && (
+                  <a className="rk-ana-subtitle-note" onClick={() => onDrill({ status: ["queued"] })}>看全部排队 →</a>
+                )}
               </div>
               <Table
                 size="small" pagination={false} rowKey="job_id" scroll={{ x: "max-content" }}

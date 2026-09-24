@@ -28,7 +28,7 @@ NOW = datetime(2026, 6, 15, 12, 0)
 WINDOW = Window(NOW - timedelta(days=30), NOW)
 
 # 当前实现的条数 + 3 条余量(实测,平台/团队两种视角:adoption 8/8、health 10/10、
-# assets 6/6、governance 14/12;loaded 自带授权,治理板补名字的分支必走,条数不随测试顺序变)。留余量是为了「多加一个指标」不必连带改这里,
+# assets 6/6、governance 14/12、runs 2/2;loaded 自带授权,治理板补名字的分支必走,条数不随测试顺序变)。留余量是为了「多加一个指标」不必连带改这里,
 # 但多出十几条一定会被挡住。
 #
 # 上限要**跟着实现往下走**:一次重构把条数砍掉三分之一后不收紧,这里就成了一个再也拦不住
@@ -37,7 +37,7 @@ WINDOW = Window(NOW - timedelta(days=30), NOW)
 # 真正判 N+1 的是后面两条:test_budget_does_not_grow_with_data_volume 要求数据翻倍后条数
 # **完全不变**,test_meta_does_not_query_per_managed_team 要求它不随管的团队数增长。
 # 那两个才是硬判据,这里的上限只是量级护栏。
-BUDGET = {"adoption": 11, "health": 13, "assets": 9, "governance": 17}
+BUDGET = {"adoption": 11, "health": 13, "assets": 9, "governance": 17, "runs": 5}
 
 
 class _Counter:
@@ -123,7 +123,7 @@ def loaded(db, dev, biz, a_admin, ds, team_a, job_factory):
     return True
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "runs"])
 def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     fn = getattr(analytics_service, board)
     scope = analytics_service.resolve_scope(db, plat)
@@ -134,7 +134,7 @@ def test_board_stays_within_query_budget_platform(db, plat, loaded, board):
     )
 
 
-@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance"])
+@pytest.mark.parametrize("board", ["adoption", "health", "assets", "governance", "runs"])
 def test_board_stays_within_query_budget_team(db, a_admin, loaded, board):
     """团队视角会多几条子查询,但**不该随任务数增长**。"""
     fn = getattr(analytics_service, board)
@@ -162,6 +162,15 @@ def test_budget_does_not_grow_with_data_volume(db, plat, loaded, dev, biz, ds, t
 
     after = count_queries(lambda: analytics_service.assets(db, scope, WINDOW))
     assert after == before, f"任务从 12 张涨到 30 张,SQL 从 {before} 条涨到了 {after} 条"
+
+
+def test_runs_does_not_grow_with_page_size(db, plat, loaded):
+    """运行明细一页 36 条与一页 1 条发的 SQL 一样多 —— 任务名、团队、人、数据源要随行 JOIN 出来,
+    不能逐行补。"""
+    scope = analytics_service.resolve_scope(db, plat)
+    one = count_queries(lambda: analytics_service.runs(db, scope, WINDOW, page_size=1))
+    many = count_queries(lambda: analytics_service.runs(db, scope, WINDOW, page_size=100))
+    assert many == one, f"一页从 1 条涨到 36 条,SQL 从 {one} 条涨到了 {many} 条"
 
 
 def test_meta_does_not_query_per_managed_team(db, a_admin, team_factory, loaded):

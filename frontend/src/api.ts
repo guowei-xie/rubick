@@ -809,3 +809,89 @@ export const analyticsAssets = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/assets", analyticsParams(q, signal)).then((r) => r.data as AssetsData);
 export const analyticsGovernance = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/governance", analyticsParams(q, signal)).then((r) => r.data as GovernanceData);
+
+/** 运行明细的筛选。全部可选;status / source 可多选。 */
+export interface RunsFilter {
+  status?: string[];
+  source?: string[];
+  datasource_id?: number;
+  template_kw?: string;
+  user_kw?: string;
+  min_duration_s?: number;
+  min_queue_s?: number;
+  error_kw?: string;
+  /** 失败归因的桶,与运行健康板「失败归因」同一套规则 */
+  bucket?: string;
+  /** 只看真正执行过的:排除补推与复用(= 运行健康的口径) */
+  executed_only?: boolean;
+}
+
+export type RunsSort = "created" | "duration" | "queue";
+
+export interface RunRow {
+  job_id: number;
+  template_id: number;
+  template_name: string;
+  team_name: string | null;
+  user_name: string | null;
+  source: string;
+  pushed_from_job_id: number | null;
+  reused_from_job_id: number | null;
+  reused_from_at: string | null;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  queue_ms: number | null;
+  duration_ms: number | null;
+  /** 失败的那次没有精确耗时,duration_ms 是「开始到失败」的近似 */
+  duration_approx: boolean;
+  /** 仅运行中的行:已跑多少秒(库时钟) */
+  elapsed_s: number | null;
+  row_count: number | null;
+  datasource: string | null;
+  engine: string | null;
+  error_bucket: string | null;
+  error_label: string | null;
+  error_excerpt: string | null;
+}
+
+export interface RunsData extends AnalyticsEnvelope {
+  items: RunRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  sort: RunsSort;
+  /** 各状态的条数 —— **不带状态筛选本身**,选了「失败」时其余芯片照样有数 */
+  status_counts: Record<string, number>;
+  /** 按归因筛时只在最近若干条失败里找,超了为 true */
+  bucket_capped: boolean;
+}
+
+/** 单条运行的详情 = 列表行(除「已跑多久」与错误摘要)+ 完整错误、执行 SQL、参数。 */
+export interface RunDetail extends Omit<RunRow, "elapsed_s" | "error_excerpt"> {
+  updated_at: string | null;
+  params: Record<string, unknown>;
+  executed_sql: string | null;
+  error: string | null;
+}
+
+export const analyticsRuns = (
+  q: AnalyticsQuery,
+  f: RunsFilter,
+  opts: { sort: RunsSort; page: number; page_size: number },
+  signal?: AbortSignal
+) => {
+  const base = analyticsParams(q, signal);
+  return http
+    .get("/analytics/runs", {
+      ...base,
+      params: { ...base.params, ...f, ...opts, executed_only: f.executed_only || undefined },
+      // 多选参数按 FastAPI 认的 `status=a&status=b` 展开,不要 axios 默认的 `status[]=`
+      paramsSerializer: { indexes: null },
+    })
+    .then((r) => r.data as RunsData);
+};
+export const analyticsRunDetail = (jobId: number, teamId?: number | null) =>
+  http
+    .get(`/analytics/runs/${jobId}`, { params: { team_id: teamId ?? undefined } })
+    .then((r) => r.data as RunDetail);

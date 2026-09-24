@@ -246,3 +246,48 @@
 .rk-ana .ant-table-tbody > tr {
   cursor: pointer;
 }
+
+/* ---- 运行明细 ---- */
+.rk-runs-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.rk-runs-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 2px;
+}
+.rk-runs-chip-label {
+  color: var(--ink-secondary, #8a90a6);
+  font-size: 12px;
+  margin-inline-end: 4px;
+}
+.rk-runs-chip-n {
+  margin-inline-start: 4px;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
+.rk-runs-sub {
+  color: var(--ink-secondary, #8a90a6);
+  font-size: 12px;
+}
+.rk-runs-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rk-runs-pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  margin: 0;
+}
