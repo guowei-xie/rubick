@@ -1,4 +1,4 @@
-"""运营分析的**纯函数**层:失败归因分桶、分位数、日期归一。
+"""运营分析的**纯函数**层:失败归因分桶、分位数、峰值并发、日期归一。
 
 刻意与 analytics_service 分开:这一层不碰 db、不碰 scope,输入输出都是普通 Python 值。
 失败归因的规则表注定要长期迭代(错误文案来自三种引擎 + 平台自己),而只有纯函数才测得动
@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 # ---------------------------------------------------------------- 失败归因
 
@@ -130,6 +130,39 @@ def percentiles(values, ps=(50, 90, 95)) -> dict[int, int | None]:
         # 最近秩:rank = ceil(p/100 * n),取第 rank 个(1-based)。p=100 时正好取到最大值。
         rank = max(1, min(n, math.ceil(p / 100 * n)))
         out[p] = int(xs[rank - 1])
+    return out
+
+
+# ---------------------------------------------------------------- 峰值并发
+
+
+def hourly_peak_concurrency(
+    intervals: list[tuple[datetime, datetime]], day_start: datetime, hours: int
+) -> list[int]:
+    """从 day_start 起逐小时的**峰值并发**:每个小时内同时在跑的运行数的最大值。
+
+    区间是半开的 [开始, 结束):一条在 10:00 结束、另一条在 10:00 开始,不算重叠 ——
+    否则 worker 一个槽位接力跑两条,会被读成「此刻并发 2」,平白显示超出槽位上限。
+    按小时各扫一遍而不是全局扫一次再切:一天几千条区间 × 24 小时,代价可以忽略,
+    而「跨小时的长查询要同时算进它经过的每个小时」这件事逐小时写最不容易错。
+    """
+    out: list[int] = []
+    for h in range(hours):
+        hs = day_start + timedelta(hours=h)
+        he = hs + timedelta(hours=1)
+        events: list[tuple[datetime, int]] = []
+        for start, end in intervals:
+            if start is None or end is None or end <= start or end <= hs or start >= he:
+                continue
+            events.append((max(start, hs), 1))
+            events.append((min(end, he), -1))
+        # 同一时刻先结束、后开始(-1 排在 +1 前),与半开区间的约定一致
+        events.sort(key=lambda e: (e[0], e[1]))
+        cur = peak = 0
+        for _t, delta in events:
+            cur += delta
+            peak = max(peak, cur)
+        out.append(peak)
     return out
 
 

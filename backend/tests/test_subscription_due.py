@@ -3,9 +3,11 @@
 月末顺延、跨月回溯、跨零点这些边界全在这里钉死 —— 调度器(tick)只消费这个函数的返回值,
 函数对了,水位比较那半边只剩「大于就 fire」一条规则。
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from app.services.subscription_service import describe_schedule, latest_planned_at
+import pytest
+
+from app.services.subscription_service import describe_schedule, latest_planned_at, planned_between
 
 
 # ---------------------------------------------------------------- daily
@@ -141,3 +143,58 @@ def test_describe_schedule_wording():
     S.enabled = False
     assert describe_schedule(S()) is None
     assert describe_schedule(None) is None
+
+
+# ---------------------------------------------------------------- planned_between(前瞻)
+
+
+def test_planned_between_daily_crosses_midnight():
+    start = datetime(2026, 8, 24, 22, 0)
+    got = planned_between("daily", [], "09:00", start, start + timedelta(hours=24))
+    assert got == [datetime(2026, 8, 25, 9, 0)]
+
+
+def test_planned_between_is_half_open():
+    """[start, end):恰好在 start 的算,恰好在 end 的不算 —— 相邻两段不重不漏。"""
+    start = datetime(2026, 8, 24, 9, 0)
+    assert planned_between("daily", [], "09:00", start, start + timedelta(hours=24)) == [start]
+    assert planned_between("daily", [], "09:00", start - timedelta(hours=23), start) == []
+
+
+def test_planned_between_weekly_only_selected_days():
+    # 2026-08-24 是周一
+    start = datetime(2026, 8, 24, 0, 0)
+    got = planned_between("weekly", [1, 4], "10:00", start, start + timedelta(days=7))
+    assert got == [datetime(2026, 8, 24, 10, 0), datetime(2026, 8, 27, 10, 0)]
+
+
+def test_planned_between_monthly_clamps_short_month():
+    """31 号遇到 9 月顺延到 30 号 —— 与 latest_planned_at 同一规则。"""
+    start = datetime(2026, 9, 29, 0, 0)
+    got = planned_between("monthly", [31], "08:00", start, start + timedelta(days=3))
+    assert got == [datetime(2026, 9, 30, 8, 0)]
+
+
+def test_planned_between_invalid_config_is_empty():
+    start = datetime(2026, 8, 24, 0, 0)
+    end = start + timedelta(days=2)
+    assert planned_between("daily", [], "25:99", start, end) == []
+    assert planned_between("weekly", [], "09:00", start, end) == []
+    assert planned_between("yearly", [], "09:00", start, end) == []
+
+
+@pytest.mark.parametrize("freq,days,at_time", [
+    ("daily", [], "00:00"), ("daily", [], "23:59"),
+    ("weekly", [1, 3, 7], "09:30"), ("monthly", [1, 15, 31], "07:00"),
+    ("monthly", [29, 30], "12:00"),
+])
+def test_planned_between_agrees_with_latest_planned_at(freq, days, at_time):
+    """前瞻与调度器必须同一套命中规则:任意 now 下,调度器认定的最近一期都应出现在
+    前瞻列表里。两边各写一遍规则,这条交叉校验是它们不走散的唯一保证。"""
+    now = datetime(2026, 1, 1, 0, 0)
+    while now < datetime(2027, 1, 1):
+        latest = latest_planned_at(freq, days, at_time, now)
+        window = planned_between(freq, days, at_time, now - timedelta(days=32),
+                                 now + timedelta(seconds=1))
+        assert latest == (window[-1] if window else None), now
+        now += timedelta(hours=37)

@@ -12,6 +12,7 @@ from app.services.analytics_metrics import (
     FAILURE_LABELS,
     FAILURE_RULES,
     classify_error,
+    hourly_peak_concurrency,
     percentiles,
     to_date,
 )
@@ -127,3 +128,37 @@ def test_to_date_accepts_both_dialect_shapes():
     assert to_date("2026-01-01") == date(2026, 1, 1)
     assert to_date(date(2026, 1, 1)) == date(2026, 1, 1)
     assert to_date(datetime(2026, 1, 1, 13, 30)) == date(2026, 1, 1)
+
+
+# ---------------------------------------------------------------- 峰值并发
+
+D0 = datetime(2026, 9, 24, 0, 0)
+
+
+def _at(h, m=0):
+    return D0.replace(hour=h, minute=m)
+
+
+def test_peak_concurrency_counts_overlap():
+    got = hourly_peak_concurrency(
+        [(_at(9, 0), _at(9, 30)), (_at(9, 10), _at(9, 20)), (_at(9, 40), _at(9, 50))], D0, 11
+    )
+    assert got[9] == 2
+    assert got[8] == 0 and got[10] == 0
+
+
+def test_peak_concurrency_back_to_back_is_not_overlap():
+    """一个槽位接力跑两条(前一条 10:00 结束、后一条 10:00 开始)不能读成并发 2。"""
+    got = hourly_peak_concurrency([(_at(9, 30), _at(10, 0)), (_at(10, 0), _at(10, 30))], D0, 11)
+    assert got[9] == 1 and got[10] == 1
+
+
+def test_peak_concurrency_long_job_spans_every_hour_it_crosses():
+    got = hourly_peak_concurrency([(_at(8, 50), _at(11, 10))], D0, 12)
+    assert got[8:12] == [1, 1, 1, 1]
+    assert got[7] == 0
+
+
+def test_peak_concurrency_ignores_bad_intervals():
+    got = hourly_peak_concurrency([(None, _at(9)), (_at(9, 30), None), (_at(9, 30), _at(9, 0))], D0, 10)
+    assert got == [0] * 10

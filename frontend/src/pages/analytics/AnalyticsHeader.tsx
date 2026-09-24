@@ -7,6 +7,7 @@ const { RangePicker } = DatePicker;
 
 /** 页面内的板块锚点。不是 Tab —— 它们不卸载内容,只是滚动定位。 */
 export const SECTIONS = [
+  { id: "live", label: "实时负载" }, // 仅全平台视角渲染,锚点随之过滤
   { id: "adoption", label: "采纳与活跃" },
   { id: "health", label: "运行健康" },
   { id: "assets", label: "任务资产" },
@@ -107,7 +108,7 @@ export default function AnalyticsHeader({
         </Space>
 
         <Space size={4} wrap>
-          {SECTIONS.map((s) => (
+          {SECTIONS.filter((s) => s.id !== "live" || (platform && !isTeamView)).map((s) => (
             <Button
               key={s.id}
               type="text"

@@ -131,6 +131,44 @@ def latest_planned_at(freq: str, days: list, at_time: str, now: datetime) -> dat
     return None
 
 
+def planned_between(
+    freq: str, days: list, at_time: str, start: datetime, end: datetime
+) -> list[datetime]:
+    """[start, end) 内的全部计划时刻,升序;配置不合法返回空(与 latest_planned_at 同样 fail-closed)。
+
+    给「未来会不会扎堆」这类前瞻用。命中规则必须与 latest_planned_at **逐条一致**
+    (weekly 按 ISO 星期几、monthly 小月顺延到月末)—— 两者对不上时,看板预告的高峰
+    与调度器真正 fire 的时刻会差一天,而没人会发现。一致性由 test_subscription_due 交叉钉住。
+    """
+    try:
+        hh, mm = at_time.split(":")
+        at = time_cls(int(hh), int(mm))
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+    if freq == FREQ_DAILY:
+        hits = lambda d: True  # noqa: E731
+    elif freq == FREQ_WEEKLY:
+        wanted = {int(d) for d in (days or []) if isinstance(d, (int, float)) and 1 <= int(d) <= 7}
+        hits = lambda d: d.isoweekday() in wanted  # noqa: E731
+    elif freq == FREQ_MONTHLY:
+        wanted = {int(d) for d in (days or []) if isinstance(d, (int, float)) and 1 <= int(d) <= 31}
+        hits = lambda d: any(  # noqa: E731
+            d.day == min(w, calendar.monthrange(d.year, d.month)[1]) for w in wanted
+        )
+    else:
+        return []
+
+    out: list[datetime] = []
+    day = start.date()
+    while day <= end.date():
+        cand = datetime.combine(day, at)
+        if start <= cand < end and hits(day):
+            out.append(cand)
+        day += timedelta(days=1)
+    return out
+
+
 def describe_schedule(sched: TaskSchedule | None) -> str | None:
     """计划的中文描述(如「每周一、四 09:00」),给任务卡片直接展示,前端不自己拼。"""
     if sched is None or not sched.enabled:
@@ -160,6 +198,32 @@ def schedules_by_template(db: Session, template_ids: list[int]) -> dict[int, Tas
         return {}
     rows = db.scalars(select(TaskSchedule).where(TaskSchedule.template_id.in_(template_ids)))
     return {s.template_id: s for s in rows}
+
+
+def planned_runs_between(
+    db: Session, start: datetime, end: datetime
+) -> list[tuple[datetime, int, str]]:
+    """[start, end) 内**会真正入队**的定时运行:[(计划时刻, 任务 id, 任务名)],按时刻升序。
+
+    筛选与 _tick 真正建 job 的条件一致:计划开着、任务已上线且有上线版本、有订阅者
+    (无订阅者那一期只推水位不建 job,算进来会把一个不存在的高峰报给运维)。
+    """
+    rows = db.execute(
+        select(TaskSchedule, SqlTemplate.id, SqlTemplate.name)
+        .join(SqlTemplate, SqlTemplate.id == TaskSchedule.template_id)
+        .where(
+            TaskSchedule.enabled.is_(True),
+            SqlTemplate.status == STATUS_PUBLISHED,
+            SqlTemplate.published_version_id.isnot(None),
+            exists().where(TaskSubscription.template_id == SqlTemplate.id),
+        )
+    ).all()
+    out = [
+        (at, tid, name)
+        for sched, tid, name in rows
+        for at in planned_between(sched.freq, sched.days or [], sched.at_time, start, end)
+    ]
+    return sorted(out, key=lambda r: (r[0], r[1]))
 
 
 def subscribers_of(db: Session, template_id: int) -> list[TaskSubscription]:

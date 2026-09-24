@@ -668,6 +668,48 @@ export interface HealthData extends AnalyticsEnvelope {
   }[];
 }
 
+/** 实时负载里一条在跑 / 排队的运行。 */
+export interface LiveJobRow {
+  job_id: number;
+  template_id: number;
+  template_name: string;
+  user_name: string | null;
+  source: string;
+  datasource: string | null;
+  engine: string | null;
+}
+
+export type WorkerState = "inline" | "idle" | "ok" | "busy" | "stalled";
+
+/** 实时负载。**只对平台视角开放**、不吃时间范围,前端每 15 秒轮询。
+ *  「此刻」各项是库时钟下的快照,worker 状态是按队列推断的,不是心跳。 */
+export interface LiveData {
+  as_of: string;
+  /** worker 可同时执行的上限(WORKER_CONCURRENCY) */
+  capacity: number;
+  /** RUN_INLINE=true:没有独立 worker,worker_state 恒为 inline */
+  inline: boolean;
+  running: number;
+  /** 超时后仍挂着 running 的条数 —— 视为已中断,不算占槽 */
+  overdue: number;
+  queued: number;
+  /** 编辑器试跑:在 API 进程里执行,不占 worker 槽位 */
+  test_running: number;
+  oldest_wait_s: number | null;
+  /** 最近一次有运行开始执行距今多少秒(相对值:库时钟与浏览器时钟可能不同时区) */
+  last_started_ago_s: number | null;
+  worker_state: WorkerState;
+  stall_after_s: number;
+  running_list: (LiveJobRow & { elapsed_s: number | null; timeout_s: number | null; overdue: boolean })[];
+  /** 按 worker 真实认领顺序,最多 20 条 */
+  queued_list: (LiveJobRow & { position: number; waited_s: number | null })[];
+  /** 今天 0 点到当前小时(含),逐小时 */
+  today: { hour: number; submitted: number; peak_concurrency: number; wait_p90_s: number | null }[];
+  /** 当前小时 + 之后 24 个整点,共 25 桶 */
+  schedule_24h: { hour: string; count: number; crowded: boolean; tasks: { at: string; name: string }[] }[];
+  crowded_threshold: number;
+}
+
 /** 任务排行/明细里「这是哪张任务」的三列。两个板块的排行表共用同一份 ——
  *  任务被硬删后名字取不到、编号仍在,所以后两列可空。 */
 export interface TaskRankRow {
@@ -761,6 +803,8 @@ export const analyticsAdoption = (q: AnalyticsQuery = {}, signal?: AbortSignal) 
   http.get("/analytics/adoption", analyticsParams(q, signal)).then((r) => r.data as AdoptionData);
 export const analyticsHealth = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/health", analyticsParams(q, signal)).then((r) => r.data as HealthData);
+export const analyticsLive = (signal?: AbortSignal) =>
+  http.get("/analytics/live", { signal }).then((r) => r.data as LiveData);
 export const analyticsAssets = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>
   http.get("/analytics/assets", analyticsParams(q, signal)).then((r) => r.data as AssetsData);
 export const analyticsGovernance = (q: AnalyticsQuery = {}, signal?: AbortSignal) =>

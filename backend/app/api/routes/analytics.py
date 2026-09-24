@@ -82,6 +82,20 @@ def analytics_health(
     return analytics_service.health(db, scope, window)
 
 
+@router.get("/live")
+def analytics_live(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """实时负载:槽位占用、worker 死活、在跑/排队明细、今天逐小时的压力、未来 24 小时的定时排布。
+
+    **只对平台视角开放**(理由见 analytics_service.live)。不吃时间范围,也不收 team_id ——
+    前端每 15 秒轮询一次,参数越少越不会配错。
+    """
+    scope = analytics_service.resolve_scope(db, user)
+    return analytics_service.live(db, scope)
+
+
 @router.get("/assets")
 def analytics_assets(
     team_id: int | None = None,

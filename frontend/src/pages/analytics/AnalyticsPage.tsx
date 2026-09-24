@@ -9,6 +9,7 @@ import AnalyticsHeader from "./AnalyticsHeader";
 import AssetsSection from "./AssetsSection";
 import GovernanceSection from "./GovernanceSection";
 import HealthSection from "./HealthSection";
+import LiveSection from "./LiveSection";
 import { useAnalyticsQuery } from "./useAnalyticsQuery";
 import { useAnalyticsScope } from "./useAnalyticsScope";
 import "./analytics.css";
@@ -21,7 +22,7 @@ import "./analytics.css";
  * 于是「运行健康正常、但三个团队缺账号」这种组合永远要点好几次才发现。
  * 这些视角之间本来也有因果链(缺账号 → 运行失败 → 任务闲置 → 采纳下降),顺着读更自然。
  *
- * 取数上**首屏只打两个请求**(meta + 板块①),其余滚到跟前再取(useSectionData)。
+ * 取数上**首屏只打两个请求**(meta + 板块①;全平台视角再加实时负载),其余滚到跟前再取(useSectionData)。
  * 每块各发一个请求,一起并发在本地 SQLite 上会串行排队,而用户实际只先看第一块。
  */
 export default function AnalyticsPage() {
@@ -99,6 +100,7 @@ export default function AnalyticsPage() {
   }
 
   const shared = { query: scope.query, scopeLabel, notes };
+  const showLive = platform && !isTeamView;
 
   return (
     <div className="rk-ana">
@@ -117,8 +119,10 @@ export default function AnalyticsPage() {
         isTeamView={isTeamView}
       />
 
+      {/* 实时负载只在全平台视角:槽位与 worker 是全平台共用的,团队视角下没有可行动的读法 */}
+      {showLive && <LiveSection notes={notes} />}
       <AdoptionSection {...shared} isTeamView={isTeamView} />
-      <HealthSection {...shared} />
+      <HealthSection {...shared} showInFlight={!showLive} />
       <AssetsSection {...shared} teamId={scope.teamId} />
       <GovernanceSection {...shared} platform={platform} teamId={scope.teamId} />
     </div>

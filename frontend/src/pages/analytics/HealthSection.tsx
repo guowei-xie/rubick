@@ -15,10 +15,14 @@ export default function HealthSection({
   query,
   scopeLabel,
   notes,
+  showInFlight = true,
 }: {
   query: AnalyticsQuery;
   scopeLabel: string;
   notes: Record<string, MetricNote>;
+  /** 全平台视角下顶部有实时负载板,「此刻排队」在那边有明细且会自动刷新 —— 这里再摆一张
+   *  只取一次的同名卡,两个数一刷新就对不上。团队视角没有实时板,仍由这张卡兜底 */
+  showInFlight?: boolean;
 }) {
   const { ref, data, loading, error, reload } = useSectionData<HealthData>(
     (signal) => analyticsHealth(query, signal),
@@ -103,7 +107,7 @@ export default function HealthSection({
               <MetricCard label="等待超过 1 分钟" metric={data.queue_over_60s}
                           note={notes["queue"]?.note} />
             </Col>
-            <Col {...CARD_COL}>
+            {showInFlight && <Col {...CARD_COL}>
               <MetricCard
                 label="此刻排队"
                 metric={data.queued_now}
@@ -114,7 +118,7 @@ export default function HealthSection({
                   ) : null
                 }
               />
-            </Col>
+            </Col>}
             <Col {...CARD_COL}>
               <MetricCard label="复用命中" metric={data.reuse_hits}
                           note={notes["reuse_hits"]?.note} />

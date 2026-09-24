@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import case, distinct, func, select
+from sqlalchemy import case, distinct, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core import timewindow
@@ -37,8 +37,8 @@ from app.models.template import (
 )
 from app.models.user import ROLE_USER, SYSTEM_SCHEDULER_OPEN_ID, User, is_platform_admin
 from app.services import (
-    analytics_metrics as am, credential_service, permission_service, team_service,
-    template_service,
+    analytics_metrics as am, credential_service, permission_service, query_service,
+    subscription_service, team_service, template_service,
 )
 
 LEVEL_PLATFORM = "platform"
@@ -630,6 +630,215 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
     })
 
 
+# ---------------------------------------------------------------- 实时负载(仅平台视角)
+
+# 在跑 / 排队明细各列多少条。worker 槽位是个位数,在跑那张表永远列得完;排队可能因一批 API
+# 调用堆到上百条,只列最前面的 —— 要回答的是「接下来轮到谁」,不是把整条队列抄一遍。
+LIVE_LIST_LIMIT = 20
+# 最老一条排队等了多久、且槽位没满,才判定 worker 停摆。下限 60 秒:worker 每
+# WORKER_POLL_INTERVAL 秒才认领一次,刚入队几秒没人领是常态,不能一闪一闪地报红。
+STALL_MIN_SECONDS = 60
+STALL_POLL_MULTIPLIER = 5
+# 在跑时长超过超时上限多少秒仍是 running,就当它已经死了、不再占槽位。超时后引擎侧取消、
+# 写回 failed 要一点时间,不留余量的话一条正常收尾中的查询会被当成僵尸。
+OVERDUE_GRACE_SECONDS = 60
+# 某个小时的计划运行数超过「槽位 × 这个倍数」即标为扎堆:到点一齐入队,至少要排两轮。
+CROWDED_FACTOR = 2
+
+WORKER_INLINE = "inline"   # RUN_INLINE=true:没有独立 worker,判不了也不必判
+WORKER_IDLE = "idle"       # 没有排队
+WORKER_OK = "ok"           # 有排队,槽位没满,排得不久 —— 马上就会被领走
+WORKER_BUSY = "busy"       # 有排队,槽位满了 —— 压力所在
+WORKER_STALLED = "stalled"  # 有排队,槽位空着,却排了很久 —— worker 多半挂了
+
+
+def _seconds(later, earlier) -> int | None:
+    if not isinstance(later, datetime) or not isinstance(earlier, datetime):
+        return None
+    return max(0, int((later - earlier).total_seconds()))
+
+
+def live(db: Session, scope: AnalyticsScope) -> dict:
+    """「平台此刻扛不扛得住」:槽位占用、worker 死活、今天的高峰、未来 24 小时的定时扎堆。
+
+    **只给平台视角**:槽位与 worker 是全平台共用的,团队视角下「2/2 满载」却只列出自己队的
+    一条在跑,是一个自相矛盾、没法据此行动的画面;而列全又会让团队管理员看见别队在跑什么。
+
+    所有「此刻」都用**库时钟**:created_at / started_at 是库时钟写的(见 QueryJob.started_at),
+    拿应用时钟相减在两者不同机器/时区时会整段错开。只有定时排布用应用时钟 ——
+    计划的 at_time 是服务器本地时间,调度器 tick 也是拿 datetime.now() 比的,两边必须同一把尺。
+    """
+    if not scope.is_platform:
+        raise PermissionDeniedError("实时负载只对平台管理员开放")
+
+    now = db.scalar(select(func.now()))
+    capacity = max(1, int(settings.WORKER_CONCURRENCY))
+
+    # ① 此刻:排队中 + 运行中。试跑在 API 进程里同步执行、不占 worker 槽位,单独数
+    counts = dict(db.execute(
+        select(QueryJob.status, func.count(QueryJob.id))
+        .where(QueryJob.source != SOURCE_TEST, QueryJob.status.in_((JOB_QUEUED, JOB_RUNNING)))
+        .group_by(QueryJob.status)
+    ).all())
+    queued = counts.get(JOB_QUEUED, 0)
+    test_running = db.scalar(
+        select(func.count(QueryJob.id))
+        .where(QueryJob.source == SOURCE_TEST, QueryJob.status == JOB_RUNNING)
+    ) or 0
+    oldest_queued_at = db.scalar(
+        select(func.min(QueryJob.created_at)).where(QueryJob.status == JOB_QUEUED)
+    )
+    last_started_at = db.scalar(
+        select(func.max(QueryJob.started_at)).where(QueryJob.source != SOURCE_TEST)
+    )
+
+    def _rows(status: str, order, limit: int | None):
+        stmt = (
+            select(QueryJob, SqlTemplate, User.name, DataSource)
+            .join(SqlTemplate, SqlTemplate.id == QueryJob.template_id, isouter=True)
+            .join(User, User.id == QueryJob.user_id, isouter=True)
+            .join(DataSource, DataSource.id == QueryJob.datasource_id, isouter=True)
+            .where(QueryJob.source != SOURCE_TEST, QueryJob.status == status)
+            .order_by(*order)
+        )
+        return db.execute(stmt.limit(limit) if limit else stmt).all()
+
+    def _base(job: QueryJob, tmpl, who, ds) -> dict:
+        return {
+            "job_id": job.id,
+            "template_id": job.template_id,
+            "template_name": tmpl.name if tmpl else f"任务#{job.template_id}",
+            "user_name": who,
+            "source": job.source,
+            "datasource": ds.name if ds else None,
+            "engine": ds.engine if ds else None,
+        }
+
+    # 在跑的**全部**取出来(个位数):「多少条已超时仍挂着」要全量才数得对
+    running_list: list[dict] = []
+    overdue = 0
+    for job, tmpl, who, ds in _rows(JOB_RUNNING, (QueryJob.id.asc(),), None):
+        # 认领时先改 running、execute_job 再盖 started_at,中间那一瞬 started_at 为空
+        elapsed = _seconds(now, job.started_at or job.updated_at)
+        timeout = query_service.effective_timeout(tmpl, ds) if ds else None
+        is_overdue = bool(
+            elapsed is not None and timeout and elapsed > timeout + OVERDUE_GRACE_SECONDS
+        )
+        overdue += is_overdue
+        running_list.append({
+            **_base(job, tmpl, who, ds),
+            "elapsed_s": elapsed,
+            "timeout_s": timeout,
+            "overdue": is_overdue,
+        })
+    running = len(running_list)
+
+    queued_list = [
+        {**_base(job, tmpl, who, ds), "position": i + 1,
+         "waited_s": _seconds(now, job.created_at)}
+        for i, (job, tmpl, who, ds) in enumerate(
+            _rows(JOB_QUEUED, query_service.claim_order(), LIVE_LIST_LIMIT)
+        )
+    ]
+
+    oldest_wait = _seconds(now, oldest_queued_at) if queued else None
+    stall_after = max(STALL_MIN_SECONDS, STALL_POLL_MULTIPLIER * settings.WORKER_POLL_INTERVAL)
+    # 超时后仍挂着的 running 不算占槽:worker 崩掉时这些行要等孤儿回收(每小时)才转 failed,
+    # 按行数算槽位会把一个死掉的 worker 显示成「满载」—— 恰好是最该报警时报了个忙
+    alive = running - overdue
+    if settings.RUN_INLINE:
+        worker_state = WORKER_INLINE
+    elif not queued:
+        worker_state = WORKER_IDLE
+    elif alive >= capacity:
+        worker_state = WORKER_BUSY
+    elif oldest_wait is not None and oldest_wait > stall_after:
+        worker_state = WORKER_STALLED
+    else:
+        worker_state = WORKER_OK
+
+    # ② 今天逐小时:提交量、峰值并发、排队等待 P90。只算真正进过 worker 队列的
+    #    (executed_conditions 排除补推与复用;再排除试跑)。库时钟的今天 0 点起
+    day_start = datetime.combine(now.date(), datetime.min.time())
+    hours = now.hour + 1
+    ec = [*executed_conditions(scope), QueryJob.source != SOURCE_TEST]
+    today_rows = db.execute(
+        select(
+            QueryJob.created_at, QueryJob.started_at, QueryJob.duration_ms,
+            QueryJob.updated_at, QueryJob.status,
+        )
+        # 昨晚开跑、跨过零点还没结束的也要进峰值并发,所以 running 不看 created_at
+        .where(*ec, or_(QueryJob.created_at >= day_start, QueryJob.status == JOB_RUNNING))
+        .limit(am.PERCENTILE_SAMPLE_CAP)
+    ).all()
+    submitted = [0] * hours
+    waits: list[list[float]] = [[] for _ in range(hours)]
+    intervals: list[tuple[datetime, datetime]] = []
+    for created, started, dur_ms, updated, status in today_rows:
+        h = int((created - day_start).total_seconds() // 3600) if created else -1
+        if 0 <= h < hours:
+            submitted[h] += 1
+            if started is not None and started >= created:
+                waits[h].append((started - created).total_seconds())
+        if started is None:
+            continue
+        if status == JOB_RUNNING:
+            end = now
+        elif dur_ms is not None:
+            end = started + timedelta(milliseconds=dur_ms)
+        else:
+            end = updated  # 失败分支不写 duration_ms,终态那一刻的 updated_at 最接近结束时间
+        intervals.append((started, end))
+    peaks = am.hourly_peak_concurrency(intervals, day_start, hours)
+    today = [
+        {
+            "hour": h,
+            "submitted": submitted[h],
+            "peak_concurrency": peaks[h],
+            "wait_p90_s": am.percentiles(waits[h], ps=(90,))[90],
+        }
+        for h in range(hours)
+    ]
+
+    # ③ 未来 24 小时的定时排布,按整点分桶
+    app_now = datetime.now()
+    hour0 = app_now.replace(minute=0, second=0, microsecond=0)
+    buckets = [
+        {"hour": (hour0 + timedelta(hours=i)).isoformat(), "count": 0, "tasks": []}
+        for i in range(25)  # 当前这个不完整的小时 + 之后整 24 小时
+    ]
+    for at, _tid, name in subscription_service.planned_runs_between(
+        db, app_now, app_now + timedelta(hours=24)
+    ):
+        b = buckets[int((at - hour0).total_seconds() // 3600)]
+        b["count"] += 1
+        if len(b["tasks"]) < 10:
+            b["tasks"].append({"at": at.strftime("%H:%M"), "name": name})
+    for b in buckets:
+        b["crowded"] = b["count"] > capacity * CROWDED_FACTOR
+
+    return {
+        "as_of": now,
+        "capacity": capacity,
+        "inline": settings.RUN_INLINE,
+        "running": running,
+        "overdue": overdue,
+        "queued": queued,
+        "test_running": test_running,
+        "oldest_wait_s": oldest_wait,
+        # 给「多久前」而不是时刻:库时钟与浏览器时钟不一定同一时区(SQLite 下库时钟是 UTC),
+        # 把库时钟的时刻直接印在页面上,会和旁边的「更新于」差出几个小时
+        "last_started_ago_s": _seconds(now, last_started_at),
+        "worker_state": worker_state,
+        "stall_after_s": int(stall_after),
+        "running_list": running_list,
+        "queued_list": queued_list,
+        "today": today,
+        "schedule_24h": buckets,
+        "crowded_threshold": capacity * CROWDED_FACTOR,
+    }
+
+
 # ---------------------------------------------------------------- meta
 
 # 时间范围预设(天)。前端的快捷档与这里同源,改这里前端跟着变。
@@ -681,6 +890,25 @@ METRIC_NOTES: list[dict] = [
      "note": "最近 7 天调用过开放 API 的 Token 数 / 此刻已发放的 Token 数（每人至多一枚，吊销即不计入）。"
              "**固定看 7 天**，不随上方时间范围变化——它问的是「这些长期凭证还活着吗」。"
              "团队视角按**团队成员**收窄——token 属于人，不属于任务。"},
+    {"key": "live_slots", "label": "槽位占用", "windowed": False,
+     "note": "worker 正在执行的取数 / 可同时执行的上限（WORKER_CONCURRENCY）。满了之后新提交只能排队。"
+             "上限读的是 API 进程的配置，与 worker 用同一份 config.ini 才准。"},
+    {"key": "live_queue", "label": "排队", "windowed": False,
+     "note": "已提交、还没开始执行的取数，以及其中最早那条已经等了多久。"
+             "worker 先领网页取数与定时运行、再领 API 调用，下方明细按这个顺序排。"},
+    {"key": "live_worker", "label": "Worker", "windowed": False,
+     "note": "按队列推断，不是心跳：有排队且槽位满 = 满载；有排队、槽位空着、最早那条却已等了"
+             "一分钟以上 = 疑似停摆（worker 多半没在跑，去看 rubick-worker 服务）。"
+             "超时后仍显示运行中的记录视为已中断，不算占着槽位。"},
+    {"key": "live_test", "label": "编辑器试跑", "windowed": False,
+     "note": "作者在编辑器里点的试跑。它在 API 进程里直接执行，不排队、不占 worker 槽位，"
+             "但同样连目标库、占 API 的处理线程。"},
+    {"key": "live_today", "label": "今日分时", "windowed": False,
+     "note": "今天每小时提交了多少次取数、同一时刻最多有几条在执行（峰值并发）、排队等待的 P90。"
+             "峰值并发常年顶着槽位线，说明该加并发或错峰。不含试跑、补推与复用。"},
+    {"key": "live_schedule", "label": "未来 24 小时定时", "windowed": False,
+     "note": "按计划会自动入队的定时运行，按整点分组。只算计划开着、任务已上线、且有订阅者的"
+             "（没人订的那一期不会执行）。某小时超过槽位的 2 倍即标为扎堆，建议把部分任务错开几分钟。"},
     {"key": "api_runs", "label": "API 调用", "windowed": True,
      "note": "来源是开放 API 的运行次数。同一张任务在界面上被跑的次数不计入。"},
 ]
