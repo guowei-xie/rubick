@@ -57,6 +57,12 @@ class CredentialRequiredError(RubicError):
     status_code = 409
 
 
+class ConflictError(RubicError):
+    """请求本身没问题,但与资源的当前状态冲突(如正在运行、已经做过)。"""
+
+    status_code = 409
+
+
 class SqlSafetyError(RubicError):
     """SQL 安全网关拒绝。"""
 

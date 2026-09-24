@@ -26,6 +26,7 @@ from app.models.audit import (
     ACTION_PERMISSION_GRANT,
     ACTION_TASK_SUBSCRIBE,
     ACTION_TASK_SUBSCRIBE_FOR,
+    ACTION_TASK_SUBSCRIPTION_PUSH,
     ACTION_TASK_UNSUBSCRIBE,
     ACTION_TASK_UNSUBSCRIBE_FOR,
 )
@@ -300,3 +301,42 @@ def remove_task_subscriber(
             db, tmpl, user_id, operator_name=user.name or "任务负责人"
         )
     return {"ok": True, "removed": removed}
+
+
+# ---------------------------------------------------------------- 补推(管理侧)
+
+
+@router.post("/{template_id}/jobs/{job_id}/push")
+def push_job_to_subscribers(
+    template_id: int,
+    job_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    ip: str | None = Depends(client_ip),
+):
+    """把一条已确认的运行结果补推给该任务的全部订阅者(设计见
+    subscription_service.push_job_to_subscribers)。
+
+    两道守卫:任务编辑权(与管订阅者名单同一把尺,_managed),以及**看得见这条运行记录**
+    (load_job,不可见一律 404)。记录够不够格由 subscription_service.push_block 判。
+    """
+    from app.api.routes.query import job_out, load_job
+
+    tmpl = _managed(db, user, template_id)
+    source = load_job(db, user, job_id)
+    if source.template_id != tmpl.id:
+        raise NotFoundError("运行记录不存在")
+    tmpl_id, tmpl_name = tmpl.id, tmpl.name  # commit 会 expire 实例,审计前先留快照
+    job, notified = subscription_service.push_job_to_subscribers(db, tmpl, source, user)
+    out = job_out(db, job)
+    audit_service.log(
+        db, user=user, action=ACTION_TASK_SUBSCRIPTION_PUSH,
+        resource_type=RESOURCE_TEMPLATE, resource_id=tmpl_id, resource_name=tmpl_name,
+        detail={
+            "source_job_id": job_id, "job_id": out.id,
+            "replaces_job_id": out.replaces_job_id, "notified": notified,
+            "row_count": out.row_count,
+        },
+        ip=ip,
+    )
+    return {"job": out, "replaced": out.replaces_job_id is not None, "notified": notified}

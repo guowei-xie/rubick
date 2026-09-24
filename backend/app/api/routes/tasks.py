@@ -305,7 +305,24 @@ def task_run_records(
     cond = permission_service.job_visibility_condition(scope)
     if cond is not None:
         stmt = stmt.where(cond)
-    return list(db.scalars(stmt))
+    jobs = list(db.scalars(stmt))
+    out = [JobOut.model_validate(j) for j in jobs]
+
+    # 「推送给订阅者」按钮:只给有编辑权的人、只在候选行上算;判定与补推接口同一个函数
+    if permission_service.can_edit(scope, tmpl):
+        candidates = [(j, o) for j, o in zip(jobs, out) if subscription_service.is_push_candidate(j)]
+        if candidates:
+            ctx = subscription_service.push_context(db, tmpl, [j.id for j, _ in candidates])
+            for j, o in candidates:
+                block = subscription_service.push_block(ctx, j)
+                o.push_candidate = True
+                if block is not None:
+                    o.push_hint = block.message
+                else:
+                    o.can_push = True
+                    o.push_subscriber_count = ctx.subscriber_count
+                    o.push_replaces = ctx.delivered is not None
+    return out
 
 
 def _published_param(

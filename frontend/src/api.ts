@@ -193,6 +193,12 @@ export interface Task {
 export const listTasks = () => http.get("/tasks").then((r) => r.data as Task[]);
 export const taskRunRecords = (id: number) =>
   http.get(`/tasks/${id}/jobs`).then((r) => r.data);
+/** 补推:把一条已确认的运行结果推给该任务的全部订阅者,作为本期订阅结果。
+ *  资格由服务端判(subscription_service.push_block),与列表行上的 can_push/push_hint 同源 */
+export const pushJobToSubscribers = (taskId: number, jobId: number) =>
+  http
+    .post(`/tasks/${taskId}/jobs/${jobId}/push`)
+    .then((r) => r.data as { job: any; replaced: boolean; notified: number });
 
 // ---- 任务订阅(定时自动运行)----
 // 订阅计划(daily/weekly/monthly + days + "HH:MM")随任务保存提交(create/updateTemplate

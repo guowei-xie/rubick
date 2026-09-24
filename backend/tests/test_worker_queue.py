@@ -23,6 +23,7 @@ from app.models.query_job import JOB_FAILED, JOB_QUEUED, JOB_RUNNING, JOB_SUCCES
 from app.models.notification import Notification
 from app.models.user import ROLE_ADMIN
 from app.services import query_service
+from tests.conftest import db_now
 
 # ID 段 9150
 OWNER = 9150
@@ -38,11 +39,6 @@ def ds(datasource_factory):
     return datasource_factory("wq-mysql")
 
 
-def _db_now(db):
-    """库时钟的当下。跨时钟比较是这套代码里反复踩过的坑,所以基准取自库自己。"""
-    return db.scalar(select(func.now()))
-
-
 def _job(db, owner, ds, *, status, age_seconds=0, template_id=1):
     job = QueryJob(
         user_id=owner.id, template_id=template_id, datasource_id=ds.id,
@@ -54,7 +50,7 @@ def _job(db, owner, ds, *, status, age_seconds=0, template_id=1):
         # 显式写 updated_at 绕开 onupdate,把它推回过去
         db.execute(
             update(QueryJob).where(QueryJob.id == job.id)
-            .values(updated_at=_db_now(db) - timedelta(seconds=age_seconds))
+            .values(updated_at=db_now(db) - timedelta(seconds=age_seconds))
         )
         db.commit()
     db.refresh(job)

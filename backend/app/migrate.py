@@ -44,16 +44,17 @@ def _ensure_column(table: str, column: str, coltype: str) -> None:
     print(f"[migrate] {table}: 新增列 {column}")
 
 
-def _ensure_index(table: str, name: str, columns: str) -> None:
-    """若索引不存在则 CREATE INDEX(MySQL 无 IF NOT EXISTS,靠自省判断)。幂等。
+def _ensure_index(table: str, name: str, columns: str, *, unique: bool = False) -> None:
+    """若索引不存在则 CREATE [UNIQUE] INDEX(MySQL 无 IF NOT EXISTS,靠自省判断)。幂等。
 
     注意:线上大表建索引是 online DDL,放部署窗口执行。
     """
     if name in {i["name"] for i in sa_inspect(engine).get_indexes(table)}:
         print(f"[migrate] 索引 {name} 已存在,跳过")
         return
+    kind = "UNIQUE INDEX" if unique else "INDEX"
     with engine.begin() as conn:
-        conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+        conn.execute(text(f"CREATE {kind} {name} ON {table} ({columns})"))
     print(f"[migrate] {table}: 新增索引 {name}")
 
 
@@ -469,6 +470,15 @@ def main() -> None:
     # 非订阅行恒为空。订阅三张表 task_schedules / task_subscriptions /
     # task_subscription_events 由上面的 create_all 建出。
     _ensure_column(tbl("query_jobs"), "superseded_at", "DATETIME")
+    # 增量列:补推(先取数确认、再把那条结果推给订阅者)。存量行留空 —— 补推上线之前的
+    # 订阅记录全是定时运行,空值是事实而不是缺失。唯一索引挡住同一条记录被推两次。
+    _ensure_column(tbl("query_jobs"), "pushed_by_id", "BIGINT")
+    _ensure_column(tbl("query_jobs"), "pushed_from_job_id", "BIGINT")
+    _ensure_column(tbl("query_jobs"), "replaces_job_id", "BIGINT")
+    _ensure_index(
+        tbl("query_jobs"), f"ux_{tbl('query_jobs')}_pushed_from", "pushed_from_job_id",
+        unique=True,
+    )
 
     # 增量列:代订阅的操作者(NULL = 本人自助订阅)。存量行留空 —— 代订阅之前的订阅
     # 确实全都是自助订上的,这个空值不是缺失而是事实。

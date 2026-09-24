@@ -541,12 +541,18 @@ def notify_auto_unsubscribed(
     )
 
 
-def notify_subscription_ready(db: Session, tmpl: SqlTemplate, job: QueryJob) -> None:
+def notify_subscription_ready(db: Session, tmpl: SqlTemplate, job: QueryJob) -> int:
     """本期订阅数据生成成功 → 通知仍在册且仍 can_view 的订阅者(收件人策略住本模块)。
+    返回收件人数(补推接口要回显「推给了几个人」)。
 
     权限被撤即不再推送,fail-closed;订阅行留给自动清退或本人退订收拾。
     调用方(subscription_service.on_scheduled_run_finished)保证**先结算再调这里**,
     刚被清退的人不会再收到「数据已生成」。
+
+    补推来的一期(job.pushed_by_id 非空)换一句文案:失败后补上的说「已补发」,
+    替换本期已推送结果的说「已更新,以此版为准」—— 订阅者手里可能已经有一版,
+    不说清楚他分不出哪份是对的。深链一律指向**这条订阅记录**而不是补推的来源记录:
+    后者对只有 view 授权的订阅者不可见。
     """
     from app.services import permission_service, subscription_service
 
@@ -558,13 +564,20 @@ def notify_subscription_ready(db: Session, tmpl: SqlTemplate, job: QueryJob) -> 
         if not permission_service.can_view(permission_service.team_scope(db, user), tmpl):
             continue
         ready_ids.append(user.id)
+    if job.replaces_job_id is not None:
+        title, lead = "订阅数据已更新", "本期数据已更新,请以此版为准"
+    elif job.pushed_by_id is not None:
+        title, lead = "订阅数据已补发", "本期数据已补发"
+    else:
+        title, lead = "订阅数据已生成", "本期数据已生成"
     _push_each(
         db, ready_ids,
-        title="订阅数据已生成",
+        title=title,
         body=(
-            f"你订阅的《{tmpl.name}》本期数据已生成,共 {job.row_count} 行,"
+            f"你订阅的《{tmpl.name}》{lead},共 {job.row_count} 行,"
             "可到该任务的「运行记录」里预览并下载。"
         ),
         level="success", link=_records_link(tmpl.id, job.id),
         job_id=job.id, template_id=tmpl.id,
     )
+    return len(ready_ids)

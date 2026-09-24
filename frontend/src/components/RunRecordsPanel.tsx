@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { Button, message, Modal, Space, Table, TableColumnType, Tooltip } from "antd";
-import { downloadJob, errMsg, previewJob, taskRunRecords, withBase } from "../api";
-import StatusTag, { JOB_SOURCE, JOB_STATUS } from "./StatusTag";
+import {
+  downloadJob,
+  errMsg,
+  previewJob,
+  pushJobToSubscribers,
+  taskRunRecords,
+  withBase,
+} from "../api";
+import StatusTag, { JOB_SOURCE, JOB_STATUS, jobSourceKey } from "./StatusTag";
 import ResultPreviewTable from "./ResultPreviewTable";
 import SqlModal from "./SqlModal";
 import { fmtDayTime, fmtDuration, fmtTime } from "../format";
@@ -58,13 +65,55 @@ export default function RunRecordsPanel({
   const compact = variant === "compact";
   const w = WIDTHS[variant];
 
-  useEffect(() => {
-    if (!active || !taskId) return;
+  const load = () => {
+    if (!taskId) return;
     setLoading(true);
     taskRunRecords(taskId)
       .then(setRows)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    if (active) load();
   }, [taskId, active, refreshKey]);
+
+  // 补推:服务端会再判一次资格(行上的 can_push 可能已过时,比如别人刚推过),
+  // 不通过时原样显示服务端给的原因 —— 前端不自己拼「为什么不能推」
+  const confirmPush = (r: any) =>
+    Modal.confirm({
+      title: "推送给订阅者",
+      width: MODAL.params,
+      okText: "确认推送",
+      content: (
+        <>
+          <p>
+            将把 {fmtTime(r.created_at)} 这次运行的结果(共 {r.row_count ?? 0} 行)
+            作为本期订阅数据,推送给 <b>{r.push_subscriber_count ?? 0}</b> 位订阅者。
+          </p>
+          {r.push_replaces && (
+            <p style={{ color: "#d46b08" }}>
+              本期已经推送过一版,这次会替换它:订阅者会收到「本期数据已更新」,旧版仍可在保留期内下载。
+            </p>
+          )}
+          <p style={{ color: "#888", marginBottom: 0 }}>
+            推送的就是这次运行的结果文件,不会重新执行 SQL。推送前请先「预览」确认数据无误。
+          </p>
+        </>
+      ),
+      onOk: async () => {
+        try {
+          const res = await pushJobToSubscribers(taskId!, r.id);
+          message.success(
+            res.replaced
+              ? `已替换本期结果,并通知 ${res.notified} 位订阅者`
+              : `已推送给 ${res.notified} 位订阅者`
+          );
+          load();
+        } catch (e: any) {
+          message.error(errMsg(e, "推送失败"));
+        }
+      },
+    });
 
   const download = async (id: number) => {
     try {
@@ -90,9 +139,24 @@ export default function RunRecordsPanel({
       title: "类型",
       dataIndex: "source",
       width: w.source,
-      render: (s: string) => <StatusTag map={JOB_SOURCE} value={s || "run"} />,
+      render: (_: string, r: any) => {
+        const tag = <StatusTag map={JOB_SOURCE} value={jobSourceKey(r)} />;
+        return r.pushed_from_job_id ? (
+          <Tooltip title={`从运行记录 #${r.pushed_from_job_id} 补推`}>{tag}</Tooltip>
+        ) : (
+          tag
+        );
+      },
     },
-    { title: "运行人", dataIndex: "user_name", width: 100, hideInCompact: true },
+    {
+      title: "运行人",
+      dataIndex: "user_name",
+      width: 100,
+      hideInCompact: true,
+      // 补推记录的运行人是系统账号「定时运行」,真正动手的人写在括号里
+      render: (name: string, r: any) =>
+        r.pushed_by_name ? `${name}(${r.pushed_by_name} 补推)` : name,
+    },
     {
       title: "时间",
       dataIndex: "created_at",
@@ -161,10 +225,24 @@ export default function RunRecordsPanel({
       render: (_: any, r: any) => {
         if (r.status !== "success") return <span style={{ color: "#999" }}>-</span>;
         if (r.result_expired) return <span style={{ color: "#999" }}>已过期</span>;
+        // 「推送给订阅者」只在服务端判为候选的行出现(有编辑权 + 成功的正式取数);
+        // 候选但当下不能推的置灰,悬停给出原因,免得他以为按钮坏了
         return (
           <Space size={compact ? 0 : 8}>
             <Button type="link" size="small" onClick={() => preview(r.id)}>预览</Button>
             <Button type="link" size="small" onClick={() => download(r.id)}>导出</Button>
+            {r.push_candidate && (
+              <Tooltip title={r.can_push ? "把这次结果作为本期订阅数据推给全部订阅者" : r.push_hint}>
+                <Button
+                  type="link"
+                  size="small"
+                  disabled={!r.can_push}
+                  onClick={() => confirmPush(r)}
+                >
+                  推送给订阅者
+                </Button>
+              </Tooltip>
+            )}
           </Space>
         );
       },

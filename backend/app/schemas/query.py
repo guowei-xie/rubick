@@ -36,6 +36,19 @@ class JobOut(BaseModel):
     # **null 不是 0**:早于本列上线的历史行、还没开跑的、以及不入队的试跑,都是 null。
     started_at: datetime | None = None
     queue_ms: int | None = None
+    # ---- 补推(见 models/query_job 的同名列)----
+    pushed_by_id: int | None = None
+    pushed_by_name: str | None = None
+    pushed_from_job_id: int | None = None
+    replaces_job_id: int | None = None
+    # 「推送给订阅者」按钮。**只有任务运行记录列表(GET /tasks/{id}/jobs)会算**,且只对
+    # 有编辑权的人:push_candidate = 给按钮;can_push = 可点,否则 push_hint 是原因;
+    # 可点时再带上确认框要说的推给几人、会不会替换本期。其余接口恒为默认值
+    push_candidate: bool = False
+    can_push: bool = False
+    push_hint: str | None = None
+    push_subscriber_count: int | None = None
+    push_replaces: bool = False
 
     class Config:
         from_attributes = True

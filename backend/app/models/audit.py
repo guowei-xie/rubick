@@ -86,6 +86,9 @@ ACTION_TASK_AUTO_UNSUBSCRIBE = "task_auto_unsubscribe"
 # 与 ACTION_TASK_AUTHOR_TRANSFER 当初独立成码同构。
 ACTION_TASK_SUBSCRIBE_FOR = "task_subscribe_for"
 ACTION_TASK_UNSUBSCRIBE_FOR = "task_unsubscribe_for"
+# 补推:把一条已确认的运行结果推给全部订阅者,作为本期订阅结果(定时运行失败后的补救,
+# 或更正本期已推送的数据)。一次操作会给一批人发通知、改变他们能下载到的「本期」,单独成码
+ACTION_TASK_SUBSCRIPTION_PUSH = "task_subscription_push"
 
 # 团队取数账号(某团队在某数据源上的库身份)。动作码沿用早期名字(语义未变,只是主体
 # 从人变成了团队),密码永不进 detail,只记「哪个团队在哪个源上做了什么」
@@ -131,6 +134,7 @@ ACTION_META: dict[str, tuple[str, str]] = {
     ACTION_TASK_AUTO_UNSUBSCRIBE: ("连续未消费自动退订", GROUP_TASK),
     ACTION_TASK_SUBSCRIBE_FOR: ("代业务方订阅任务", GROUP_TASK),
     ACTION_TASK_UNSUBSCRIBE_FOR: ("移除任务订阅者", GROUP_TASK),
+    ACTION_TASK_SUBSCRIPTION_PUSH: ("补推结果给订阅者", GROUP_TASK),
     ACTION_PERMISSION_GRANT: ("授予任务权限", GROUP_PERMISSION),
     ACTION_PERMISSION_REVOKE: ("撤销任务权限", GROUP_PERMISSION),
     ACTION_TASK_EDIT_GRANT: ("授予任务编辑权", GROUP_PERMISSION),

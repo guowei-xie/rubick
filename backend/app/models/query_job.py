@@ -63,6 +63,9 @@ class QueryJob(Base, TimestampMixin):
         Index(f"ix_{tbl('query_jobs')}_created_at", "created_at"),
         Index(f"ix_{tbl('query_jobs')}_source_status_created",
               "source", "status", "created_at"),
+        # 同一条运行记录只能补推一次:连点两下、两个人同时点,都由这条唯一索引挡住
+        # (NULL 不参与唯一性,定时运行与普通取数的空值互不冲突)
+        Index(f"ux_{tbl('query_jobs')}_pushed_from", "pushed_from_job_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -121,9 +124,21 @@ class QueryJob(Base, TimestampMixin):
     # 订阅者在整个周期内(哪怕周期长于 RESULT_RETENTION_DAYS)都能下载到最新一期。
     superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # 补推(把一条已确认的运行结果推给订阅者)建出的订阅记录才有这三列,设计见
+    # subscription_service.push_job_to_subscribers。刻意不做外键,理由同 run_as_team_id。
+    pushed_by_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    pushed_from_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # 「替换本期」时指向**本期最早**那条成功订阅记录(见 period_first_id)
+    replaces_job_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
     # 关联模板/发起人,便于运行记录展示名称
     template = relationship("SqlTemplate", lazy="joined")
     user = relationship("User", lazy="joined")
+    # 补推人。lazy="select":绝大多数行这一列为空,不值得给每次查运行记录都挂一个 join
+    pushed_by = relationship(
+        "User", primaryjoin="foreign(QueryJob.pushed_by_id) == User.id",
+        lazy="select", viewonly=True,
+    )
 
     @property
     def template_name(self) -> Optional[str]:
@@ -132,6 +147,16 @@ class QueryJob(Base, TimestampMixin):
     @property
     def user_name(self) -> Optional[str]:
         return self.user.name if self.user else None
+
+    @property
+    def pushed_by_name(self) -> Optional[str]:
+        return self.pushed_by.name if self.pushed_by_id and self.pushed_by else None
+
+    @property
+    def period_first_id(self) -> int:
+        """这条订阅结果所在那一期**最早**一版的 id。一期被补推替换过就有多个版本,
+        看过其中任一版都算看过这一期(settle_on_success),新替换也挂在它上面。"""
+        return self.replaces_job_id or self.id
 
     @validates("executed_sql")
     def _clip_executed_sql(self, _key: str, value: str | None) -> str | None:

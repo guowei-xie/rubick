@@ -20,16 +20,25 @@ import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, time as time_cls, timedelta
 
-from sqlalchemy import func, or_, select, update as sa_update
+from sqlalchemy import exists, func, or_, select, update as sa_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.core.exceptions import CredentialRequiredError, RubicError
+from app.core.exceptions import ConflictError, CredentialRequiredError, RubicError
 from app.core.logging_setup import get_logger
 from app.models.audit import ACTION_TASK_AUTO_UNSUBSCRIBE
 from app.models.permission import RESOURCE_TEMPLATE
-from app.models.query_job import JOB_SUCCESS, SOURCE_SUBSCRIBE, QueryJob
+from app.models.query_job import (
+    JOB_QUEUED,
+    JOB_RUNNING,
+    JOB_SUCCESS,
+    SOURCE_API,
+    SOURCE_RUN,
+    SOURCE_SUBSCRIBE,
+    QueryJob,
+)
 from app.models.subscription import (
     FREQ_DAILY,
     FREQ_MONTHLY,
@@ -575,8 +584,11 @@ def apply_template_save(
     return closed
 
 
-def _supersede_latest_result(db: Session, template_id: int) -> None:
-    """给该任务最新一条尚未被取代的成功订阅结果盖 superseded_at。不提交。"""
+def _supersede_latest_result(
+    db: Session, template_id: int, *, before_id: int | None = None
+) -> None:
+    """给该任务最新一条尚未被取代的成功订阅结果盖 superseded_at。不提交。
+    before_id:只看这条之前的(补推替换本期时,别把刚建的新版盖掉)。"""
     latest = db.scalar(
         select(QueryJob)
         .where(
@@ -584,6 +596,7 @@ def _supersede_latest_result(db: Session, template_id: int) -> None:
             QueryJob.source == SOURCE_SUBSCRIBE,
             QueryJob.status == JOB_SUCCESS,
             QueryJob.superseded_at.is_(None),
+            *([QueryJob.id < before_id] if before_id is not None else []),
         )
         .order_by(QueryJob.id.desc())
         .limit(1)
@@ -640,11 +653,13 @@ def settle_on_success(db: Session, job: QueryJob) -> list[int]:
         return []  # 首期,无上一期可结算
 
     prev.superseded_at = datetime.now()
+    # 上一期若被补推替换过就有多个版本,看过其中任何一版都算看过这一期
+    period_first_id = prev.period_first_id
     removed: list[tuple[int, int]] = []  # (user_id, miss_streak)
     for sub in subscribers_of(db, job.template_id):
         if sub.created_at and prev.created_at and sub.created_at > prev.created_at:
             continue  # 上期开跑后才订阅的人,那期不算他的
-        if sub.last_consumed_job_id is not None and sub.last_consumed_job_id >= prev.id:
+        if sub.last_consumed_job_id is not None and sub.last_consumed_job_id >= period_first_id:
             sub.miss_streak = 0
             continue
         sub.miss_streak += 1
@@ -692,10 +707,7 @@ def on_scheduled_run_finished(db: Session, job: QueryJob, error: Exception | Non
     if tmpl is None:
         return
     if job.status == JOB_SUCCESS:
-        removed = settle_on_success(db, job)
-        if removed:
-            notify_service.notify_auto_unsubscribed(db, tmpl, removed, job_id=job.id)
-        notify_service.notify_subscription_ready(db, tmpl, job)
+        _deliver(db, tmpl, job)
         return
     subscriber_ids = [s.user_id for s in subscribers_of(db, tmpl.id)]
     notify_service.notify_subscription_run_failed(
@@ -703,6 +715,199 @@ def on_scheduled_run_finished(db: Session, job: QueryJob, error: Exception | Non
     )
     if isinstance(error, CredentialRequiredError):
         notify_service.notify_credential_blocked(db, tmpl, requester_id=job.user_id, job_id=job.id)
+
+
+def _deliver(db: Session, tmpl: SqlTemplate, job: QueryJob) -> int:
+    """一期成功的订阅结果落地:先结算、再通知。返回收到「数据已生成/已补发」的人数。
+    定时运行成功与补推共用这一段 —— 「先结算再通知」的顺序只写一次。"""
+    from app.services import notify_service
+
+    removed = settle_on_success(db, job)
+    if removed:
+        notify_service.notify_auto_unsubscribed(db, tmpl, removed, job_id=job.id)
+    return notify_service.notify_subscription_ready(db, tmpl, job)
+
+
+# ---------------------------------------------------------------- 补推(管理侧)
+
+# 能拿来补推的运行来源:正式取数与开放 API 触发。试跑可能跑的是草稿 SQL,
+# 订阅运行本身已经推过(再推一遍只是重发通知)
+PUSHABLE_SOURCES = (SOURCE_RUN, SOURCE_API)
+
+
+def is_push_candidate(job: QueryJob) -> bool:
+    """这一行「长得像」能补推的记录吗(成功的正式取数)。运行记录列表据此决定给不给按钮,
+    真正能不能推再由 push_block 判 —— 候选口径只在这里写一次。"""
+    return job.source in PUSHABLE_SOURCES and job.status == JOB_SUCCESS
+
+
+@dataclass
+class PushContext:
+    """一个任务上「能不能补推」要用的事实,一次查齐;列表逐行打标与补推接口共用它和
+    push_block,两边不会一边给按钮一边拒。
+
+    task_block 非空时其余事实都没查(任务本身就推不了,每一行都是同一个答案)。
+    """
+
+    tmpl: SqlTemplate
+    task_block: RubicError | None = None
+    subscriber_count: int = 0
+    busy: bool = False  # 已有排队中/运行中的订阅运行
+    pushed_from_ids: frozenset[int] = frozenset()
+    # 本期起点:period_start 按**应用时钟**(tick 写的,给人看),period_start_db 换算到
+    # **库时钟**(拿去和 created_at 比)。两者未必同一时区 —— SQLite 的 CURRENT_TIMESTAMP
+    # 是 UTC —— 不掺两个时钟,同 query_service.reclaim_stale_jobs。计划从未到期过时都为 None
+    period_start: datetime | None = None
+    period_start_db: datetime | None = None
+    # 本期已经交付过的那一版(只取判定要用的三列);None = 本期还没交付
+    delivered: object | None = None
+
+
+def push_context(db: Session, tmpl: SqlTemplate, candidate_ids=()) -> PushContext:
+    """candidate_ids:只关心哪些记录「已经推过」时传进来,免得把全部历史补推都捞一遍。"""
+    if tmpl.status != STATUS_PUBLISHED or tmpl.published_version_id is None:
+        return PushContext(tmpl, RubicError("任务未上线,不能推送给订阅者"))
+    sched = get_schedule(db, tmpl.id)
+    if sched is None or not sched.enabled:
+        return PushContext(tmpl, RubicError("任务未开启订阅"))
+    n_subs = subscriber_count(db, tmpl.id)
+    if n_subs == 0:
+        return PushContext(tmpl, RubicError("该任务当前没有订阅者"))
+
+    busy = db.scalar(
+        select(
+            exists().where(
+                QueryJob.template_id == tmpl.id,
+                QueryJob.source == SOURCE_SUBSCRIBE,
+                QueryJob.status.in_((JOB_QUEUED, JOB_RUNNING)),
+            )
+        )
+    )
+    pushed = (
+        frozenset(
+            db.scalars(
+                select(QueryJob.pushed_from_job_id).where(
+                    QueryJob.pushed_from_job_id.in_(list(candidate_ids))
+                )
+            )
+        )
+        if candidate_ids
+        else frozenset()
+    )
+    start = sched.last_planned_at
+    start_db = None
+    if start is not None:
+        start_db = start + (db.scalar(select(func.now())) - datetime.now())
+    latest = db.execute(
+        select(QueryJob.id, QueryJob.replaces_job_id, QueryJob.created_at)
+        .where(
+            QueryJob.template_id == tmpl.id,
+            QueryJob.source == SOURCE_SUBSCRIBE,
+            QueryJob.status == JOB_SUCCESS,
+        )
+        .order_by(QueryJob.id.desc())
+        .limit(1)
+    ).first()
+    delivered = latest if latest is not None and (
+        start_db is None or latest.created_at >= start_db
+    ) else None
+    return PushContext(
+        tmpl, None, subscriber_count=n_subs, busy=bool(busy), pushed_from_ids=pushed,
+        period_start=start, period_start_db=start_db, delivered=delivered,
+    )
+
+
+def push_block(ctx: PushContext, job: QueryJob) -> RubicError | None:
+    """这条运行记录**不能**补推的原因;能推返回 None。状态冲突是 ConflictError(409),
+    其余是「这条记录不符合条件」(400)。顺序按「先说任务、再说这条记录」。"""
+    from app.services import result_service
+
+    if ctx.task_block is not None:
+        return ctx.task_block
+    if job.source not in PUSHABLE_SOURCES:
+        return RubicError("只能推送正式取数的结果(试跑与定时运行的记录不能推送)")
+    if job.status != JOB_SUCCESS or not job.result_object_key:
+        return RubicError("只能推送运行成功的结果")
+    if job.template_version_id != ctx.tmpl.published_version_id:
+        return RubicError("这条结果来自旧版本,请用当前上线版本重新取数后再推送")
+    if ctx.period_start_db is not None and job.created_at < ctx.period_start_db:
+        return RubicError(
+            f"这条结果早于本期计划时刻({ctx.period_start:%Y-%m-%d %H:%M}),"
+            "可能已经过时,请重新取数后再推送"
+        )
+    if job.id in ctx.pushed_from_ids:
+        return ConflictError(_PUSH_DUPLICATE)
+    if ctx.busy:
+        return ConflictError("本期定时运行正在进行,请等它结束后再推送")
+    if result_service.is_gone(job):  # 最后判:唯一要碰磁盘的一条
+        return RubicError("这条结果已过期或文件已不存在,请重新取数")
+    return None
+
+
+_PUSH_DUPLICATE = "这条结果已经推送过给订阅者"
+
+
+def push_job_to_subscribers(
+    db: Session, tmpl: SqlTemplate, source: QueryJob, operator: User
+) -> tuple[QueryJob, int]:
+    """把一条已确认的运行结果补推给订阅者,作为本期订阅结果。返回 (新订阅记录, 通知人数)。
+
+    定时运行失败后平台不重试,而「补跑即群发」意味着推出去之前没人看过结果 —— 所以依据
+    是一条**已经跑完、操作人看过**的运行记录,不重跑 SQL。
+
+    做法是另建一条 source=subscribe 的记录、与来源记录共用结果文件:只有 view 授权的
+    订阅者只看得见、取得走订阅记录(job_visibility_condition / can_download_job),
+    而可见 / 下载 / 保留(protected_result_keys 按 key 保护)/ 消费打点全部因此沿用
+    定时运行那一套。user_id 照旧填系统用户:填成操作人会让 can_access_job 的「本人」
+    短路放行他人。
+
+    - 本期还没交付(定时运行失败了):这就是本期,照常结算 + 通知「已补发」;
+    - 本期已经交付过:这是「替换本期」—— 期没有闭合,不结算消费,只让旧版进入保留期,
+      通知「已更新」。replaces_job_id 指向本期最早一版,看过任一版都算看过本期。
+
+    操作人权限(编辑权 + 看得见来源记录)在路由层判;审计也在路由层写。
+    """
+    ctx = push_context(db, tmpl, [source.id])
+    block = push_block(ctx, source)
+    if block is not None:
+        raise block
+
+    job = QueryJob(
+        user_id=scheduler_user(db).id,
+        template_id=tmpl.id,
+        template_version_id=source.template_version_id,
+        datasource_id=source.datasource_id,
+        params={},
+        status=JOB_SUCCESS,
+        source=SOURCE_SUBSCRIBE,
+        row_count=source.row_count,
+        executed_sql=source.executed_sql,
+        run_as_team_id=source.run_as_team_id,
+        run_as_username=source.run_as_username,
+        result_object_key=source.result_object_key,
+        result_filename=source.result_filename,
+        # started_at / duration_ms 留空:这条记录没有执行过
+        pushed_by_id=operator.id,
+        pushed_from_job_id=source.id,
+        replaces_job_id=(
+            (ctx.delivered.replaces_job_id or ctx.delivered.id) if ctx.delivered else None
+        ),
+    )
+    db.add(job)
+    try:
+        db.commit()
+    except IntegrityError:  # 并发下两次推送同一条记录:唯一索引兜底
+        db.rollback()
+        raise ConflictError(_PUSH_DUPLICATE)
+    db.refresh(job)
+
+    if job.replaces_job_id is None:
+        return job, _deliver(db, tmpl, job)
+    from app.services import notify_service
+
+    _supersede_latest_result(db, tmpl.id, before_id=job.id)
+    db.commit()
+    return job, notify_service.notify_subscription_ready(db, tmpl, job)
 
 
 # ---------------------------------------------------------------- 调度(worker 侧)

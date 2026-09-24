@@ -91,6 +91,10 @@ AUDITED: dict[str, frozenset[str]] = {
     "DELETE /api/tasks/{template_id}/subscribers/{user_id}": frozenset(
         {A.ACTION_TASK_UNSUBSCRIBE_FOR}
     ),
+    # 补推:把一条已确认的运行结果推给全部订阅者(另建一条订阅记录、群发通知)
+    "POST /api/tasks/{template_id}/jobs/{job_id}/push": frozenset(
+        {A.ACTION_TASK_SUBSCRIPTION_PUSH}
+    ),
     "POST /api/admin/users/{user_id}/role": frozenset({A.ACTION_USER_ROLE_CHANGE}),
     "POST /api/datasources": frozenset({A.ACTION_DATASOURCE_CREATE}),
     "PUT /api/datasources/{ds_id}": frozenset({A.ACTION_DATASOURCE_UPDATE}),

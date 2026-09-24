@@ -255,6 +255,56 @@ def datasource_factory(db):
     return make
 
 
+@pytest.fixture
+def subscribe_job_factory(db, system_user):
+    """造一条订阅运行记录(挂系统用户名下,同 enqueue_scheduled)。
+
+    with_file 时真的落一个结果 CSV(下载 / 预览 / 补推用例需要);created_at 按**库时钟**给
+    (见 db_now)。结算与补推两个文件都要这个脚手架,只写这一份。
+    """
+    from app.models.query_job import JOB_SUCCESS, SOURCE_SUBSCRIBE, QueryJob
+    from app.services import result_service
+
+    def make(task, *, status=JOB_SUCCESS, with_file=False, created_at=None):
+        job = QueryJob(
+            user_id=system_user.id, template_id=task.id, datasource_id=task.datasource_id,
+            template_version_id=task.published_version_id,
+            params={}, status=status, source=SOURCE_SUBSCRIBE,
+        )
+        db.add(job)
+        db.commit()
+        if with_file:
+            filename = f"{task.name}_{job.id}.csv"
+            key = f"jobs/{job.id}/{filename}"
+            result_service.write_csv(key, ["c"], [(1,)])
+            job.result_object_key, job.result_filename, job.row_count = key, filename, 1
+        if created_at is not None:
+            job.created_at = created_at
+        db.commit()
+        db.refresh(job)
+        return job
+
+    return make
+
+
+def subscription_row(db, task, user):
+    """某人对某任务的订阅行(没订阅为 None)。先 expire:断言要看的是库里的最新值。"""
+    from app.models.subscription import TaskSubscription
+
+    db.expire_all()
+    return db.scalar(
+        select(TaskSubscription).where(
+            TaskSubscription.template_id == task.id, TaskSubscription.user_id == user.id
+        )
+    )
+
+
+def db_now(db):
+    """库时钟的当下。created_at 是库时钟(SQLite 下是 UTC),要改它就以此为基准 ——
+    跨时钟比较是这套代码里反复踩过的坑。"""
+    return db.scalar(select(func.now()))
+
+
 def max_audit_id(db) -> int:
     return db.scalar(select(func.max(AuditLog.id))) or 0
 

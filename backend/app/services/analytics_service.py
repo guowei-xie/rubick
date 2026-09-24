@@ -142,6 +142,17 @@ def job_conditions(scope: AnalyticsScope) -> list:
     return by_template(QueryJob.template_id, template_conditions(scope))
 
 
+def execution_conditions(scope: AnalyticsScope) -> list:
+    """「一次执行」的条件 = 作用域收窄 + **排除补推记录**。运行次数 / 成功率 / 耗时这类
+    按执行统计的板块都用它,而不是直接用 job_conditions。
+
+    补推(pushed_from_job_id 非空)是把一次已有的运行结果再交付给订阅者,不是一次执行 ——
+    算进来的话每补推一次就多一条「定时运行成功」,失败的那一期会被报成 50% 成功率。
+    下载事件照旧挂 job_conditions:补推记录上的下载是真下载。
+    """
+    return [*job_conditions(scope), QueryJob.pushed_from_job_id.is_(None)]
+
+
 def by_template(column, tc: list) -> list:
     """任何**挂 template_id** 的表的收窄条件(版本 / 订阅 / 订阅事件 ……)。
 
@@ -269,7 +280,7 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
     开发侧活跃(active_authors)并列单列,谁都不吃亏。
     """
 
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     sys_ids = system_user_ids(db)
     # 排除定时运行的挂名人。不排的话「活跃取数人」会凭空多一个、而且永远活跃
     not_system = [QueryJob.user_id.notin_(sys_ids)] if sys_ids else []
@@ -342,7 +353,7 @@ def adoption(db: Session, scope: AnalyticsScope, window) -> dict:
     success_jobs = sum(c[3] for c in counts.values())
 
     # ⑤ 下载:那张从前只写不读的表第一次被读。按 job 收窄到本范围
-    dl_scope = by_job(DownloadEvent.job_id, jc)
+    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
     dl_n = db.scalar(
         select(func.count(DownloadEvent.id))
         .where(*dl_scope, *in_window(DownloadEvent.created_at, window))
@@ -454,7 +465,7 @@ def health(db: Session, scope: AnalyticsScope, window) -> dict:
     定时失败才是事故。合并成一个数会让平台看起来一团糟,然后所有人学会忽略这个数字。
     """
 
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     win = in_window(QueryJob.created_at, window)
     TERMINAL = (JOB_SUCCESS, JOB_FAILED)
 
@@ -743,7 +754,7 @@ def meta(db: Session, user: User) -> dict:
 
     options = scope_options(db, user)
     scope = resolve_scope(db, user)
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     tc = template_conditions(scope)
 
     templates = db.scalar(select(func.count(SqlTemplate.id)).where(*tc)) or 0
@@ -775,7 +786,7 @@ def assets(db: Session, scope: AnalyticsScope, window) -> dict:
     """
 
     tc = template_conditions(scope)
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     win = in_window(QueryJob.created_at, window)
 
     # ① 状态分布(存量)
@@ -941,7 +952,7 @@ def governance(db: Session, scope: AnalyticsScope, window) -> dict:
     """
 
     tc = template_conditions(scope)
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     # 任务 → 所属团队。③ 的僵尸编辑权要用它,范围内的任务 id 集合也是它的 keys ——
     # 同一批行查两遍没有意义
     tmpl_team = dict(db.execute(select(SqlTemplate.id, SqlTemplate.team_id).where(*tc)).all())
@@ -1072,7 +1083,7 @@ def governance(db: Session, scope: AnalyticsScope, window) -> dict:
     }
 
     # ⑥ 下载:集中度不是指控,是发现「一个人在给全组取数」这种反模式
-    dl_scope = by_job(DownloadEvent.job_id, jc)
+    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
     dl_rows = db.execute(
         select(DownloadEvent.user_id, func.count(DownloadEvent.id),
                func.max(DownloadEvent.row_count))
@@ -1162,7 +1173,7 @@ def api_usage(db: Session, scope: AnalyticsScope, window) -> dict:
     同 scope_template_ids 的取舍);运行与下载照旧走 job_conditions / by_job,
     不另立收窄口径。
     """
-    jc = job_conditions(scope)
+    jc = execution_conditions(scope)
     win = in_window(QueryJob.created_at, window)
 
     # ① token:发放数(此刻快照)与近 7 天活跃数。三列同生同灭(见 api_token_service),
@@ -1199,7 +1210,7 @@ def api_usage(db: Session, scope: AnalyticsScope, window) -> dict:
     ) or 0
 
     # ③ API 下载(DownloadEvent.via;web 下载不进这个数)
-    dl_scope = by_job(DownloadEvent.job_id, jc)
+    dl_scope = by_job(DownloadEvent.job_id, job_conditions(scope))
     api_downloads = db.scalar(
         select(func.count(DownloadEvent.id)).where(
             *dl_scope, *in_window(DownloadEvent.created_at, window),

@@ -23,11 +23,11 @@ from app.models.subscription import (
     TaskSubscriptionEvent,
 )
 from app.models.user import ROLE_DEVELOPER, ROLE_USER
+from tests.conftest import subscription_row
 from app.services import (
     notify_service,
     permission_service,
     query_service,
-    result_service,
     subscription_service,
 )
 
@@ -74,124 +74,95 @@ def task(db, author, ds, team, subscribed_task_factory):
     return subscribed_task_factory(author, ds, team, "结算任务")
 
 
-def _sub_job(db, system_user, task, ds, *, status=JOB_SUCCESS, with_file=False):
-    """造一条订阅运行记录;with_file 时真的落一个结果 CSV(下载/预览用例需要)。"""
-    job = QueryJob(
-        user_id=system_user.id, template_id=task.id, datasource_id=ds.id,
-        params={}, status=status, source=SOURCE_SUBSCRIBE,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    if with_file:
-        filename = f"{task.name}_{job.id}.csv"
-        key = f"jobs/{job.id}/{filename}"
-        result_service.write_csv(key, ["c"], [(1,)])
-        job.result_object_key = key
-        job.result_filename = filename
-        job.row_count = 1
-        db.commit()
-    return job
-
-
-def _sub_row(db, task, user) -> TaskSubscription | None:
-    db.expire_all()
-    return db.scalar(
-        select(TaskSubscription).where(
-            TaskSubscription.template_id == task.id, TaskSubscription.user_id == user.id
-        )
-    )
-
-
 # ---------------------------------------------------------------- 消费打点
 
 
-def test_download_marks_consumption(db, author, sub_a, ds, team, task, system_user):
+def test_download_marks_consumption(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
     """打点在路由层(与 preview 并排),故从 download 路由进。"""
     from app.api.routes.query import download as download_route
 
     subscription_service.subscribe(db, task, sub_a)
-    job = _sub_job(db, system_user, task, ds, with_file=True)
+    job = subscribe_job_factory(task, with_file=True)
     fake_request = type("R", (), {"headers": {}, "client": None})()
 
     download_route(job.id, fake_request, db=db, user=sub_a)
 
-    assert _sub_row(db, task, sub_a).last_consumed_job_id == job.id
+    assert subscription_row(db, task, sub_a).last_consumed_job_id == job.id
 
 
-def test_preview_route_marks_consumption(db, author, sub_a, ds, team, task, system_user):
+def test_preview_route_marks_consumption(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
     subscription_service.subscribe(db, task, sub_a)
-    job = _sub_job(db, system_user, task, ds, with_file=True)
+    job = subscribe_job_factory(task, with_file=True)
 
     preview_route(job.id, db=db, user=sub_a)
 
-    assert _sub_row(db, task, sub_a).last_consumed_job_id == job.id
+    assert subscription_row(db, task, sub_a).last_consumed_job_id == job.id
 
 
-def test_watermark_only_moves_forward_and_ignores_non_subscribe(db, author, sub_a, ds, team, task, system_user):
+def test_watermark_only_moves_forward_and_ignores_non_subscribe(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
     subscription_service.subscribe(db, task, sub_a)
-    early = _sub_job(db, system_user, task, ds)
-    late = _sub_job(db, system_user, task, ds)
+    early = subscribe_job_factory(task)
+    late = subscribe_job_factory(task)
 
     subscription_service.mark_consumed(db, sub_a.id, late)
     subscription_service.mark_consumed(db, sub_a.id, early)  # 回拨无效
-    assert _sub_row(db, task, sub_a).last_consumed_job_id == late.id
+    assert subscription_row(db, task, sub_a).last_consumed_job_id == late.id
 
     # 非订阅 job / 未成功 job 一律不动水位
     normal = QueryJob(user_id=sub_a.id, template_id=task.id, datasource_id=ds.id,
                       params={}, status=JOB_SUCCESS)
     db.add(normal)
-    failed = _sub_job(db, system_user, task, ds, status=JOB_FAILED)
+    failed = subscribe_job_factory(task, status=JOB_FAILED)
     db.commit()
     subscription_service.mark_consumed(db, sub_a.id, normal)
     subscription_service.mark_consumed(db, sub_a.id, failed)
-    assert _sub_row(db, task, sub_a).last_consumed_job_id == late.id
+    assert subscription_row(db, task, sub_a).last_consumed_job_id == late.id
 
 
 # ---------------------------------------------------------------- 结算
 
 
-def test_settle_resets_consumer_and_increments_misser(db, author, sub_a, sub_b, ds, team, task, system_user):
+def test_settle_resets_consumer_and_increments_misser(db, author, sub_a, sub_b, ds, team, task, system_user, subscribe_job_factory):
     subscription_service.subscribe(db, task, sub_a)
     subscription_service.subscribe(db, task, sub_b)
-    prev = _sub_job(db, system_user, task, ds)
+    prev = subscribe_job_factory(task)
     subscription_service.mark_consumed(db, sub_a.id, prev)  # 甲消费了上一期,乙没有
-    cur = _sub_job(db, system_user, task, ds)
+    cur = subscribe_job_factory(task)
 
     removed = subscription_service.settle_on_success(db, cur)
 
     assert removed == []
-    assert _sub_row(db, task, sub_a).miss_streak == 0
-    assert _sub_row(db, task, sub_b).miss_streak == 1
+    assert subscription_row(db, task, sub_a).miss_streak == 0
+    assert subscription_row(db, task, sub_b).miss_streak == 1
     db.expire_all()
     assert db.get(QueryJob, prev.id).superseded_at is not None  # 上一期被取代
     assert db.get(QueryJob, cur.id).superseded_at is None
 
 
-def test_settle_first_period_is_noop(db, author, sub_a, ds, team, task, system_user):
+def test_settle_first_period_is_noop(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
     subscription_service.subscribe(db, task, sub_a)
-    first = _sub_job(db, system_user, task, ds)
+    first = subscribe_job_factory(task)
     assert subscription_service.settle_on_success(db, first) == []
-    assert _sub_row(db, task, sub_a).miss_streak == 0
+    assert subscription_row(db, task, sub_a).miss_streak == 0
 
 
-def test_failed_period_does_not_settle(db, author, sub_a, ds, team, task, system_user):
+def test_failed_period_does_not_settle(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
     """失败的期不触发结算:notify_job_done 的失败分支不动 miss_streak、不盖 superseded_at。"""
     subscription_service.subscribe(db, task, sub_a)
-    prev = _sub_job(db, system_user, task, ds)
-    failed = _sub_job(db, system_user, task, ds, status=JOB_FAILED)
+    prev = subscribe_job_factory(task)
+    failed = subscribe_job_factory(task, status=JOB_FAILED)
     failed.error = "目标库超时"
     db.commit()
 
     notify_service.notify_job_done(db, failed, RuntimeError("目标库超时"))
 
-    assert _sub_row(db, task, sub_a).miss_streak == 0
+    assert subscription_row(db, task, sub_a).miss_streak == 0
     db.expire_all()
     assert db.get(QueryJob, prev.id).superseded_at is None
 
 
-def test_late_subscriber_is_not_counted_for_previous_period(db, author, sub_a, ds, team, task, system_user):
-    prev = _sub_job(db, system_user, task, ds)
+def test_late_subscriber_is_not_counted_for_previous_period(db, author, sub_a, ds, team, task, system_user, subscribe_job_factory):
+    prev = subscribe_job_factory(task)
     subscription_service.subscribe(db, task, sub_a)
     # 把订阅时间明确推到上一期之后(server_default 秒级粒度,同秒会判成同时)
     db.execute(
@@ -200,32 +171,32 @@ def test_late_subscriber_is_not_counted_for_previous_period(db, author, sub_a, d
         .values(created_at=prev.created_at + timedelta(seconds=60))
     )
     db.commit()
-    cur = _sub_job(db, system_user, task, ds)
+    cur = subscribe_job_factory(task)
 
     subscription_service.settle_on_success(db, cur)
 
-    assert _sub_row(db, task, sub_a).miss_streak == 0  # 那期不算他的
+    assert subscription_row(db, task, sub_a).miss_streak == 0  # 那期不算他的
 
 
 def test_reaching_limit_auto_unsubscribes_with_trail_and_no_success_notice(
-    db, author, sub_a, sub_b, ds, team, task, system_user
+    db, author, sub_a, sub_b, ds, team, task, system_user, subscribe_job_factory
 ):
     """达到阈值:删订阅行 + 留痕事件 + 审计 + 通知本人;紧随其后的成功通知不再发给他。"""
     subscription_service.subscribe(db, task, sub_a)
     subscription_service.subscribe(db, task, sub_b)
-    prev = _sub_job(db, system_user, task, ds)
+    prev = subscribe_job_factory(task)
     subscription_service.mark_consumed(db, sub_b.id, prev)  # 乙一直在看
-    row = _sub_row(db, task, sub_a)
+    row = subscription_row(db, task, sub_a)
     row.miss_streak = settings.SUBSCRIPTION_MISS_LIMIT - 1  # 甲已连续错过 N-1 期
     db.commit()
-    cur = _sub_job(db, system_user, task, ds, with_file=True)
+    cur = subscribe_job_factory(task, with_file=True)
     note_floor = db.scalar(select(func.max(Notification.id))) or 0
 
     # 从 notify_job_done 入口进:「先结算、再发成功通知」的顺序由它保证
     notify_service.notify_job_done(db, cur)
 
     # 甲被清退:订阅行没了,事件留痕 + 审计都在
-    assert _sub_row(db, task, sub_a) is None
+    assert subscription_row(db, task, sub_a) is None
     ev = db.scalar(
         select(TaskSubscriptionEvent).where(
             TaskSubscriptionEvent.template_id == task.id,
@@ -249,7 +220,7 @@ def test_reaching_limit_auto_unsubscribes_with_trail_and_no_success_notice(
 
 
 def test_scheduled_success_notifies_only_subscribers_never_the_system_user(
-    db, author, sub_a, ds, team, task, system_user
+    db, author, sub_a, ds, team, task, system_user, subscribe_job_factory
 ):
     """2026-08-25 现场:一次成功的定时运行,「取数完成」落在了系统用户「定时运行」名下,
     订阅者一条都没收到 —— 那台执行它的进程是旧代码,没走 subscribe 分派。
@@ -258,7 +229,7 @@ def test_scheduled_success_notifies_only_subscribers_never_the_system_user(
     (后者由 _push 的出口兜底,即便上游又把发起人当成收件人)。
     """
     subscription_service.subscribe(db, task, sub_a)
-    job = _sub_job(db, system_user, task, ds, with_file=True)
+    job = subscribe_job_factory(task, with_file=True)
     note_floor = db.scalar(select(func.max(Notification.id))) or 0
 
     notify_service.notify_job_done(db, job)
@@ -316,7 +287,7 @@ def test_scheduled_job_executes_end_to_end(db, author, sub_a, ds, team, task, sy
 
 
 def test_notified_subscriber_can_actually_see_the_run(
-    db, author, outsider, ds, team, task, system_user
+    db, author, outsider, ds, team, task, system_user, subscribe_job_factory
 ):
     """「收到通知」与「看得到结果」绑死:只发通知不给看,等于没送到。
 
@@ -331,7 +302,7 @@ def test_notified_subscriber_can_actually_see_the_run(
         actions=["view"], granted_by=author.id,
     )
     subscription_service.subscribe(db, task, outsider)
-    job = _sub_job(db, system_user, task, ds, with_file=True)
+    job = subscribe_job_factory(task, with_file=True)
 
     # 1. 平台确实给他发了「本期数据已生成」
     notify_service.notify_subscription_ready(db, task, job)
@@ -346,4 +317,4 @@ def test_notified_subscriber_can_actually_see_the_run(
 
     # 3. 打得开 → 消费水位推得动 → 不会被当成「连续未查看」清退
     preview_route(job.id, db=db, user=outsider)
-    assert _sub_row(db, task, outsider).last_consumed_job_id == job.id
+    assert subscription_row(db, task, outsider).last_consumed_job_id == job.id

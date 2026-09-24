@@ -18,7 +18,14 @@ export const JOB_SOURCE: TagMap = {
   test: { color: "orange", label: "试跑" },
   subscribe: { color: "purple", label: "定时" },
   api: { color: "cyan", label: "API" },
+  // 不是库里的 source 值:补推建的记录 source 仍是 subscribe(订阅者靠它看得到),
+  // 展示时由 jobSourceKey 按 pushed_from_job_id 认出来
+  pushed: { color: "purple", label: "补推" },
 };
+
+/** 一条运行记录在界面上按哪种来源展示。补推记录单独认出来,其余就是库里的 source。 */
+export const jobSourceKey = (r: { source?: string; pushed_from_job_id?: number | null }) =>
+  r.pushed_from_job_id ? "pushed" : r.source || "run";
 
 /** 运行来源的**全称**。表格里的 Tag 要短(列宽有限),而运营分析的图例、卡片标题要能
  *  离开「来源」那一列独立读懂 ——「试跑」两个字单独摆在图例上没人知道在说什么。
@@ -28,6 +35,7 @@ export const JOB_SOURCE_LONG: Record<string, string> = {
   test: "作者试跑",
   subscribe: "定时运行",
   api: "API 调用",
+  pushed: "补推给订阅者",
 };
 
 export const TEMPLATE_STATUS: TagMap = {
