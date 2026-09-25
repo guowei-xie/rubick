@@ -693,7 +693,7 @@ def test_run(db: Session, data, user: User | None = None) -> dict:
 
     # 成功:存结果文件(便于运行记录里预览/导出),推进记录状态
     if job is not None:
-        filename = f"{tmpl.name}_{job.id}.csv"
+        filename = result_service.result_filename(tmpl.name, datetime.now())
         object_key = f"jobs/{job.id}/{filename}"
         # 试跑结果本来就已经在内存里(取样,最多 data.limit 行),照旧一次写完;
         # 唯一的 CSV 写法住在 result_service,这里不自己拼字节。

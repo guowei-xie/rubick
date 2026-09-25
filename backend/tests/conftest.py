@@ -274,7 +274,7 @@ def subscribe_job_factory(db, system_user):
         db.add(job)
         db.commit()
         if with_file:
-            filename = f"{task.name}_{job.id}.csv"
+            filename = result_service.result_filename(task.name, datetime.now())
             key = f"jobs/{job.id}/{filename}"
             result_service.write_csv(key, ["c"], [(1,)])
             job.result_object_key, job.result_filename, job.row_count = key, filename, 1

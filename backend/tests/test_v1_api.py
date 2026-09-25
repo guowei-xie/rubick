@@ -5,6 +5,7 @@
 只有限流守卫 api_user 直接调来测 429。
 """
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import pytest
 from sqlalchemy import func, select
@@ -335,6 +336,25 @@ def test_preview_and_download_direct(db, task_api, author, viewer, spy_connector
         select(DownloadEvent).where(DownloadEvent.job_id == job.id).order_by(DownloadEvent.id.desc())
     )
     assert ev_web.via == "web"
+
+
+def test_result_filename_format():
+    assert result_service.result_filename("日报", datetime(2026, 9, 25, 20, 20, 30)) == "日报_20260925202030.csv"
+
+
+def test_download_name_carries_run_time(db, task_api, author, viewer, spy_connector):
+    """下载名是「任务名_运行开始时刻」,不再是运行编号;Content-Disposition 里就是这个名字。"""
+    _grant(db, author, task_api, viewer, actions=["download"])
+    before = datetime.now().replace(microsecond=0)
+    job = _succeed_a_run(db, spy_connector, task_api, viewer)
+    after = datetime.now()
+
+    stem, _, stamp = job.result_filename.removesuffix(".csv").rpartition("_")
+    assert stem == task_api.name
+    assert before <= datetime.strptime(stamp, "%Y%m%d%H%M%S") <= after
+
+    resp = v1_routes.download_result(job.id, db, viewer, ip=None)
+    assert quote(job.result_filename) in resp.headers["content-disposition"]
 
 
 def test_download_of_unfinished_run_is_rejected(db, task_api, author, viewer):

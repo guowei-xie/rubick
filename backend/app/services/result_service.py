@@ -11,10 +11,20 @@ import csv
 import io
 import time
 from collections.abc import Iterator
+from datetime import datetime
 from itertools import chain, islice
 from pathlib import Path
 
 from app.core.config import settings
+
+
+def result_filename(task_name: str, at: datetime) -> str:
+    """结果文件的下载名:<任务名>_<YYYYmmddHHMMSS>.csv,时间是这次运行开始取数的时刻。
+
+    正式运行、试跑两处都从这里取名,格式只表述一次。复用 / 补推的记录原样继承源记录的
+    文件名(见 QueryJob.sharing_result_of),所以名字里是数据真正取出来的那个时刻。
+    """
+    return f"{task_name}_{at:%Y%m%d%H%M%S}.csv"
 
 
 def _abs_path(object_key: str) -> Path:

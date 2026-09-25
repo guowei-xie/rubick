@@ -579,7 +579,9 @@ def execute_job(job_id: int, ip: str | None = None) -> None:
             job.executed_sql = params_service.render_sql(sql_text, bound)
             db.commit()
             connector = get_connector(ds, credential)
-            filename = f"{tmpl.name}_{job.id}.csv"
+            # 应用时钟而非 job.started_at:后者是 DB 时钟(SQLite 下是 UTC),而排班与界面
+            # 用的都是服务器本地时间。object_key 有 job.id 一级目录,同秒两跑也不会撞
+            filename = result_service.result_filename(tmpl.name, datetime.now())
             object_key = f"jobs/{job.id}/{filename}"
             # 边取边写盘:结果行数不再有平台上限(见 settings.MAX_RESULT_ROWS 的说明),
             # 所以这条链路上不能有「先把所有行收进内存」的一步。duration 由这里计时 ——

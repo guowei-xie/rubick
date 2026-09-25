@@ -127,7 +127,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `id` | int | 运行编号（结果文件名 `<任务名>_<运行编号>.csv` 里的流水号） |
+| `id` | int | 运行编号（每跑一次给一个的流水号） |
 | `template_id` | int | 所属任务编号 |
 | `status` | string | `queued` 排队 / `running` 运行中 / `success` 成功 / `failed` 失败 / `cancelled` 排队中被取消（见 4.6） |
 | `row_count` | int \| null | 成功时的结果行数 |
@@ -165,7 +165,7 @@ curl -X POST {BASE}/api/v1/tasks/128/runs \
 
 ### 4.5 `GET /api/v1/runs/{job_id}/result` —— 下载完整 CSV
 
-- 返回 `text/csv` 文件流（UTF-8 BOM，Excel 直接打开不乱码），文件名 `<任务名>_<运行编号>.csv`。
+- 返回 `text/csv` 文件流（UTF-8 BOM，Excel 直接打开不乱码），文件名 `<任务名>_<运行时间 YYYYmmddHHMMSS>.csv`（如 `日报_20260925202030.csv`）。
 - 需要「下载」权限（任务对象上的 `can_download`），否则 403。403 的报错会说清该找谁授权；
   **重试无意义**。订阅推送给你的那几期结果除外——订阅本身就带着取走它的资格。
 - **结果文件保留 7 天**，过期返回 404，需重新运行。`preview` 同样受保留期约束。
