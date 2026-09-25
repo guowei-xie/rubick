@@ -75,7 +75,7 @@ API Token**(弹窗里点一下现签),Agent 装完直接能取数,不必再问�
 接口契约(逐字段表、错误码、限流)见 [docs/open-api.md](./docs/open-api.md)。
 
 > 以上截图取自演示实例,数据均为合成示例值。
-> **需要完整操作说明**(登录、权限、参数填写、运行记录与通知、管理员页面、口径限制、FAQ)请看用户手册:
+> **快速上手**(取数、订阅、让 AI Agent 取数、建任务与授权、FAQ)请看用户手册:
 > [docs/user-manual.md](./docs/user-manual.md) ·
 > [飞书在线版](https://wrpnn3mat2.feishu.cn/docx/ZlYBdS3fGoBosXx5btpcWs8yn8Y)
 >
